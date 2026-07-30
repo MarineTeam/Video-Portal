@@ -1,0 +1,8 @@
+# Defence in depth: even if this directory ends up inside the docroot,
+# nothing here is ever served directly.
+Require all denied
+
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

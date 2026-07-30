@@ -1,0 +1,43 @@
+# Video Portal — front controller rewrite
+#
+# Two supported deployments:
+#   A) docroot IS public/            (preferred; nothing above it is web-reachable)
+#   B) docroot is the app root       (shared hosting that can't move the docroot)
+#      -> the app-root .htaccess rewrites into public/ and denies core/, config.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Honour the subdirectory the app is installed in.
+    RewriteBase /
+
+    # Never rewrite an existing file or directory (assets, uploads).
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Everything else goes to the front controller.
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule !mod_rewrite.c>
+    # Without mod_rewrite the app cannot route. The installer detects this and
+    # refuses to proceed, so this is only a belt-and-braces fallback.
+    DirectoryIndex index.php
+</IfModule>
+
+# Uploads must never execute.
+<Directory "uploads">
+    php_flag engine off
+</Directory>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Don't hand out dotfiles.
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
