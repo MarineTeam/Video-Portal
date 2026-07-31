@@ -35,8 +35,54 @@ if ($modules -notcontains 'zip') {
 }
 Write-Host "Using PHP: $php" -ForegroundColor DarkGray
 
+# Install production dependencies here rather than trusting whoever ran the
+# script to have done it. The failure this prevents is subtle: a vendor/ left
+# over from a dev install has an autoloader referencing dev packages, and any
+# attempt to reconcile that by hand ships an archive that fatals on its first
+# require. Composer owns vendor/; let it own vendor/.
+$composer = $env:PORTAL_COMPOSER
+if (-not $composer) {
+    $candidate = Join-Path $env:LOCALAPPDATA 'Composer\composer.phar'
+    if (Test-Path $candidate) { $composer = $candidate }
+}
+if (-not $composer) {
+    $composer = (Get-Command composer -ErrorAction SilentlyContinue).Source
+}
+
+if ($composer) {
+    Write-Host "Installing production dependencies..." -ForegroundColor Cyan
+
+    Push-Location $root
+    try {
+        # Retried once: OneDrive and Windows Search hold handles on files inside
+        # vendor/ while they index them, and Composer's removal step fails with
+        # "Could not delete". It is transient, and a second attempt a moment
+        # later almost always succeeds.
+        foreach ($attempt in 1..2) {
+            if ($composer -like '*.phar') {
+                & $php $composer install --no-dev --optimize-autoloader --no-interaction
+            } else {
+                & $composer install --no-dev --optimize-autoloader --no-interaction
+            }
+
+            if ($LASTEXITCODE -eq 0) { break }
+
+            if ($attempt -eq 1) {
+                Write-Host "  Retrying (a file was locked)..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 3
+            } else {
+                Write-Error "composer install failed. If a file is locked, pause OneDrive syncing and retry."
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Warning "Composer not found. Using vendor/ as-is; run 'composer install --no-dev --optimize-autoloader' yourself."
+}
+
 if (-not (Test-Path (Join-Path $root 'vendor\autoload.php'))) {
-    Write-Error "vendor/ is missing. Run 'composer install --no-dev' first."
+    Write-Error "vendor/ is missing. Run 'composer install --no-dev --optimize-autoloader' first."
 }
 
 Write-Host "Staging..." -ForegroundColor Cyan
@@ -88,32 +134,23 @@ if (-not (Test-Path $installed)) {
 $meta = Get-Content $installed -Raw | ConvertFrom-Json
 
 if ($meta.dev) {
-    Write-Error "Staged vendor/ was installed WITH dev dependencies. Run: composer install --no-dev"
+    Write-Error "Staged vendor/ was installed WITH dev dependencies. Run: composer install --no-dev --optimize-autoloader"
 }
 
-# composer install --no-dev rewrites the autoloader but leaves the old dev
-# package folders on disk. They are now unreferenced, so pruning them is safe
-# and drops roughly 3 MB from the archive. The set is computed from Composer's
-# own metadata rather than a hand-written list, so a new dependency is never
-# accidentally deleted.
-$keep = New-Object System.Collections.Generic.HashSet[string]
-foreach ($package in $meta.packages) {
-    $vendorName = ($package.name -split '/')[0]
-    [void]$keep.Add($vendorName.ToLower())
-}
-[void]$keep.Add('composer')
-
-$pruned = 0
-Get-ChildItem (Join-Path $stage 'vendor') -Directory | ForEach-Object {
-    if (-not $keep.Contains($_.Name.ToLower())) {
-        Remove-Item $_.FullName -Recurse -Force
-        $pruned++
-    }
-}
-
-if ($pruned -gt 0) {
-    Write-Host "  Pruned $pruned unreferenced vendor folder(s) left behind by --no-dev."
-}
+# Nothing is pruned from vendor/ by hand any more.
+#
+# An earlier version deleted folders that installed.json no longer listed,
+# reasoning they were leftovers from a --no-dev install. They were - but
+# Composer's generated autoloader still referenced them, because
+# autoload_files.php and autoload_static.php are only rewritten when Composer
+# itself regenerates them. The shipped archive then fataled on its very first
+# require, on a live host, before a single line of application code ran:
+#
+#   Failed opening required '.../myclabs/deep-copy/src/DeepCopy/deep_copy.php'
+#
+# vendor/ is Composer's to manage. The correct way to exclude dev packages is
+# to let Composer do it and regenerate the autoloader to match, which the boot
+# check below now proves actually happened.
 
 # Empty directories are noise in an archive and, worse, they are exactly the
 # entries that arrive with awkward permissions. The runtime directories are
@@ -147,6 +184,42 @@ Get-ChildItem $stage -Filter *.php -Recurse |
     }
 
 if ($failed -gt 0) { Write-Error "$failed file(s) in the staged tree do not parse." }
+
+Write-Host "Booting the staged tree..." -ForegroundColor Cyan
+
+# php -l checks each file in isolation and never follows a require. It cannot
+# see a Composer autoloader pointing at a package that is not there, which is
+# exactly the failure that reached a live host: every file parsed cleanly and
+# the archive fataled on its first require.
+#
+# So: actually load it. bootstrap.php requires vendor/autoload.php, which
+# executes autoload_real.php and every "files" entry - the precise code that
+# broke.
+$bootProbe = Join-Path $env:TEMP "portal-boot-check-$(Get-Random).php"
+@"
+<?php
+require '$(($stage -replace '\\','/'))/core/bootstrap.php';
+if (!PORTAL_HAS_VENDOR) { fwrite(STDERR, "vendor/autoload.php was not found\n"); exit(1); }
+foreach ([
+    'Portal\\Config', 'Portal\\Db', 'Portal\\App',
+    'Portal\\Install\\Installer', 'Portal\\Themes\\ThemeManager',
+    'Firebase\\JWT\\JWT', 'PHPMailer\\PHPMailer\\PHPMailer',
+] as `$class) {
+    if (!class_exists(`$class)) { fwrite(STDERR, "missing class: `$class\n"); exit(1); }
+}
+echo 'boot ok';
+"@ | Set-Content $bootProbe -Encoding UTF8
+
+$bootOutput = & $php $bootProbe 2>&1 | Out-String
+$bootCode = $LASTEXITCODE
+Remove-Item $bootProbe -Force -ErrorAction SilentlyContinue
+
+if ($bootCode -ne 0 -or $bootOutput -notmatch 'boot ok') {
+    Write-Host $bootOutput.Trim() -ForegroundColor Red
+    Write-Error "The staged tree does not boot. It would fatal on the first request."
+}
+
+Write-Host "  Autoloader loads and every expected class resolves."
 
 Write-Host "Checking .htaccess files..." -ForegroundColor Cyan
 
