@@ -175,16 +175,27 @@ Excludes config.php (secrets, written by the installer), tests, and tooling.
         # deployed server a fast-forward rather than a divergence.
         $previous = (git rev-parse --verify --quiet "refs/heads/$Branch")
 
-        if ($previous) {
-            $previousTree = (git rev-parse "refs/heads/$Branch^{tree}").Trim()
-            if ($previousTree -eq $tree) {
-                Write-Host "  No change since the last release; nothing to publish." -ForegroundColor Yellow
-                $commit = $previous.Trim()
+        # Written to a file rather than piped. Piping a string to a native
+        # command in PowerShell 5.1 encodes it as UTF-8 *with* a BOM, and the
+        # BOM ends up as an invisible character at the start of the commit
+        # subject line.
+        $messageFile = Join-Path $env:TEMP "portal-release-msg-$(Get-Random).txt"
+        [System.IO.File]::WriteAllText($messageFile, $message, (New-Object System.Text.UTF8Encoding $false))
+
+        try {
+            if ($previous) {
+                $previousTree = (git rev-parse "refs/heads/$Branch^{tree}").Trim()
+                if ($previousTree -eq $tree) {
+                    Write-Host "  No change since the last release; nothing to publish." -ForegroundColor Yellow
+                    $commit = $previous.Trim()
+                } else {
+                    $commit = (git commit-tree $tree -p $previous.Trim() -F $messageFile).Trim()
+                }
             } else {
-                $commit = ($message | git commit-tree $tree -p $previous.Trim()).Trim()
+                $commit = (git commit-tree $tree -F $messageFile).Trim()
             }
-        } else {
-            $commit = ($message | git commit-tree $tree).Trim()
+        } finally {
+            Remove-Item $messageFile -Force -ErrorAction SilentlyContinue
         }
 
         git update-ref "refs/heads/$Branch" $commit
