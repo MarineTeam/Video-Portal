@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="tests/bootstrap.php"
+         colors="true"
+         cacheDirectory="storage/cache/phpunit"
+         executionOrder="depends,defects"
+         failOnWarning="true"
+         failOnRisky="true"
+         failOnNotice="true"
+         beStrictAboutOutputDuringTests="true"
+         displayDetailsOnTestsThatTriggerWarnings="true"
+         displayDetailsOnTestsThatTriggerErrors="true"
+         displayDetailsOnPhpunitDeprecations="true">
+
+  <testsuites>
+    <!-- Pure logic: no database, no network. These must always pass. -->
+    <testsuite name="unit">
+      <directory>tests</directory>
+      <exclude>tests/Integration</exclude>
+    </testsuite>
+
+    <!-- Needs a live MySQL/MariaDB; skipped automatically when PORTAL_TEST_DB
+         is not set, so a contributor without a database still gets a green
+         run for everything that doesn't need one. -->
+    <testsuite name="integration">
+      <directory>tests/Integration</directory>
+    </testsuite>
+  </testsuites>
+
+  <source>
+    <include>
+      <directory>core</directory>
+    </include>
+  </source>
+</phpunit>
