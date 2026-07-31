@@ -104,6 +104,14 @@ echo 'ok';
     # --- rebuild the branch -------------------------------------------------
     Write-Host "Building $Branch..." -ForegroundColor Cyan
 
+    # A previous run that failed part-way leaves release-tmp behind, and the
+    # orphan checkout below then refuses because the name is taken. Clear it
+    # first so the script is safe to re-run after any failure.
+    $stale = @(git branch --list release-tmp)
+    if ($stale.Count -gt 0) {
+        git branch -D release-tmp --quiet 2>&1 | Out-Null
+    }
+
     # An orphan branch, recreated each time. Merging would risk a dependency
     # removed months ago surviving in the tree because nothing deleted it.
     git checkout --orphan release-tmp --quiet
