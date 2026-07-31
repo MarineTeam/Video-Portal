@@ -1,16 +1,20 @@
 # Publish the deployable branch.
 #
-# The normal branches carry source only: vendor/ is gitignored, so a clone of
-# them fatals on its first require. The release branch is the same source with
-# production dependencies committed, so a host with no Composer can deploy by
-# cloning once and running `git pull` thereafter.
+# The development branches carry source only: vendor/ is gitignored, so a clone
+# of them fatals on its first require. The release branch is the same source
+# with production dependencies committed, so a host with no Composer can deploy
+# by cloning once and running `git pull` thereafter.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\release-branch.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\release-branch.ps1 -Push
 #
-# Safe to re-run. It rebuilds the branch from scratch every time rather than
-# merging, so the branch is always exactly "current source + current vendor"
-# with no chance of a stale dependency surviving from a previous release.
+# Safe to re-run, including after a failure part-way through. The branch is
+# rebuilt from scratch every time rather than merged, so it is always exactly
+# "current source + current vendor" with no chance of a package removed
+# upstream surviving because nothing deleted it.
+#
+# ASCII-only by necessity: Windows PowerShell 5.1 reads .ps1 as ANSI unless the
+# file carries a BOM, and a stray em dash in a comment corrupts on round trip.
 
 param(
     [string] $Source = '',
@@ -23,6 +27,8 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Push-Location $root
 
+$startingBranch = (git rev-parse --abbrev-ref HEAD).Trim()
+
 try {
     $php = $env:PORTAL_PHP
     if (-not $php) { $php = (Get-Command php -ErrorAction SilentlyContinue).Source }
@@ -32,12 +38,14 @@ try {
     }
     if (-not $php) { Write-Error "No php.exe found. Set PORTAL_PHP." }
 
-    if ($Source -eq '') {
-        $Source = (git rev-parse --abbrev-ref HEAD).Trim()
+    if ($Source -eq '') { $Source = $startingBranch }
+
+    if ($Source -eq $Branch -or $startingBranch -eq 'release-tmp') {
+        Write-Error "Run this from a development branch, not from a release branch."
     }
 
-    # Releasing from a dirty tree would publish files that are in no commit,
-    # so the branch would not correspond to anything reviewable.
+    # Releasing from a dirty tree would publish files that are in no commit, so
+    # the branch would not correspond to anything reviewable.
     if ((git status --porcelain | Measure-Object -Line).Lines -ne 0) {
         Write-Error "Working tree is not clean. Commit or stash first."
     }
@@ -105,50 +113,40 @@ echo 'ok';
     Write-Host "Building $Branch..." -ForegroundColor Cyan
 
     # A previous run that failed part-way leaves release-tmp behind, and the
-    # orphan checkout below then refuses because the name is taken. Clear it
-    # first so the script is safe to re-run after any failure.
-    $stale = @(git branch --list release-tmp)
-    if ($stale.Count -gt 0) {
-        git branch -D release-tmp --quiet 2>&1 | Out-Null
+    # orphan checkout below then refuses because the name is taken.
+    if (@(git branch --list release-tmp).Count -gt 0) {
+        git branch -D release-tmp 2>&1 | Out-Null
     }
 
-    # An orphan branch, recreated each time. Merging would risk a dependency
-    # removed months ago surviving in the tree because nothing deleted it.
     git checkout --orphan release-tmp --quiet
     git reset -q
 
-    # Everything the source branch tracks, plus vendor/, minus the exclusions.
-    # Note the flag placement: git add has no --quiet, and a pathspec must come
-    # after any options, not before.
+    # Everything the source branch tracks, plus vendor/. Note the flag
+    # placement: git add has no --quiet, and a pathspec follows any options.
     git checkout $Source -- .
     git add -A
     git add -f vendor
 
-    # Unstage what must not ship. `git rm --cached` errors on a path that was
-    # never staged, so each is guarded rather than having its error swallowed —
-    # a swallowed error here would silently publish secrets.
+    # Unstage what must not ship.
+    #
+    # ls-files WITHOUT --error-unmatch: that flag writes to stderr for an
+    # unmatched path, and PowerShell escalates a native command's stderr into a
+    # terminating error. Plain ls-files simply prints nothing.
     foreach ($exclude in @('config.php', 'dist', 'tests', 'phpunit.xml.dist', 'tools')) {
-        $staged = git ls-files --cached --error-unmatch $exclude 2>$null
-        if ($LASTEXITCODE -eq 0 -and $staged) {
+        if (@(git ls-files --cached -- $exclude).Count -gt 0) {
             git rm -r --cached --quiet -f -- $exclude | Out-Null
         }
     }
 
-    # Belt and braces: config.php holds the database password and the
-    # encryption keys. Publishing it would be the worst thing this script
-    # could do, so it is checked explicitly rather than trusted to the loop.
-    $configStaged = git ls-files --cached -- config.php
-    if ($configStaged) {
-        git checkout $Source --quiet 2>$null
-        git branch -D release-tmp --quiet 2>$null
+    # Belt and braces. config.php holds the database password and the
+    # encryption keys; publishing it would be the worst thing this script could
+    # do, so it is checked explicitly rather than trusted to the loop above.
+    if (@(git ls-files --cached -- config.php).Count -gt 0) {
         Write-Error "config.php was staged for the release branch. Refusing to publish."
     }
 
     $vendorFiles = (git diff --cached --name-only | Select-String '^vendor/' | Measure-Object -Line).Lines
-
     if ($vendorFiles -eq 0) {
-        git checkout -f $Source --quiet
-        git branch -D release-tmp --quiet 2>$null
         Write-Error "vendor/ was not staged. Refusing to publish a release without dependencies."
     }
 
@@ -157,23 +155,21 @@ Release from $Source ($sourceCommit)
 
 Deployable tree: application source plus production dependencies.
 
-This branch exists because the target hosts have no Composer, so vendor/ has
-to be in the repository for `git pull` to be a usable deployment. It is
-gitignored on the development branches and force-added here.
+This branch exists because the target hosts have no Composer, so vendor/ has to
+be in the repository for git pull to be a usable deployment. It is gitignored
+on the development branches and force-added here.
 
 Rebuilt from scratch on every release rather than merged, so it is always
 exactly the current source and the current dependencies, with no chance of a
 package removed upstream surviving because nothing deleted it.
 
-Excludes config.php (holds secrets, written by the installer), tests, and
-build output.
+Excludes config.php (secrets, written by the installer), tests, and tooling.
 "@
 
     git commit -q -m $message
 
     # -M renames release-tmp onto $Branch, replacing any previous release.
     git branch -M $Branch
-    git checkout -f $Source --quiet
 
     Write-Host ""
     Write-Host "Built $Branch from $Source ($sourceCommit)" -ForegroundColor Green
@@ -188,15 +184,26 @@ build output.
         Write-Host "Not pushed. To publish:" -ForegroundColor Yellow
         Write-Host "  git push -f origin $Branch"
     }
+} finally {
+    # Always return to where we started, whatever happened. Leaving the repo on
+    # an orphan branch is how a later commit lands somewhere nobody intended.
+    $current = (git rev-parse --abbrev-ref HEAD).Trim()
+    if ($current -ne $startingBranch) {
+        git checkout -f $startingBranch --quiet 2>&1 | Out-Null
+    }
+    if (@(git branch --list release-tmp).Count -gt 0) {
+        git branch -D release-tmp 2>&1 | Out-Null
+    }
 
-    # Put the working tree back the way it was found.
     Write-Host ""
     Write-Host "Restoring dev dependencies..." -ForegroundColor DarkGray
-    if ($composer -like '*.phar') {
-        & $php $composer install --no-interaction --quiet
-    } else {
-        & $composer install --no-interaction --quiet
+    if ($composer) {
+        if ($composer -like '*.phar') {
+            & $php $composer install --no-interaction --quiet
+        } else {
+            & $composer install --no-interaction --quiet
+        }
     }
-} finally {
+
     Pop-Location
 }
