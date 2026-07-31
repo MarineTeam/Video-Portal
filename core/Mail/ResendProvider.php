@@ -51,7 +51,10 @@ final class ResendProvider implements MailProvider
             SettingField::secret(
                 'api_key',
                 'Resend API Key',
-                'Starts with re_. Create one at resend.com → API Keys.'
+                'Starts with re_. Create one at resend.com under API Keys. '
+                . '"Sending access" is enough and is the safer choice — this app only ever sends. '
+                . 'A full-access key also works and additionally lets the test confirm your '
+                . 'sending domain is verified.'
             ),
             SettingField::text(
                 'from',
@@ -142,11 +145,13 @@ final class ResendProvider implements MailProvider
             return TestResult::unavailable('The curl PHP extension is not enabled, so Resend cannot be reached.');
         }
 
-        // Listing domains proves the key is valid without sending anything.
-        // A test that actually emailed someone would be a rude thing to wire
-        // to a button an admin might press repeatedly.
+        // Listing domains is the richer check — it can also confirm the From
+        // domain is verified — but it needs a FULL ACCESS key. Requiring one
+        // would force an unnecessarily privileged credential on every install,
+        // when all this app ever does is send. So a restricted key is expected
+        // here, not an error, and we fall through to a sending-scoped probe.
         try {
-            $response = Http::get('https://api.resend.com/domains', [
+            $domains = Http::get('https://api.resend.com/domains', [
                 'Authorization' => 'Bearer ' . $this->apiKey(),
                 'Accept'        => 'application/json',
             ]);
@@ -154,26 +159,87 @@ final class ResendProvider implements MailProvider
             return TestResult::fail('Could not reach Resend.', $e->getMessage());
         }
 
-        if ($response->transportFailed()) {
+        if ($domains->transportFailed()) {
             return TestResult::fail(
                 'Could not reach api.resend.com. Your host may be blocking outbound HTTPS.',
-                $response->transportError
+                $domains->transportError
             );
         }
 
-        if ($response->status === 401 || $response->status === 403) {
+        if ($domains->ok()) {
+            return $this->checkVerifiedDomains($domains->json());
+        }
+
+        // A sending-only key is refused here and nowhere else. Prove it works
+        // by the one thing it is allowed to do.
+        if ($domains->status === 401 || $domains->status === 403) {
+            return $this->testSendingScope();
+        }
+
+        return TestResult::fail('Resend returned an error.', $domains->errorMessage());
+    }
+
+    /**
+     * Validate a sending-scoped key without sending anything.
+     *
+     * Posts a deliberately invalid message — an empty recipient list, which
+     * cannot reach anybody — and reads the status. Resend answers 422 for a
+     * payload problem and 401/403 for a credential problem, so the two are
+     * cleanly distinguishable and no mail is ever generated. A test wired to a
+     * button an admin might press repeatedly must not email anyone.
+     */
+    private function testSendingScope(): TestResult
+    {
+        try {
+            $probe = Http::postJson(
+                self::ENDPOINT,
+                ['from' => $this->fromAddress(), 'to' => [], 'subject' => '', 'html' => ''],
+                ['Authorization' => 'Bearer ' . $this->apiKey()]
+            );
+        } catch (Throwable $e) {
+            return TestResult::fail('Could not reach Resend.', $e->getMessage());
+        }
+
+        if ($probe->status === 401) {
             return TestResult::fail('Resend rejected that API key.');
         }
 
-        if ($response->failed()) {
-            return TestResult::fail('Resend returned an error.', $response->errorMessage());
+        if ($probe->status === 403) {
+            return TestResult::fail(
+                'That API key is not allowed to send email.',
+                'In Resend, give the key "Sending access" (or full access). ' . $probe->errorMessage()
+            );
         }
 
-        // Check the From domain is actually verified — the overwhelmingly most
-        // common cause of "the key works but nothing arrives".
+        // 422 means the credentials were accepted and only the payload was
+        // rejected, which is exactly what we engineered.
+        if ($probe->status === 422 || $probe->ok()) {
+            return TestResult::pass(
+                'Connected to Resend with a sending-scoped key.',
+                'This key cannot list domains, so the From domain could not be verified here. '
+                . 'If messages do not arrive, check that "' . $this->extractDomain($this->fromAddress())
+                . '" is verified in Resend.'
+            );
+        }
+
+        return TestResult::fail('Resend returned an unexpected response.', $probe->errorMessage());
+    }
+
+    /**
+     * With a full-access key, confirm the From domain is actually verified.
+     *
+     * An unverified sending domain is the overwhelmingly most common cause of
+     * "the key works but nothing arrives", and it is worth catching at install
+     * time rather than when the first share link fails to reach anyone.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function checkVerifiedDomains(array $payload): TestResult
+    {
         $fromDomain = $this->extractDomain($this->fromAddress());
+
         $verified = [];
-        foreach ($response->json()['data'] ?? [] as $domain) {
+        foreach ($payload['data'] ?? [] as $domain) {
             if (is_array($domain) && ($domain['status'] ?? '') === 'verified') {
                 $verified[] = strtolower((string) ($domain['name'] ?? ''));
             }
@@ -181,13 +247,17 @@ final class ResendProvider implements MailProvider
 
         if ($fromDomain !== '' && $verified !== [] && !in_array($fromDomain, $verified, true)) {
             return TestResult::fail(sprintf(
-                'The API key works, but "%s" is not a verified domain in Resend. Sends will be rejected. Verified: %s.',
+                'The API key works, but "%s" is not a verified domain in Resend, so sends will be rejected. Verified: %s.',
                 $fromDomain,
                 implode(', ', $verified)
             ));
         }
 
-        return TestResult::pass('Connected to Resend.');
+        return TestResult::pass(
+            'Connected to Resend.',
+            'This is a full-access key. A key with only "Sending access" would work here too, '
+            . 'and is the safer choice since this application only ever sends.'
+        );
     }
 
     private function extractDomain(string $from): string
