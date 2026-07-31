@@ -272,6 +272,24 @@ final class Db
         }
     }
 
+    /**
+     * Escape the wildcards in a value used as a LIKE prefix.
+     *
+     * Parameter binding protects against injection but does nothing about `%`
+     * and `_`, which are still wildcards inside a bound LIKE value. The
+     * category tree matches on a path prefix, so an unescaped `_` in a path
+     * would silently match siblings — a subtle wrong-results bug rather than a
+     * loud failure.
+     */
+    public function escapeLike(string $value, string $escape = '\\'): string
+    {
+        return str_replace(
+            [$escape, '%', '_'],
+            [$escape . $escape, $escape . '%', $escape . '_'],
+            $value
+        );
+    }
+
     public function tableExists(string $table): bool
     {
         try {
