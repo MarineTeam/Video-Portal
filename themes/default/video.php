@@ -106,4 +106,6 @@ echo $template->partial('header', get_defined_vars());
      data-resume-at="<?= (int) ($video['resumeAt'] ?? 0) ?>"
      hidden></div>
 
+<script src="<?= e($assetsUrl ?? '/theme-asset/default') ?>/player.js" defer></script>
+
 <?= $template->partial('footer', get_defined_vars()) ?>
