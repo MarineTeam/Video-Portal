@@ -338,7 +338,7 @@ final class AdminController extends Controller
     {
         $this->require(Capability::MANAGE_THEMES);
 
-        $themes = $this->themes();
+        $themes = $this->themeManager();
         $active = $themes->active();
 
         return $this->admin('themes', [
@@ -354,7 +354,7 @@ final class AdminController extends Controller
         $this->verifyCsrf($request);
         $this->require(Capability::MANAGE_THEMES);
 
-        $themes = $this->themes();
+        $themes = $this->themeManager();
         $action = $request->input('action') ?? 'customize';
 
         if ($action === 'activate') {

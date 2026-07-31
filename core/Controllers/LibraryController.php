@@ -89,7 +89,7 @@ final class LibraryController extends Controller
         }
 
         return $this->view(
-            $this->themes()->loader()->hierarchy('category', ['slug' => $category->slug]),
+            $this->themeManager()->loader()->hierarchy('category', ['slug' => $category->slug]),
             [
                 'title'               => $category->name,
                 'heading'             => $category->name,
@@ -126,7 +126,7 @@ final class LibraryController extends Controller
         );
 
         return $this->view(
-            $this->themes()->loader()->hierarchy('series', ['slug' => (string) $row['slug']]),
+            $this->themeManager()->loader()->hierarchy('series', ['slug' => (string) $row['slug']]),
             [
                 'title'               => (string) $row['title'],
                 'heading'             => (string) $row['title'],
@@ -347,7 +347,7 @@ final class LibraryController extends Controller
 
     private function perPage(): int
     {
-        $configured = (int) ($this->themes()->setting('per-page') ?? 12);
+        $configured = (int) ($this->themeManager()->setting('per-page') ?? 12);
         /** @var int */
         return apply_filters('videos_per_page', max(1, min(100, $configured ?: 12)));
     }

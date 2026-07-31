@@ -39,10 +39,24 @@ use Throwable;
  */
 class OidcProvider implements AuthProvider
 {
-    private const SESSION_STATE = 'oidc.state';
-    private const SESSION_VERIFIER = 'oidc.verifier';
-    private const SESSION_NONCE = 'oidc.nonce';
-    private const SESSION_RETURN = 'oidc.return_to';
+    /**
+     * Pending sign-ins, keyed by state.
+     *
+     * Deliberately a map rather than a single value. Storing one state means
+     * the most recent attempt silently invalidates every earlier one, and
+     * there are several ordinary ways to have more than one in flight:
+     * a browser prefetching the sign-in link on hover, an impatient second
+     * click, two tabs, or a back-button retry. The symptom is an intermittent
+     * "the sign-in session expired or did not match" that is impossible to
+     * reproduce on demand, and this is what causes it.
+     */
+    private const SESSION_PENDING = 'oidc.pending';
+
+    /** Enough for a prefetch plus a few retries; old entries are evicted. */
+    private const MAX_PENDING = 6;
+
+    /** A sign-in someone abandoned should not linger as a valid state forever. */
+    private const PENDING_TTL = 900;
 
     /** @var array<string, mixed>|null Cached discovery document. */
     private ?array $discovery = null;
@@ -173,10 +187,16 @@ class OidcProvider implements AuthProvider
 
         // Server-side only. A state kept in a cookie the client controls is
         // not a CSRF defence.
-        $this->session->put(self::SESSION_STATE, $state);
-        $this->session->put(self::SESSION_NONCE, $nonce);
-        $this->session->put(self::SESSION_VERIFIER, $verifier);
-        $this->session->put(self::SESSION_RETURN, Request::sanitizeReturnTo($returnTo));
+        $pending = $this->pending();
+
+        $pending[$state] = [
+            'nonce'    => $nonce,
+            'verifier' => $verifier,
+            'returnTo' => Request::sanitizeReturnTo($returnTo),
+            'at'       => time(),
+        ];
+
+        $this->session->put(self::SESSION_PENDING, $this->prune($pending));
 
         $challenge = Crypto::base64url(hash('sha256', $verifier, true));
 
@@ -216,11 +236,6 @@ class OidcProvider implements AuthProvider
 
     public function handleCallback(Request $request): AuthResult
     {
-        $expectedState = $this->session->pull(self::SESSION_STATE);
-        $verifier      = $this->session->pull(self::SESSION_VERIFIER);
-        $nonce         = $this->session->pull(self::SESSION_NONCE);
-        $returnTo      = Request::sanitizeReturnTo((string) $this->session->pull(self::SESSION_RETURN, '/'));
-
         // The provider reports user-cancelled and misconfiguration this way.
         $providerError = $request->query('error');
         if ($providerError !== null && $providerError !== '') {
@@ -229,11 +244,32 @@ class OidcProvider implements AuthProvider
         }
 
         $state = $request->query('state') ?? '';
-        if (!is_string($expectedState) || $expectedState === '' || !Crypto::verify($expectedState, $state)) {
+        $pending = $this->prune($this->pending());
+
+        // Look the state up rather than comparing against "the" state, so a
+        // prefetch or a second tab cannot invalidate a legitimate flow.
+        $flow = null;
+        foreach ($pending as $candidate => $details) {
+            if (Crypto::verify((string) $candidate, $state)) {
+                $flow = $details;
+                unset($pending[$candidate]);
+                break;
+            }
+        }
+
+        // Consume it. A state is single-use: leaving it usable would let a
+        // captured callback URL be replayed.
+        $this->session->put(self::SESSION_PENDING, $pending);
+
+        if ($flow === null) {
             return AuthResult::failure(
-                'The sign-in session expired or did not match. Please try signing in again.'
+                'That sign-in link has already been used or has expired. Please try signing in again.'
             );
         }
+
+        $verifier = (string) ($flow['verifier'] ?? '');
+        $nonce    = (string) ($flow['nonce'] ?? '');
+        $returnTo = Request::sanitizeReturnTo((string) ($flow['returnTo'] ?? '/'));
 
         $code = $request->query('code') ?? '';
         if ($code === '') {
@@ -241,7 +277,7 @@ class OidcProvider implements AuthProvider
         }
 
         try {
-            $tokens = $this->exchangeCode($code, is_string($verifier) ? $verifier : '');
+            $tokens = $this->exchangeCode($code, $verifier);
         } catch (Throwable $e) {
             return AuthResult::failure('Could not complete sign-in: ' . $e->getMessage());
         }
@@ -252,7 +288,7 @@ class OidcProvider implements AuthProvider
         }
 
         try {
-            $claims = $this->verifyIdToken($idToken, is_string($nonce) ? $nonce : null);
+            $claims = $this->verifyIdToken($idToken, $nonce !== '' ? $nonce : null);
         } catch (Throwable $e) {
             return AuthResult::failure('The ID token could not be verified: ' . $e->getMessage());
         }
@@ -373,6 +409,55 @@ class OidcProvider implements AuthProvider
         }
 
         return $claims;
+    }
+
+    /**
+     * Sign-ins currently in flight.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private function pending(): array
+    {
+        $stored = $this->session->get(self::SESSION_PENDING);
+
+        if (!is_array($stored)) {
+            return [];
+        }
+
+        $pending = [];
+        foreach ($stored as $state => $details) {
+            if (is_string($state) && is_array($details)) {
+                $pending[$state] = $details;
+            }
+        }
+
+        return $pending;
+    }
+
+    /**
+     * Drop expired entries and cap the rest, oldest first.
+     *
+     * @param array<string, array<string, mixed>> $pending
+     * @return array<string, array<string, mixed>>
+     */
+    private function prune(array $pending): array
+    {
+        $cutoff = time() - self::PENDING_TTL;
+
+        $pending = array_filter(
+            $pending,
+            static fn (array $details): bool => (int) ($details['at'] ?? 0) >= $cutoff
+        );
+
+        if (count($pending) > self::MAX_PENDING) {
+            uasort(
+                $pending,
+                static fn (array $a, array $b): int => ((int) ($a['at'] ?? 0)) <=> ((int) ($b['at'] ?? 0))
+            );
+            $pending = array_slice($pending, -self::MAX_PENDING, null, true);
+        }
+
+        return $pending;
     }
 
     /**

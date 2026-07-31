@@ -52,7 +52,19 @@ abstract class Controller
         return $this->container->get(Guard::class);
     }
 
-    protected function themes(): ThemeManager
+    /**
+     * Service accessors are prefixed, and deliberately so.
+     *
+     * A controller's public methods are route handlers, and admin screens are
+     * naturally named after the thing they manage — themes(), users(),
+     * plugins(). An unprefixed helper on this base class collides with one of
+     * those and PHP fatals at class-resolution time with an incompatible
+     * signature. php -l cannot see it, because it never resolves the parent.
+     *
+     * That exact collision on themes() took down /admin on a live host, so the
+     * naming is a guardrail, not a style preference.
+     */
+    protected function themeManager(): ThemeManager
     {
         return $this->container->get(ThemeManager::class);
     }
@@ -84,7 +96,7 @@ abstract class Controller
      */
     protected function view(array $candidates, array $data = []): Response
     {
-        $themes = $this->themes();
+        $themes = $this->themeManager();
         $user = $this->user();
 
         $shared = [

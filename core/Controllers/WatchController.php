@@ -60,7 +60,7 @@ final class WatchController extends Controller
         $embedUrl = apply_filters('player_embed_url', $embedUrl, $video);
 
         return $this->view(
-            $this->themes()->loader()->hierarchy('video', ['slug' => $video->slug]),
+            $this->themeManager()->loader()->hierarchy('video', ['slug' => $video->slug]),
             [
                 'title' => $video->title,
                 'video' => [

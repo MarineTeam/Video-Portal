@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Portal\Auth;
 
+use Portal\Http\Request;
 use Portal\Providers\SettingField;
 use Portal\Providers\TestResult;
 use Throwable;
@@ -69,6 +70,43 @@ final class Auth0Provider extends OidcProvider
         $domain = rtrim($domain, '/');
 
         return 'https://' . $domain;
+    }
+
+    /**
+     * Auth0's logout endpoint.
+     *
+     * Auth0 does not publish `end_session_endpoint` in its OIDC discovery
+     * document unless OIDC-conformant logout is explicitly enabled on the
+     * tenant, so the inherited implementation found nothing and returned null.
+     * The visible effect is that "Sign out" clears our session but leaves the
+     * Auth0 SSO cookie intact — clicking "Sign in" then silently re-authenticates
+     * and drops the person straight back in, which reads exactly like sign-out
+     * being broken.
+     *
+     * /v2/logout is Auth0's own endpoint and always works.
+     */
+    public function logoutUrl(string $returnTo = '/'): ?string
+    {
+        $issuer = $this->issuer();
+        if ($issuer === '') {
+            return null;
+        }
+
+        try {
+            $return = $this->config->url(Request::sanitizeReturnTo($returnTo));
+        } catch (Throwable) {
+            // No base URL configured yet; let Auth0 use its own default.
+            $return = null;
+        }
+
+        $query = ['client_id' => $this->clientId()];
+        if ($return !== null) {
+            // Must be listed under "Allowed Logout URLs" in the Auth0
+            // application, or Auth0 refuses the redirect after logging out.
+            $query['returnTo'] = $return;
+        }
+
+        return $issuer . '/v2/logout?' . http_build_query($query);
     }
 
     public function test(): TestResult

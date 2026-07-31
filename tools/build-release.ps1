@@ -221,6 +221,16 @@ if ($bootCode -ne 0 -or $bootOutput -notmatch 'boot ok') {
 
 Write-Host "  Autoloader loads and every expected class resolves."
 
+Write-Host "Resolving every class..." -ForegroundColor Cyan
+
+# The boot check above loads a handful of representative classes. This loads
+# ALL of them, which is what surfaces an inheritance error in a class no test
+# happens to instantiate - the failure mode that put a fatal on /admin.
+& $php (Join-Path $PSScriptRoot 'load-all.php')
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Not every class resolves. The release would fatal on the routes that use them."
+}
+
 Write-Host "Checking .htaccess files..." -ForegroundColor Cyan
 
 # A directive that is illegal in .htaccess context makes Apache abort EVERY

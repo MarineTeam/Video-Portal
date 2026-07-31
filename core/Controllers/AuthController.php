@@ -92,6 +92,14 @@ final class AuthController extends Controller
         $result = $provider->handleCallback($request);
 
         if (!$result->ok) {
+            // Refreshing the callback, or coming back to it with the back
+            // button, replays a state that has already been consumed. If the
+            // sign-in it belonged to succeeded, the person is already signed
+            // in and an error is both wrong and alarming — send them on.
+            if ($this->guard()->isAuthenticated()) {
+                return $this->redirect('/');
+            }
+
             return $this->renderLoginForm($request, '/', $result->error ?? 'Sign-in failed.');
         }
 
@@ -106,21 +114,23 @@ final class AuthController extends Controller
 
         $provider = $this->authProvider();
 
-        // End the remote session too where there is one, or someone "signing
-        // out" on a shared computer is still signed in at the provider and one
-        // click away from being back in.
+        // End the remote session too where there is one. Without this, someone
+        // "signing out" has only cleared our cookie: the identity provider
+        // still holds an SSO session, so clicking "Sign in" re-authenticates
+        // silently and drops them straight back in, which is indistinguishable
+        // from sign-out being broken.
         if ($provider !== null) {
             try {
                 $remote = $provider->logoutUrl('/');
                 if ($remote !== null) {
-                    return Response::redirect($remote);
+                    return Response::redirect($remote)->private();
                 }
             } catch (Throwable) {
                 // Fall through to the local redirect.
             }
         }
 
-        return $this->redirect('/');
+        return $this->redirect('/')->private();
     }
 
     // -------------------------------------------------------------- internals
@@ -201,7 +211,7 @@ final class AuthController extends Controller
         $status = $error !== null ? 401 : 200;
 
         return Response::html($this->loginHtml(
-            siteName: (string) ($this->themes()->setting('site_name', 'Video Portal') ?? 'Video Portal'),
+            siteName: (string) ($this->themeManager()->setting('site_name', 'Video Portal') ?? 'Video Portal'),
             returnTo: $returnTo,
             error: $error,
             remoteUrl: $remoteUrl,
