@@ -205,7 +205,17 @@ foreach ($forbidden in $mustNotExist) {
 
 Write-Host "Compressing..." -ForegroundColor Cyan
 
-$version = (& $php -r "require '$($root -replace '\\','/')/core/bootstrap.php'; echo PORTAL_VERSION;")
+# Read the version by parsing bootstrap.php, not by executing it. Executing it
+# loads the root autoloader, which makes the build depend on whatever state
+# vendor/ happens to be in — and the build is frequently run right after a
+# --no-dev install has churned exactly that. The version is a literal in a
+# define(); a regex is both sufficient and immune.
+$bootstrapText = Get-Content (Join-Path $root 'core\bootstrap.php') -Raw
+if ($bootstrapText -notmatch "define\('PORTAL_VERSION',\s*'([^']+)'\)") {
+    Write-Error "Could not read PORTAL_VERSION from core/bootstrap.php"
+}
+$version = $Matches[1]
+
 $zip = Join-Path $dist "video-portal-$version.zip"
 
 # NOT Compress-Archive. That cmdlet stores no Unix mode, so extracting on Linux
