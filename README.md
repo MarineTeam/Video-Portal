@@ -35,6 +35,27 @@ setting to change for anything missing.
 
 ## Installing
 
+### From the release branch (recommended if the host has git)
+
+`release/1.0` carries the application **and its dependencies**, so nothing needs
+Composer on the server:
+
+```bash
+git clone -b release/1.0 https://github.com/MarineTeam/Video-Portal.git yoursite
+```
+
+Updating afterwards is one command, and never touches your `config.php`:
+
+```bash
+cd yoursite && git pull
+```
+
+Development branches deliberately do **not** work this way: `vendor/` is
+gitignored there, so a clone of `main` or a feature branch fatals on its first
+`require`. Clone `release/1.0`, or run `composer install --no-dev` yourself.
+
+### From a ZIP
+
 1. Create an empty MySQL database in your hosting control panel, and a user with
    full privileges on it.
 2. Upload the release ZIP and extract it.
@@ -201,6 +222,24 @@ To verify only that the schema is valid:
 ```bash
 php tools/schema-check.php
 ```
+
+### Cutting a release
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\release-branch.ps1 -Push
+```
+
+Installs production dependencies, checks that every class resolves and that the
+dependencies load, then commits the deployable tree onto `release/1.0`.
+
+The tree is assembled from scratch each time, so a file removed upstream
+disappears from the release too. The commit is parented to the previous
+release, so history stays linear and deployed servers can `git pull` — a
+rebuilt orphan commit would diverge and force every server to reset. It refuses
+to publish if `config.php` ever reaches the index, if `vendor/` does not, or if
+anything fails to resolve.
+
+`tools/build-release.ps1` produces a ZIP instead, for hosts without git.
 
 ---
 
