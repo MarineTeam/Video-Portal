@@ -206,8 +206,9 @@ final class Installer
                 . 'user must also be explicitly added to the database, with all privileges.',
 
             str_contains($message, 'Connection refused'), str_contains($message, "getaddrinfo") =>
-                "Nothing answered at '{$host}'. Most shared hosts use 'localhost' or '127.0.0.1'; "
-                . 'a few use a dedicated hostname shown in your control panel.',
+                "Nothing answered at '{$host}'. Check your control panel for the database hostname — "
+                . "many hosts use 'localhost', but several give each database its own hostname "
+                . '(DreamHost, for example, uses something like mysql.yourdomain.com).',
 
             str_contains($message, 'timed out') =>
                 "Connecting to '{$host}' timed out. Check the hostname, and whether the database "
