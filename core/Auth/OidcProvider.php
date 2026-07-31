@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Portal\Auth;
 
+use Firebase\JWT\BeforeValidException;
+use Firebase\JWT\ExpiredException;
 use Firebase\JWT\JWK;
 use Firebase\JWT\JWT;
 use Portal\Config;
@@ -323,11 +325,32 @@ class OidcProvider implements AuthProvider
 
         $keys = JWK::parseKeySet($jwksResponse->json());
 
-        // Small leeway for clock skew — shared hosts are not always in sync,
-        // and a 2-second drift should not reject a valid token.
-        JWT::$leeway = 60;
+        /*
+         * Clock skew tolerance.
+         *
+         * The identity provider's clock is authoritative and ours is whatever
+         * the host happens to be running. On shared hosting the admin cannot
+         * run ntpd, cannot inspect the drift, and cannot do anything at all
+         * about a clock that is a minute out — so a hard rejection is an
+         * unfixable dead end rather than a security win.
+         *
+         * 120 seconds by default, raisable in config.php for a badly drifting
+         * host. This widens the window on `exp` too, which is the real cost;
+         * acceptable here because the ID token is consumed once at sign-in and
+         * never stored, so there is nothing to replay it against later.
+         */
+        $leeway = $this->config->int('jwt_leeway', 120);
+        JWT::$leeway = max(0, min(900, $leeway));
 
-        $decoded = JWT::decode($idToken, $keys);
+        try {
+            $decoded = JWT::decode($idToken, $keys);
+        } catch (BeforeValidException | ExpiredException $e) {
+            // These two mean the signature verified and only the timing was
+            // rejected, so the token itself is trustworthy enough to read for
+            // diagnostics. Say by how much and in which direction, because
+            // "could not be verified" sends people to check their credentials.
+            throw new \RuntimeException($this->explainClockSkew($idToken, $e->getMessage()));
+        }
         /** @var array<string, mixed> $claims */
         $claims = json_decode(json_encode($decoded) ?: '{}', true) ?: [];
 
@@ -350,6 +373,77 @@ class OidcProvider implements AuthProvider
         }
 
         return $claims;
+    }
+
+    /**
+     * Turn a timing rejection into the actual measurement.
+     *
+     * Reads iat/exp straight out of the token payload without verifying —
+     * safe, because this is only ever reached after the signature has already
+     * been checked, and the result is used solely to write an error message.
+     */
+    private function explainClockSkew(string $idToken, string $original): string
+    {
+        $parts = explode('.', $idToken);
+        $claims = [];
+
+        if (count($parts) === 3) {
+            $decoded = json_decode((string) Crypto::base64urlDecode($parts[1]), true);
+            if (is_array($decoded)) {
+                $claims = $decoded;
+            }
+        }
+
+        $now = time();
+        $issuedAt = isset($claims['iat']) ? (int) $claims['iat'] : null;
+
+        if ($issuedAt !== null && $issuedAt > $now) {
+            $skew = $issuedAt - $now;
+
+            return sprintf(
+                'This server\'s clock is %s behind the identity provider, so the sign-in token looks '
+                . 'like it was issued in the future and was rejected. Ask your host to sync the server '
+                . 'clock. If that is not possible, raise the tolerance by adding '
+                . "\$config['jwt_leeway'] = %d; to config.php (currently %d seconds). "
+                . 'Server time is %s; the token was issued at %s.',
+                $this->describeDuration($skew),
+                min(900, ($skew + 120)),
+                JWT::$leeway,
+                gmdate('Y-m-d H:i:s', $now) . ' UTC',
+                gmdate('Y-m-d H:i:s', $issuedAt) . ' UTC'
+            );
+        }
+
+        $expiresAt = isset($claims['exp']) ? (int) $claims['exp'] : null;
+
+        if ($expiresAt !== null && $expiresAt < $now) {
+            return sprintf(
+                'The sign-in token had already expired when it arrived, by %s. This is usually a '
+                . 'server clock running ahead of the identity provider. Server time is %s; the token '
+                . 'expired at %s.',
+                $this->describeDuration($now - $expiresAt),
+                gmdate('Y-m-d H:i:s', $now) . ' UTC',
+                gmdate('Y-m-d H:i:s', $expiresAt) . ' UTC'
+            );
+        }
+
+        return $original;
+    }
+
+    private function describeDuration(int $seconds): string
+    {
+        $seconds = abs($seconds);
+
+        if ($seconds < 120) {
+            return $seconds . ' second' . ($seconds === 1 ? '' : 's');
+        }
+        if ($seconds < 7200) {
+            $minutes = (int) round($seconds / 60);
+            return $minutes . ' minute' . ($minutes === 1 ? '' : 's');
+        }
+
+        $hours = (int) round($seconds / 3600);
+        return $hours . ' hour' . ($hours === 1 ? '' : 's');
     }
 
     // ------------------------------------------------------------------ test
