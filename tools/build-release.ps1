@@ -105,6 +105,24 @@ if ($pruned -gt 0) {
     Write-Host "  Pruned $pruned unreferenced vendor folder(s) left behind by --no-dev."
 }
 
+# Empty directories are noise in an archive and, worse, they are exactly the
+# entries that arrive with awkward permissions. The runtime directories are
+# kept because the app needs them to exist; they carry a .htaccess or .gitkeep
+# and so are never empty.
+$removedEmpty = 0
+do {
+    $empty = Get-ChildItem $stage -Directory -Recurse |
+        Where-Object { (Get-ChildItem $_.FullName -Force | Measure-Object).Count -eq 0 }
+    foreach ($dir in $empty) {
+        Remove-Item $dir.FullName -Force
+        $removedEmpty++
+    }
+} while ($empty.Count -gt 0)
+
+if ($removedEmpty -gt 0) {
+    Write-Host "  Removed $removedEmpty empty director(y|ies)."
+}
+
 Write-Host "Verifying staged tree parses..." -ForegroundColor Cyan
 
 $failed = 0
@@ -190,7 +208,14 @@ Write-Host "Compressing..." -ForegroundColor Cyan
 $version = (& $php -r "require '$($root -replace '\\','/')/core/bootstrap.php'; echo PORTAL_VERSION;")
 $zip = Join-Path $dist "video-portal-$version.zip"
 
-Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
+# NOT Compress-Archive. That cmdlet stores no Unix mode, so extracting on Linux
+# produces directories without the write bit and the person who just uploaded
+# their site cannot delete what they extracted. tools/package.php writes an
+# explicit mode on every entry and verifies them by reading the archive back.
+& $php (Join-Path $PSScriptRoot 'package.php') $stage $zip
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Packaging failed."
+}
 
 $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 $fileCount = (Get-ChildItem $stage -Recurse -File).Count
