@@ -25,6 +25,16 @@ if (-not $php) {
 }
 if (-not $php) { Write-Error "No php.exe found. Set PORTAL_PHP." }
 
+# Several PHP builds can be on PATH, and the Windows Store alias in particular
+# resolves to one with no php.ini and therefore no zip extension. Packaging
+# then fails with a message about the extension rather than about which PHP was
+# picked, so name it up front.
+$modules = & $php -m
+if ($modules -notcontains 'zip') {
+    Write-Error "The PHP at '$php' has no zip extension, so it cannot package a release. Set PORTAL_PHP to one that does."
+}
+Write-Host "Using PHP: $php" -ForegroundColor DarkGray
+
 if (-not (Test-Path (Join-Path $root 'vendor\autoload.php'))) {
     Write-Error "vendor/ is missing. Run 'composer install --no-dev' first."
 }
