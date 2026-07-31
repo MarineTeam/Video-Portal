@@ -109,48 +109,52 @@ echo 'ok';
     }
     Write-Host "  Dependencies load."
 
-    # --- rebuild the branch -------------------------------------------------
+    # --- build the release commit -------------------------------------------
     Write-Host "Building $Branch..." -ForegroundColor Cyan
 
-    # A previous run that failed part-way leaves release-tmp behind, and the
-    # orphan checkout below then refuses because the name is taken.
-    if (@(git branch --list release-tmp).Count -gt 0) {
-        git branch -D release-tmp 2>&1 | Out-Null
-    }
-
-    git checkout --orphan release-tmp --quiet
-    git reset -q
-
-    # Everything the source branch tracks, plus vendor/. Note the flag
-    # placement: git add has no --quiet, and a pathspec follows any options.
-    git checkout $Source -- .
-    git add -A
-    git add -f vendor
-
-    # Unstage what must not ship.
+    # Built with plumbing against a temporary index, so HEAD and the working
+    # tree are never touched. Two reasons:
     #
-    # ls-files WITHOUT --error-unmatch: that flag writes to stderr for an
-    # unmatched path, and PowerShell escalates a native command's stderr into a
-    # terminating error. Plain ls-files simply prints nothing.
-    foreach ($exclude in @('config.php', 'dist', 'tests', 'phpunit.xml.dist', 'tools')) {
-        if (@(git ls-files --cached -- $exclude).Count -gt 0) {
-            git rm -r --cached --quiet -f -- $exclude | Out-Null
+    #  - Switching branches to build a release is how a commit ends up on the
+    #    wrong branch when something fails part-way. That happened twice while
+    #    writing this script.
+    #  - The release tree is assembled explicitly rather than inherited, so a
+    #    file deleted upstream disappears from the release instead of lingering.
+    $env:GIT_INDEX_FILE = Join-Path $root '.git\release-index'
+    if (Test-Path $env:GIT_INDEX_FILE) { Remove-Item $env:GIT_INDEX_FILE -Force }
+
+    try {
+        # Exactly what a deployment needs, named explicitly. Anything not
+        # listed - tests, tools, dist, phpunit.xml.dist, and above all
+        # config.php - cannot reach the release by accident.
+        $include = @(
+            'core', 'public', 'themes', 'plugins', 'storage',
+            'composer.json', 'README.md', '.htaccess', '.gitattributes', '.gitignore'
+        )
+
+        foreach ($path in $include) {
+            if (Test-Path (Join-Path $root $path)) {
+                git add -A -- $path
+            }
         }
-    }
 
-    # Belt and braces. config.php holds the database password and the
-    # encryption keys; publishing it would be the worst thing this script could
-    # do, so it is checked explicitly rather than trusted to the loop above.
-    if (@(git ls-files --cached -- config.php).Count -gt 0) {
-        Write-Error "config.php was staged for the release branch. Refusing to publish."
-    }
+        # vendor/ is gitignored on the development branches, so it needs -f.
+        git add -f -A -- vendor
 
-    $vendorFiles = (git diff --cached --name-only | Select-String '^vendor/' | Measure-Object -Line).Lines
-    if ($vendorFiles -eq 0) {
-        Write-Error "vendor/ was not staged. Refusing to publish a release without dependencies."
-    }
+        if (@(git ls-files --cached -- config.php).Count -gt 0) {
+            Write-Error "config.php reached the release index. Refusing to publish."
+        }
 
-    $message = @"
+        $staged = @(git ls-files --cached)
+        $vendorFiles = @($staged | Where-Object { $_ -like 'vendor/*' }).Count
+
+        if ($vendorFiles -eq 0) {
+            Write-Error "vendor/ was not staged. Refusing to publish a release without dependencies."
+        }
+
+        $tree = (git write-tree).Trim()
+
+        $message = @"
 Release from $Source ($sourceCommit)
 
 Deployable tree: application source plus production dependencies.
@@ -159,17 +163,35 @@ This branch exists because the target hosts have no Composer, so vendor/ has to
 be in the repository for git pull to be a usable deployment. It is gitignored
 on the development branches and force-added here.
 
-Rebuilt from scratch on every release rather than merged, so it is always
-exactly the current source and the current dependencies, with no chance of a
-package removed upstream surviving because nothing deleted it.
+The tree is assembled from scratch each release, so a file removed upstream
+disappears here too. The commit is parented to the previous release, so the
+branch history stays linear and deploying really is just git pull - a rebuilt
+orphan commit would diverge and force every server to reset instead.
 
 Excludes config.php (secrets, written by the installer), tests, and tooling.
 "@
 
-    git commit -q -m $message
+        # Parent to the previous release. This is what keeps `git pull` on a
+        # deployed server a fast-forward rather than a divergence.
+        $previous = (git rev-parse --verify --quiet "refs/heads/$Branch")
 
-    # -M renames release-tmp onto $Branch, replacing any previous release.
-    git branch -M $Branch
+        if ($previous) {
+            $previousTree = (git rev-parse "refs/heads/$Branch^{tree}").Trim()
+            if ($previousTree -eq $tree) {
+                Write-Host "  No change since the last release; nothing to publish." -ForegroundColor Yellow
+                $commit = $previous.Trim()
+            } else {
+                $commit = ($message | git commit-tree $tree -p $previous.Trim()).Trim()
+            }
+        } else {
+            $commit = ($message | git commit-tree $tree).Trim()
+        }
+
+        git update-ref "refs/heads/$Branch" $commit
+    } finally {
+        Remove-Item $env:GIT_INDEX_FILE -Force -ErrorAction SilentlyContinue
+        Remove-Item Env:\GIT_INDEX_FILE -ErrorAction SilentlyContinue
+    }
 
     Write-Host ""
     Write-Host "Built $Branch from $Source ($sourceCommit)" -ForegroundColor Green
@@ -178,15 +200,19 @@ Excludes config.php (secrets, written by the installer), tests, and tooling.
     if ($Push) {
         Write-Host ""
         Write-Host "Pushing..." -ForegroundColor Cyan
-        git push -f origin $Branch
+        # No -f: history is linear now, so a normal push is a fast-forward.
+        # If this is ever rejected, something rewrote the branch and that is
+        # worth stopping to look at rather than steamrolling.
+        git push origin $Branch
     } else {
         Write-Host ""
         Write-Host "Not pushed. To publish:" -ForegroundColor Yellow
-        Write-Host "  git push -f origin $Branch"
+        Write-Host "  git push origin $Branch"
     }
 } finally {
-    # Always return to where we started, whatever happened. Leaving the repo on
-    # an orphan branch is how a later commit lands somewhere nobody intended.
+    # HEAD is never moved by this script, but a failure part-way through an
+    # earlier version could leave the repo somewhere unexpected, so this stays
+    # as a safety net.
     $current = (git rev-parse --abbrev-ref HEAD).Trim()
     if ($current -ne $startingBranch) {
         git checkout -f $startingBranch --quiet 2>&1 | Out-Null
