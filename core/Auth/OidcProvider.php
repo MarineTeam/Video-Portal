@@ -384,9 +384,21 @@ class OidcProvider implements AuthProvider
             }
         }
 
+        // Guarded: during installation config.php does not exist yet and
+        // baseUrl() throws rather than inventing a value from the request.
+        try {
+            $callback = $this->redirectUri();
+        } catch (Throwable) {
+            return TestResult::pass(
+                'Read the OpenID configuration successfully.',
+                'The site address is not set yet, so the exact callback URL cannot be shown here. '
+                . 'After installing, check the Services screen for the URL to register.'
+            );
+        }
+
         return TestResult::pass(
             'Read the OpenID configuration successfully.',
-            'Add this exact callback URL to the application at your identity provider: ' . $this->redirectUri()
+            'Add this exact callback URL to the application at your identity provider: ' . $callback
         );
     }
 }

@@ -86,18 +86,28 @@ final class Auth0Provider extends OidcProvider
         // The single most common Auth0 setup failure is forgetting to register
         // the callback, which produces an opaque "Callback URL mismatch" page
         // long after the install wizard said everything was fine. Say it here.
+        //
+        // Both lookups are guarded: during installation config.php does not
+        // exist yet, and baseUrl() throws rather than inventing a value. A
+        // provider test that throws is reported as "unexpected error", which
+        // tells the person nothing about what to do.
         try {
             $callback = $this->redirectUri();
+            $base = $this->config->baseUrl();
         } catch (Throwable) {
-            $callback = '(could not determine — set the site URL first)';
+            return TestResult::pass(
+                'Connected to Auth0.',
+                'The site address is not set yet, so the exact callback URL cannot be shown here. '
+                . 'After installing, check the Services screen for the URLs to register in Auth0.'
+            );
         }
 
         return TestResult::pass(
             'Connected to Auth0.',
             "Before signing in, add this to your Auth0 application:\n"
             . "  Allowed Callback URLs:  {$callback}\n"
-            . "  Allowed Logout URLs:    " . $this->config->baseUrl() . "\n"
-            . "  Allowed Web Origins:    " . $this->config->baseUrl() . "\n\n"
+            . "  Allowed Logout URLs:    {$base}\n"
+            . "  Allowed Web Origins:    {$base}\n\n"
             . 'If sign-ups are open on this tenant, anyone can create an account. They still cannot '
             . 'watch anything until an administrator authorizes them, but consider disabling sign-ups.'
         );

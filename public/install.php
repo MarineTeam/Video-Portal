@@ -56,6 +56,19 @@ session_start();
 $state = $_SESSION['install'] ?? [];
 $request = Request::capture();
 
+/*
+ * Hand the site address to Config before any provider is built.
+ *
+ * The Services step tests providers, and an OIDC provider has to be able to
+ * state its callback URL — which is derived from the base URL. That value was
+ * collected on the previous step and lives in the session; config.php will not
+ * exist until the very end. Without this, testing Auth0 fails with
+ * "base_url is not set in config.php", which is true and completely unhelpful.
+ */
+if (isset($state['site']['base_url']) && $state['site']['base_url'] !== '') {
+    $config->overlay(['base_url' => rtrim((string) $state['site']['base_url'], '/')]);
+}
+
 $step = $request->input('step') ?? $request->query('step') ?? Installer::STEP_REQUIREMENTS;
 $action = $request->input('action') ?? '';
 $isPost = $request->method === 'POST';

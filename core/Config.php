@@ -52,6 +52,32 @@ final class Config
         return $this->file;
     }
 
+    /**
+     * Supply values in memory, without writing config.php.
+     *
+     * Exists for the installer. Providers are tested on the Services step,
+     * after the site address has been collected but before anything is written
+     * to disk — and an OIDC provider cannot even describe its callback URL
+     * without knowing the base URL. Overlaying lets the wizard hand over what
+     * it has gathered so far.
+     *
+     * Values already read from a real config.php are not overwritten: once the
+     * file exists it is authoritative, and nothing should be able to shadow it
+     * at runtime.
+     *
+     * @param array<string, mixed> $values
+     */
+    public function overlay(array $values): void
+    {
+        $this->load();
+
+        foreach ($values as $key => $value) {
+            if (!array_key_exists($key, $this->file)) {
+                $this->file[(string) $key] = $value;
+            }
+        }
+    }
+
     public function get(string $key, mixed $default = null): mixed
     {
         $this->load();

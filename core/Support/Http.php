@@ -99,7 +99,7 @@ final class Http
         }
 
         if ($errno !== 0 || !is_string($raw)) {
-            return new HttpResponse(0, '', [], $error !== '' ? $error : 'Request failed.');
+            return new HttpResponse(0, '', [], self::explainCurlError($errno, $error, $url));
         }
 
         $rawHeaders = substr($raw, 0, $headerSize);
@@ -131,6 +131,52 @@ final class Http
             'Content-Type' => 'application/json',
             'Accept'       => 'application/json',
         ], $options);
+    }
+
+    /**
+     * Turn a curl error number into something the person reading it can act on.
+     *
+     * These arrive at an admin through a provider's connection test, and the
+     * raw text sends people to the wrong place. A missing CA bundle in
+     * particular reports as a generic failure, and the natural reading is
+     * "my credentials or URL are wrong" — so they re-check both, repeatedly,
+     * while the actual fix is one line of php.ini on a badly-maintained host.
+     */
+    private static function explainCurlError(int $errno, string $error, string $url): string
+    {
+        $host = (string) parse_url($url, PHP_URL_HOST);
+
+        return match ($errno) {
+            // CURLE_SSL_CACERT, CURLE_PEER_FAILED_VERIFICATION, CURLE_SSL_CACERT_BADFILE
+            60, 51, 77 => sprintf(
+                'Could not verify the TLS certificate for %s. This is usually a missing or outdated '
+                . 'CA bundle on the server rather than a problem with the site being contacted. '
+                . 'Ask your host to set curl.cainfo in php.ini. (%s)',
+                $host,
+                $error
+            ),
+
+            // CURLE_COULDNT_RESOLVE_HOST
+            6 => sprintf(
+                'Could not resolve %s. Check the address for a typo, and whether this server is '
+                . 'allowed to make outbound DNS queries. (%s)',
+                $host,
+                $error
+            ),
+
+            // CURLE_COULDNT_CONNECT
+            7 => sprintf(
+                'Could not connect to %s. Many shared hosts block outbound connections by default; '
+                . 'your host may need to allow them. (%s)',
+                $host,
+                $error
+            ),
+
+            // CURLE_OPERATION_TIMEDOUT
+            28 => sprintf('Timed out contacting %s. (%s)', $host, $error),
+
+            default => $error !== '' ? $error : 'Request failed.',
+        };
     }
 
     /** @return array<string, string> */
