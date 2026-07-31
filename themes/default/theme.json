@@ -1,0 +1,102 @@
+{
+  "name": "Default",
+  "version": "1.0.0",
+  "author": "Video Portal",
+  "description": "The bundled dark glassmorphism theme. Always present, and the final fallback for any template another theme does not provide.",
+  "parent": null,
+  "supports": [
+    "custom-logo",
+    "custom-colors",
+    "continue-watching",
+    "category-filter",
+    "search"
+  ],
+  "customizer": {
+    "identity": {
+      "label": "Site identity",
+      "settings": {
+        "site_name": {
+          "type": "text",
+          "label": "Site name",
+          "help": "Shown in the header and in email subject lines.",
+          "default": "Video Portal"
+        },
+        "logo_url": {
+          "type": "url",
+          "label": "Logo image URL",
+          "help": "Optional. Replaces the site name in the header.",
+          "default": ""
+        },
+        "tagline": {
+          "type": "text",
+          "label": "Tagline",
+          "default": ""
+        }
+      }
+    },
+    "colors": {
+      "label": "Colours",
+      "settings": {
+        "accent": {
+          "type": "color",
+          "label": "Accent",
+          "help": "Buttons, links, and progress bars.",
+          "default": "#38bdf8"
+        },
+        "accent-2": {
+          "type": "color",
+          "label": "Secondary accent",
+          "help": "The far end of gradients.",
+          "default": "#818cf8"
+        },
+        "bg": {
+          "type": "color",
+          "label": "Page background",
+          "default": "#0f172a"
+        },
+        "surface": {
+          "type": "color",
+          "label": "Card background",
+          "default": "#1e293b"
+        },
+        "text": {
+          "type": "color",
+          "label": "Text",
+          "default": "#e2e8f0"
+        },
+        "text-muted": {
+          "type": "color",
+          "label": "Muted text",
+          "default": "#94a3b8"
+        }
+      }
+    },
+    "layout": {
+      "label": "Layout",
+      "settings": {
+        "per-page": {
+          "type": "number",
+          "label": "Videos per page",
+          "help": "Between 1 and 100.",
+          "default": "12"
+        },
+        "card-radius": {
+          "type": "select",
+          "label": "Corner rounding",
+          "choices": ["0px", "8px", "12px", "16px", "24px"],
+          "default": "12px"
+        },
+        "show-duration": {
+          "type": "bool",
+          "label": "Show duration on thumbnails",
+          "default": "1"
+        },
+        "show-continue-watching": {
+          "type": "bool",
+          "label": "Show the continue-watching row",
+          "default": "1"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+# Written by the installer — never commit a real one
+/config.php
+
+# Runtime
+/storage/cache/*
+/storage/logs/*
+/storage/tmp/*
+!/storage/cache/.gitkeep
+!/storage/logs/.gitkeep
+!/storage/tmp/.gitkeep
+/public/uploads/*
+!/public/uploads/.gitkeep
+# Must ship: this is what stops an uploaded .php from executing.
+!/public/uploads/.htaccess
+
+# Third-party plugins/themes installed at runtime (bundled ones are tracked explicitly)
+/plugins/*
+!/plugins/.gitkeep
+/themes/*
+!/themes/default/
+!/themes/.gitkeep
+
+# Composer: vendor/ IS committed on release branches so the ZIP works on hosts
+# without Composer. It stays ignored during development.
+/vendor/
+composer.lock
+
+# Build output
+/dist/
+*.zip
+
+# Tooling
+/.phpunit.result.cache
+/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

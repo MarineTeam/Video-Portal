@@ -1,0 +1,48 @@
+# Video Portal — front controller rewrite
+#
+# Only directives valid in an .htaccess context appear here. In particular
+# <Directory> is a server-config block and Apache aborts the whole request with
+# "<Directory not allowed here" if it appears in an .htaccess file — protecting
+# the uploads directory is done by public/uploads/.htaccess instead.
+#
+# Two supported deployments:
+#   A) docroot IS public/            (preferred; nothing above it is reachable)
+#   B) docroot is the app root       (the root .htaccess rewrites into public/)
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Honour the subdirectory the app is installed in.
+    RewriteBase /
+
+    # Never rewrite an existing file or directory (assets, uploads).
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Everything else goes to the front controller.
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule !mod_rewrite.c>
+    # Without mod_rewrite the app cannot route. The installer warns about this,
+    # so this is only a fallback.
+    DirectoryIndex index.php
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Don't hand out dotfiles.
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
