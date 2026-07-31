@@ -1,10 +1,15 @@
 # Build an uploadable release ZIP.
 #
 # The distributed archive must contain vendor/, because the target hosts have
-# no Composer. It must NOT contain config.php, tests, or the tooling — config
+# no Composer. It must NOT contain config.php, tests, or the tooling: config
 # because it holds secrets, the rest because it is dead weight on a live site.
 #
-#   pwsh tools\build-release.ps1
+# Run "composer install --no-dev" first.
+#
+#   powershell -ExecutionPolicy Bypass -File tools\build-release.ps1
+#
+# Kept deliberately ASCII-only: Windows PowerShell 5.1 reads .ps1 as ANSI
+# unless the file has a BOM, and a stray em dash becomes a parse error.
 
 $ErrorActionPreference = 'Stop'
 
@@ -20,7 +25,6 @@ if (-not $php) {
 }
 if (-not $php) { Write-Error "No php.exe found. Set PORTAL_PHP." }
 
-# vendor/ is the whole point of shipping a ZIP — refuse to build without it.
 if (-not (Test-Path (Join-Path $root 'vendor\autoload.php'))) {
     Write-Error "vendor/ is missing. Run 'composer install --no-dev' first."
 }
@@ -32,15 +36,8 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 # Everything the running application needs, and nothing else.
 $include = @(
-    'core',
-    'public',
-    'themes',
-    'plugins',
-    'storage',
-    'vendor',
-    'composer.json',
-    '.htaccess',
-    'README.md'
+    'core', 'public', 'themes', 'plugins', 'storage', 'vendor',
+    'composer.json', '.htaccess', 'README.md'
 )
 
 foreach ($item in $include) {
@@ -50,8 +47,7 @@ foreach ($item in $include) {
     }
 }
 
-# Belt and braces: never ship a config, and never ship a stale lock file left
-# by a previous install attempt.
+# Never ship a config, and never ship a lock file from a previous attempt.
 foreach ($unwanted in @('config.php', 'public\install.php.installed')) {
     $path = Join-Path $stage $unwanted
     if (Test-Path $path) { Remove-Item $path -Force }
@@ -69,18 +65,44 @@ foreach ($dir in @('storage\cache', 'storage\logs', 'storage\tmp', 'public\uploa
     }
 }
 
-# Dev packages are excluded by running `composer install --no-dev` before this
-# script, NOT by deleting directories here. Composer generates a classmap and
-# a static autoloader that still reference whatever was installed; removing the
-# folders by hand leaves the autoloader requiring files that no longer exist,
-# and the whole application fatals on its first require. Learned the hard way.
-if (Select-String -Path (Join-Path $stage 'vendor\composer\installed.json') `
-                  -Pattern '"name": "phpunit/phpunit"' -Quiet -ErrorAction SilentlyContinue) {
-    Write-Error @"
-The staged vendor/ still contains dev dependencies.
-Run this first, then re-run the build:
-    composer install --no-dev
-"@
+# Dev dependencies are excluded by running "composer install --no-dev" BEFORE
+# this script, not by deleting vendor subdirectories. Composer generates a
+# classmap and a static autoloader that still reference whatever was installed;
+# removing the folders by hand leaves the autoloader requiring files that are
+# gone, and the application fatals on its first require.
+$installed = Join-Path $stage 'vendor\composer\installed.json'
+if (-not (Test-Path $installed)) {
+    Write-Error "Staged vendor/ has no composer metadata. Run: composer install --no-dev"
+}
+
+$meta = Get-Content $installed -Raw | ConvertFrom-Json
+
+if ($meta.dev) {
+    Write-Error "Staged vendor/ was installed WITH dev dependencies. Run: composer install --no-dev"
+}
+
+# composer install --no-dev rewrites the autoloader but leaves the old dev
+# package folders on disk. They are now unreferenced, so pruning them is safe
+# and drops roughly 3 MB from the archive. The set is computed from Composer's
+# own metadata rather than a hand-written list, so a new dependency is never
+# accidentally deleted.
+$keep = New-Object System.Collections.Generic.HashSet[string]
+foreach ($package in $meta.packages) {
+    $vendorName = ($package.name -split '/')[0]
+    [void]$keep.Add($vendorName.ToLower())
+}
+[void]$keep.Add('composer')
+
+$pruned = 0
+Get-ChildItem (Join-Path $stage 'vendor') -Directory | ForEach-Object {
+    if (-not $keep.Contains($_.Name.ToLower())) {
+        Remove-Item $_.FullName -Recurse -Force
+        $pruned++
+    }
+}
+
+if ($pruned -gt 0) {
+    Write-Host "  Pruned $pruned unreferenced vendor folder(s) left behind by --no-dev."
 }
 
 Write-Host "Verifying staged tree parses..." -ForegroundColor Cyan
@@ -98,18 +120,58 @@ Get-ChildItem $stage -Filter *.php -Recurse |
 
 if ($failed -gt 0) { Write-Error "$failed file(s) in the staged tree do not parse." }
 
+Write-Host "Checking .htaccess files..." -ForegroundColor Cyan
+
+# A directive that is illegal in .htaccess context makes Apache abort EVERY
+# request in that directory. The site is completely dead, and the only clue is
+# a line in a log the user may not know how to reach. None of this shows up in
+# php -l or in any test, so it is checked here.
+#
+# Found the hard way: a <Directory> block in public/.htaccess took down a real
+# DreamHost deployment on the first request.
+$problems = @()
+
+Get-ChildItem $stage -Filter '.htaccess' -Recurse -Force | ForEach-Object {
+    $label = $_.FullName.Replace($stage, '')
+    $lines = @(Get-Content $_.FullName)
+    $guardDepth = 0
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i].Trim()
+
+        if ($line -match '^<IfModule') { $guardDepth++ }
+        if ($line -match '^</IfModule>') { $guardDepth-- }
+
+        # Server-config-only containers. Always fatal in .htaccess.
+        if ($line -match '^<(Directory|DirectoryMatch|VirtualHost|Location|LocationMatch)') {
+            $problems += "$label line $($i+1): $line  [server config only]"
+        }
+
+        # PHP directives outside a guard break every non-mod_php host, which is
+        # most shared hosting now that FastCGI and FPM are the norm.
+        if (($line -match '^php_flag') -or ($line -match '^php_value') -or
+            ($line -match '^php_admin_flag') -or ($line -match '^php_admin_value')) {
+            if ($guardDepth -le 0) {
+                $problems += "$label line $($i+1): $line  [needs an IfModule guard]"
+            }
+        }
+    }
+}
+
+if ($problems.Count -gt 0) {
+    foreach ($problem in $problems) { Write-Host "  $problem" -ForegroundColor Red }
+    Write-Error "$($problems.Count) .htaccess problem(s) would break the site on a real host."
+}
+
+Write-Host "  All .htaccess directives are valid in that context."
+
 # Sanity checks on what a fresh install actually needs.
 $mustExist = @(
-    'public\index.php',
-    'public\install.php',
-    'public\.htaccess',
-    'core\bootstrap.php',
-    'core\migrations\0001_core.sql',
-    'themes\default\theme.json',
-    'themes\default\assets\theme.css',
+    'public\index.php', 'public\install.php', 'public\.htaccess',
+    'core\bootstrap.php', 'core\migrations\0001_core.sql',
+    'themes\default\theme.json', 'themes\default\assets\theme.css',
     'vendor\autoload.php'
 )
-
 foreach ($required in $mustExist) {
     if (-not (Test-Path (Join-Path $stage $required))) {
         Write-Error "Staged tree is missing $required"
