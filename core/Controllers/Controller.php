@@ -120,16 +120,20 @@ abstract class Controller
         return Response::html($html)->private();
     }
 
-    /** @return list<array{label: string, href: string}> */
+    /**
+     * @return list<array{label: string, href: string}>
+     *
+     * Only routes that actually exist. This previously offered "My activity"
+     * pointing at /activity, which was never built — so the site's own
+     * navigation led to a 404. Add entries here when the route lands, not
+     * when it is planned.
+     */
     protected function defaultNav(): array
     {
-        $nav = [['label' => 'Library', 'href' => '/']];
-
-        if ($this->guard()->isAuthenticated()) {
-            $nav[] = ['label' => 'My activity', 'href' => '/activity'];
-        }
-
-        return $nav;
+        /** @var list<array{label: string, href: string}> */
+        return apply_filters('default_nav', [
+            ['label' => 'Library', 'href' => '/'],
+        ]);
     }
 
     /**

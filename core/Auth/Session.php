@@ -241,6 +241,38 @@ final class Session
         }
 
         try {
+            /*
+             * A request that never read the session must not overwrite it.
+             *
+             * Session data loads lazily. A request that never touches it —
+             * a 404, or a /theme-asset/theme.css fetch, neither of which runs
+             * an auth guard — leaves $this->data as the empty array it was
+             * constructed with. Serialising that and writing it back silently
+             * erased the session, and since every page load also fetches its
+             * stylesheet, a signed-in person was logged out by their own CSS
+             * request roughly whenever it finished last.
+             *
+             * The visible symptoms were exactly that: "sometimes the site
+             * forgets it is logged in", a 404 causing a sign-out, and the OIDC
+             * pending-state map vanishing so the next callback reported that
+             * the sign-in link had already been used.
+             *
+             * Two defences. Load before serialising, so the payload is
+             * whatever is actually in the session; and when nothing was
+             * modified, do not rewrite the payload at all.
+             */
+            if (!$this->dirty) {
+                $this->db->execute(
+                    'UPDATE {sessions} SET last_active_at = NOW() WHERE id = ?',
+                    [$this->id]
+                );
+
+                $this->sendCookie($response, $request);
+                return;
+            }
+
+            $this->load();
+
             $payload = json_encode($this->data, JSON_UNESCAPED_SLASHES) ?: '{}';
 
             $this->db->execute(
@@ -263,18 +295,25 @@ final class Session
             return;
         }
 
-        if ($this->token !== null) {
-            $response->cookie(self::COOKIE, $this->token, [
-                'expires'  => time() + self::LIFETIME,
-                'path'     => '/',
-                'secure'   => $request->isSecure(),
-                'httponly' => true,
-                // Lax rather than Strict: the OIDC callback is a cross-site
-                // top-level navigation back to us, and Strict would drop the
-                // cookie and break sign-in entirely.
-                'samesite' => 'Lax',
-            ]);
+        $this->sendCookie($response, $request);
+    }
+
+    private function sendCookie(Response $response, Request $request): void
+    {
+        if ($this->token === null) {
+            return;
         }
+
+        $response->cookie(self::COOKIE, $this->token, [
+            'expires'  => time() + self::LIFETIME,
+            'path'     => '/',
+            'secure'   => $request->isSecure(),
+            'httponly' => true,
+            // Lax rather than Strict: the OIDC callback is a cross-site
+            // top-level navigation back to us, and Strict would drop the
+            // cookie and break sign-in entirely.
+            'samesite' => 'Lax',
+        ]);
     }
 
     /**
