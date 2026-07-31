@@ -107,22 +107,39 @@ echo 'ok';
     # An orphan branch, recreated each time. Merging would risk a dependency
     # removed months ago surviving in the tree because nothing deleted it.
     git checkout --orphan release-tmp --quiet
-    git reset --quiet
+    git reset -q
 
-    # Everything the source branch tracks, plus vendor/, minus config.php.
-    git checkout $Source -- . --quiet
-    git add -A --quiet
-    git add -f vendor --quiet
+    # Everything the source branch tracks, plus vendor/, minus the exclusions.
+    # Note the flag placement: git add has no --quiet, and a pathspec must come
+    # after any options, not before.
+    git checkout $Source -- .
+    git add -A
+    git add -f vendor
 
-    if (Test-Path 'config.php') { git rm --cached config.php --quiet -f 2>$null }
-    git rm -r --cached dist --quiet -f 2>$null | Out-Null
-    git rm -r --cached tests --quiet -f 2>$null | Out-Null
-    git rm --cached phpunit.xml.dist --quiet -f 2>$null | Out-Null
+    # Unstage what must not ship. `git rm --cached` errors on a path that was
+    # never staged, so each is guarded rather than having its error swallowed —
+    # a swallowed error here would silently publish secrets.
+    foreach ($exclude in @('config.php', 'dist', 'tests', 'phpunit.xml.dist', 'tools')) {
+        $staged = git ls-files --cached --error-unmatch $exclude 2>$null
+        if ($LASTEXITCODE -eq 0 -and $staged) {
+            git rm -r --cached --quiet -f -- $exclude | Out-Null
+        }
+    }
+
+    # Belt and braces: config.php holds the database password and the
+    # encryption keys. Publishing it would be the worst thing this script
+    # could do, so it is checked explicitly rather than trusted to the loop.
+    $configStaged = git ls-files --cached -- config.php
+    if ($configStaged) {
+        git checkout $Source --quiet 2>$null
+        git branch -D release-tmp --quiet 2>$null
+        Write-Error "config.php was staged for the release branch. Refusing to publish."
+    }
 
     $vendorFiles = (git diff --cached --name-only | Select-String '^vendor/' | Measure-Object -Line).Lines
 
     if ($vendorFiles -eq 0) {
-        git checkout $Source --quiet
+        git checkout -f $Source --quiet
         git branch -D release-tmp --quiet 2>$null
         Write-Error "vendor/ was not staged. Refusing to publish a release without dependencies."
     }
@@ -146,10 +163,9 @@ build output.
 
     git commit -q -m $message
 
-    git branch -f $Branch --quiet 2>$null
+    # -M renames release-tmp onto $Branch, replacing any previous release.
     git branch -M $Branch
-    git checkout $Source --quiet
-    git branch -D release-tmp --quiet 2>$null | Out-Null
+    git checkout -f $Source --quiet
 
     Write-Host ""
     Write-Host "Built $Branch from $Source ($sourceCommit)" -ForegroundColor Green
