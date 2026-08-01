@@ -58,6 +58,45 @@ foreach ($files as $file) {
 }
 
 /*
+ * Bundled plugins, too.
+ *
+ * Their classes extend core ones — a plugin admin page extends PluginPage
+ * extends Controller — so they are exposed to exactly the inheritance fatal
+ * this script exists to catch, and they are the LEAST likely to be caught any
+ * other way: no test instantiates an admin screen, and a plugin that fatals on
+ * load is silently deactivated rather than failing loudly.
+ *
+ * Files are required directly rather than autoloaded, because plugins are not
+ * on the PSR-4 path. That is also what a plugin's own plugin.php does.
+ */
+foreach ((array) glob(PORTAL_PLUGINS . '/*/src/*.php') as $file) {
+    if (!is_string($file)) {
+        continue;
+    }
+
+    $slug = basename(dirname(dirname($file)));
+    $class = 'Portal\\Plugins\\' . ucfirst($slug) . '\\' . basename($file, '.php');
+
+    try {
+        require_once $file;
+
+        if (!class_exists($class, false) && !interface_exists($class, false)) {
+            $failures[] = sprintf(
+                '%s: %s does not declare it. Bundled plugin classes must be namespaced '
+                . 'Portal\\Plugins\\<Slug> and named after their file.',
+                $class,
+                str_replace(PORTAL_ROOT . DIRECTORY_SEPARATOR, '', $file)
+            );
+            continue;
+        }
+
+        $loaded++;
+    } catch (Throwable $e) {
+        $failures[] = sprintf('%s: %s: %s', $class, $e::class, $e->getMessage());
+    }
+}
+
+/*
  * Controllers are the specific place this bites, because they inherit shared
  * plumbing and their public methods are route handlers. Check every public
  * method that a route could dispatch to.

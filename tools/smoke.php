@@ -602,6 +602,105 @@ $noCsrf = postWithJar($baseUrl . '/admin/shares/create', [
 ], $jar);
 check('A form post without a CSRF token is refused', $noCsrf['status'] === 419, "got {$noCsrf['status']}");
 
+echo "\nBundled plugins (signed in)\n";
+
+/*
+ * The bundled plugins, driven through the admin the way an owner would.
+ *
+ * Unit tests already pin the decision logic and an integration test fires the
+ * hooks directly. Neither can tell you whether the plugin loads inside a real
+ * request — a plugin that fatals on load is caught, logged, and silently
+ * deactivated, which looks exactly like a plugin that is working but has
+ * nothing to do.
+ */
+$pluginsPage = getWithJar($baseUrl . '/admin/plugins', $jar);
+check('Plugins screen renders', $pluginsPage['status'] === 200, "got {$pluginsPage['status']}");
+check('Watermark is listed', str_contains($pluginsPage['body'], 'Watermark'));
+check('Country restrictions is listed', str_contains($pluginsPage['body'], 'Country restrictions'));
+
+$pluginToken = csrfFrom($pluginsPage['body']);
+
+foreach (['watermark', 'geo'] as $slug) {
+    $activated = postWithJar($baseUrl . '/admin/plugins', [
+        '_token' => $pluginToken,
+        'slug'   => $slug,
+        'action' => 'activate',
+    ], $jar);
+
+    check("Activating {$slug} succeeds", $activated['status'] === 302, "got {$activated['status']}");
+    check(
+        "{$slug} stayed active after the redirect",
+        (int) $db->value('SELECT is_active FROM {plugins} WHERE slug = ?', [$slug]) === 1,
+        'it was deactivated again, which means it threw on load — check the error log'
+    );
+}
+
+/*
+ * A plugin's admin page has to be both reachable and linked. An unlinked page
+ * is one only somebody who read the source could ever find.
+ */
+$watermarkPage = getWithJar($baseUrl . '/admin/watermark', $jar);
+check('Watermark settings page renders', $watermarkPage['status'] === 200, "got {$watermarkPage['status']}");
+check('It explains the resolution order', str_contains($watermarkPage['body'], 'Exempt address'));
+
+$geoPage = getWithJar($baseUrl . '/admin/geo', $jar);
+check('Country settings page renders', $geoPage['status'] === 200, "got {$geoPage['status']}");
+check(
+    'It reports whether the host sends a country at all',
+    str_contains($geoPage['body'], 'does not report visitor countries')
+        || str_contains($geoPage['body'], 'This request came from'),
+    'the diagnostic is the one thing on that screen worth reading'
+);
+
+$adminAfter = getWithJar($baseUrl . '/admin', $jar);
+check('Plugin pages appear in the admin navigation', str_contains($adminAfter['body'], '/admin/watermark'));
+
+/*
+ * The point of the whole plugin: an actual watermark on an actual player.
+ * Made as an account-mode share for the signed-in administrator, because that
+ * is the one recipient this script can authenticate as.
+ */
+$marked = $shares->create($videoRow, 'admin@smoke.test', [
+    'accessMode' => 'account',
+    'watermark'  => 'on',
+]);
+
+$player = getWithJar($baseUrl . '/s/' . $marked->id, $jar);
+check('A watermarked share plays for its recipient', $player['status'] === 200, "got {$player['status']}");
+check(
+    'The watermark is drawn with the viewer address',
+    str_contains($player['body'], 'pw-mark') && str_contains($player['body'], 'admin@smoke.test'),
+    'the plugin loaded but drew nothing'
+);
+
+$unmarked = $shares->create($videoRow, 'admin@smoke.test', [
+    'accessMode' => 'account',
+    'watermark'  => 'off',
+]);
+
+$plain = getWithJar($baseUrl . '/s/' . $unmarked->id, $jar);
+check(
+    'A share set to never watermark is left clean',
+    $plain['status'] === 200 && !str_contains($plain['body'], 'pw-mark'),
+    "got {$plain['status']}"
+);
+
+/*
+ * Geo is active but restricts nothing, because config.php has empty country
+ * lists. That combination is the single most dangerous one to get wrong: it is
+ * what every install looks like the moment someone activates the plugin, and
+ * reading an empty list as "block everyone" would take the whole site down.
+ */
+$stillUp = get($baseUrl . '/');
+check(
+    'Activating geo with empty lists restricts nothing',
+    $stillUp['status'] === 302 || $stillUp['status'] === 200,
+    "got {$stillUp['status']} — an empty country list must never mean 'block everyone'"
+);
+
+$adminStillUp = getWithJar($baseUrl . '/admin', $jar);
+check('The admin area is still reachable with geo active', $adminStillUp['status'] === 200, "got {$adminStillUp['status']}");
+
 @unlink($jar);
 
 echo "\nRouting\n";

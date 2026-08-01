@@ -123,6 +123,28 @@ final class PluginContext
     }
 
     /**
+     * Guard every route with a check of this plugin's own.
+     *
+     * The callback returns null to let the request through, or a Response to
+     * stop it. Registered under a namespaced name so two plugins cannot claim
+     * the same one, and added to the global chain rather than replacing it.
+     *
+     * This runs on every single request, including ones that would 404. Keep
+     * it cheap, and — because a plugin that throws here would take the whole
+     * site down with it — decide in favour of letting the request through
+     * whenever the answer is unclear.
+     *
+     * @param callable(\Portal\Http\Request, array<string,string>): (\Portal\Http\Response|null) $check
+     */
+    public function addGlobalMiddleware(string $name, callable $check): void
+    {
+        $namespaced = $this->slug . '.' . $name;
+
+        $this->router->middleware($namespaced, $check);
+        $this->router->addGlobalMiddleware($namespaced);
+    }
+
+    /**
      * Add an entry to the admin navigation.
      *
      * @param string $capability the capability required to see and open it

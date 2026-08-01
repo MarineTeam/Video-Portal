@@ -16,6 +16,8 @@
 # Third-party plugins/themes installed at runtime (bundled ones are tracked explicitly)
 /plugins/*
 !/plugins/.gitkeep
+!/plugins/watermark/
+!/plugins/geo/
 /themes/*
 !/themes/default/
 !/themes/.gitkeep
