@@ -86,6 +86,7 @@ final class AdminController extends Controller
             'page'       => $page,
             'search'     => $request->query('q') ?? '',
             'categories' => $categories->all(true),
+            'canUpload'  => $this->canUpload(),
         ]);
     }
 
@@ -320,6 +321,29 @@ final class AdminController extends Controller
         return $this->config()->settingBool('members_thumbnail_default', false)
             ? 'Inherit — members only, from the site setting'
             : 'Inherit — real thumbnails, from the site setting';
+    }
+
+    /**
+     * Is there a video service that could accept an upload?
+     *
+     * Asked so the Videos screen can offer an upload box only when one would
+     * work. Showing it regardless makes it a trap: it looks like the way in,
+     * and every attempt fails with an error from a service nobody configured.
+     */
+    private function canUpload(): bool
+    {
+        try {
+            $provider = $this->container->get(\Portal\Video\VideoProvider::class);
+        } catch (Throwable) {
+            return false;
+        }
+
+        // Deliberately not a test() call. That reaches the network, and this
+        // runs on every visit to the Videos screen — a slow or unreachable
+        // provider would make the page hang rather than the upload fail.
+        return $provider instanceof \Portal\Video\BunnyStreamProvider
+            ? $provider->uploadsConfigured()
+            : true;
     }
 
     private function importCollections(Request $request): Response

@@ -227,9 +227,11 @@ final class AdminView
         }
 
         $total = (int) ($data['total'] ?? 0);
+        $upload = $this->uploader($data);
 
         return <<<HTML
         <h1>Videos <span class="muted">({$total})</span></h1>
+        {$upload}
         <form method="get" class="toolbar">
           <input type="search" name="q" value="{$search}" placeholder="Search titles and descriptions…">
           <button class="btn secondary">Search</button>
@@ -238,6 +240,50 @@ final class AdminView
           <thead><tr><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr></thead>
           <tbody>{$rows}</tbody>
         </table>
+        HTML;
+    }
+
+    /**
+     * The upload panel.
+     *
+     * Rendered only when the video provider can actually accept a file. An
+     * upload box on an install with no credentials is a trap: it looks like the
+     * way in, and every attempt fails with an error from a service the person
+     * has not configured yet.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function uploader(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        if (empty($data['canUpload'])) {
+            return <<<HTML
+            <fieldset>
+              <legend>Upload</legend>
+              <p class="muted small">Uploading needs a video service. Add your credentials under
+                 <a href="/admin/providers">Services</a> and this becomes an upload box.</p>
+            </fieldset>
+            HTML;
+        }
+
+        return <<<HTML
+        <fieldset id="upload-panel" data-token="{$token}">
+          <legend>Upload</legend>
+
+          <div id="upload-drop" class="dropzone">
+            <p>Drop video files here, or
+               <label class="linklike">choose files<input type="file" id="upload-input"
+                      accept="video/*" multiple hidden></label>.</p>
+            <p class="muted small">Files go straight from this browser to your video service — they do
+               not pass through this site, so size is limited by your video service rather than by
+               PHP. A dropped connection resumes rather than starting again.</p>
+          </div>
+
+          <ul id="upload-list" class="upload-list"></ul>
+        </fieldset>
+
+        <script src="/assets/upload.js" defer></script>
         HTML;
     }
 
@@ -1085,6 +1131,29 @@ final class AdminView
                   color:#7dd3fc; background:rgba(15,23,42,.75); cursor:pointer; }
         code { background:rgba(15,23,42,.8); padding:.125rem .375rem; border-radius:5px; font-size:.875rem; }
         .actions { display:flex; gap:.75rem; margin-top:1rem; }
+
+        /* ---------------------------------------------------------- uploads */
+        .dropzone { border:1.5px dashed rgba(148,163,184,.35); border-radius:12px; padding:1.5rem;
+                    text-align:center; transition:border-color .15s, background .15s; }
+        .dropzone.is-over { border-color:#38bdf8; background:rgba(56,189,248,.06); }
+        .dropzone p { margin:0 0 .5rem; }
+        .dropzone p:last-child { margin-bottom:0; }
+        .linklike { color:#38bdf8; cursor:pointer; text-decoration:underline; font-weight:inherit;
+                    display:inline; margin:0; }
+        .upload-list { list-style:none; padding:0; margin:1rem 0 0; }
+        .upload-row { display:grid; grid-template-columns:1fr auto; gap:.375rem .75rem;
+                      align-items:center; padding:.75rem 0;
+                      border-bottom:1px solid rgba(148,163,184,.14); }
+        .upload-name { font-weight:550; overflow-wrap:anywhere; }
+        .upload-actions { grid-row:1 / span 2; align-self:center; }
+        .upload-status { grid-column:1; }
+        /* Full width under both columns, so the bar is readable at any length. */
+        .upload-track { grid-column:1 / -1; height:4px; border-radius:2px;
+                        background:rgba(148,163,184,.2); overflow:hidden; }
+        .upload-bar { display:block; height:100%; width:0; background:#38bdf8;
+                      transition:width .2s ease-out; }
+        .upload-row.is-done .upload-bar { background:#22c55e; }
+        .upload-row.is-error .upload-bar { background:#ef4444; }
         CSS;
     }
 }

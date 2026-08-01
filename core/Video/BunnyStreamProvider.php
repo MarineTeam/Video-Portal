@@ -138,6 +138,18 @@ final class BunnyStreamProvider implements VideoProvider
         return $this->cdnHostname() !== '' && $this->cdnTokenKey() !== '';
     }
 
+    /**
+     * Enough credentials to create a video and sign an upload ticket.
+     *
+     * A local check, never a network call: the admin video list asks this on
+     * every visit, and reaching bunny.net to answer it would make the page hang
+     * whenever bunny.net is slow.
+     */
+    public function uploadsConfigured(): bool
+    {
+        return $this->libraryId() !== '' && $this->apiKey() !== '';
+    }
+
     /** @return array<string, string> */
     private function authHeaders(): array
     {
