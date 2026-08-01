@@ -194,6 +194,74 @@ final class OidcFlowTest extends DatabaseTestCase
         self::assertStringContainsString('already been used', (string) $second->error);
     }
 
+    /**
+     * A state nothing remembers is retryable, not a hard failure.
+     *
+     * The usual cause is a sign-in page that outlived the session that issued
+     * it: signing out discards every pending state, but the Auth0 URL stays
+     * baked into that HTML, so a back button or a restored tab submits a state
+     * from a session that no longer exists. The caller starts over rather than
+     * showing an error nobody can act on.
+     */
+    public function testAnUnknownStateIsMarkedRetryable(): void
+    {
+        $session = $this->session();
+        $provider = $this->provider($session);
+        $provider->loginUrl('/');
+
+        $result = $provider->handleCallback($this->callbackRequest('a-state-nobody-issued'));
+
+        self::assertFalse($result->ok);
+        self::assertTrue($result->retryable, 'A stale sign-in page should be retried, not reported.');
+    }
+
+    /**
+     * Retrying must not paper over a real refusal. If the provider itself said
+     * no, starting again would just ask it to say no a second time.
+     */
+    public function testAProviderRefusalIsNotRetryable(): void
+    {
+        $session = $this->session();
+        $provider = $this->provider($session);
+
+        $request = new Request('GET', '/auth/callback', [
+            'error'             => 'access_denied',
+            'error_description' => 'User did not consent',
+        ]);
+
+        $result = $provider->handleCallback($request);
+
+        self::assertFalse($result->ok);
+        self::assertFalse($result->retryable);
+    }
+
+    /**
+     * The specific reported sequence: sign in, sign out, then use a sign-in
+     * page rendered before the sign-out.
+     */
+    public function testASignInPageThatPredatesASignOutIsRetryable(): void
+    {
+        $session = $this->session();
+        $provider = $this->provider($session);
+
+        // The page is rendered, baking this state into its Auth0 link.
+        $staleState = $this->stateFrom($provider->loginUrl('/'));
+
+        // Signing out discards the session, and every pending state with it.
+        $session->logout();
+
+        $freshSession = $this->session();
+        $freshProvider = $this->provider($freshSession);
+
+        $result = $freshProvider->handleCallback($this->callbackRequest($staleState));
+
+        self::assertFalse($result->ok);
+        self::assertTrue(
+            $result->retryable,
+            'Clicking a sign-in button rendered before signing out should quietly start over.'
+        );
+    }
+
     public function testAnUnknownStateIsRejected(): void
     {
         $session = $this->session();
