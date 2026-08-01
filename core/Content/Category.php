@@ -27,6 +27,7 @@ final class Category
         public readonly bool $isPublished = true,
         public readonly bool $memberOnly = false,
         public readonly bool $hidden = false,
+        public readonly string $thumbnailMode = 'default',
     ) {
     }
 
@@ -49,6 +50,7 @@ final class Category
             isPublished: (bool) ($row['is_published'] ?? true),
             memberOnly:  (bool) ($row['member_only'] ?? false),
             hidden:      (bool) ($row['hidden'] ?? false),
+            thumbnailMode: (string) ($row['thumbnail_mode'] ?? 'default'),
         );
     }
 

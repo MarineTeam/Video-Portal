@@ -8,6 +8,7 @@ use Portal\Admin\AdminView;
 use Portal\Auth\Capability;
 use Portal\Auth\UserRepository;
 use Portal\Content\CategoryRepository;
+use Portal\Content\ThumbnailPolicy;
 use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
@@ -88,6 +89,38 @@ final class AdminController extends Controller
         ]);
     }
 
+    /**
+     * Edit one video.
+     *
+     * The listing deliberately stays a listing. Everything worth changing about
+     * a video — description, categories, watermark, artwork — needs room to
+     * explain itself, and inline forms in a table row give none.
+     *
+     * @param array<string, string> $params
+     */
+    public function editVideo(Request $request, array $params): Response
+    {
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        $video = $videos->find((int) ($params['id'] ?? 0));
+        if ($video === null) {
+            throw HttpException::notFound('That video does not exist.');
+        }
+
+        /** @var CategoryRepository $categories */
+        $categories = $this->container->get(CategoryRepository::class);
+
+        return $this->admin('video-edit', [
+            'video'          => $video,
+            'categories'     => $categories->all(true),
+            'assigned'       => $videos->categoryIds($video->id),
+            'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
+        ]);
+    }
+
     public function updateVideo(Request $request): Response
     {
         $this->verifyCsrf($request);
@@ -128,6 +161,12 @@ final class AdminController extends Controller
                     'title'          => $request->input('title') ?? $video->title,
                     'description'    => $request->input('description'),
                     'watermark_mode' => $request->input('watermark_mode') ?? $video->watermarkMode,
+                    'thumbnail_mode' => $request->input('thumbnail_mode') ?? $video->thumbnailMode,
+                    // Unchecked checkboxes are simply absent from a POST, so
+                    // presence is the value. Reading these with ?? would make
+                    // every flag impossible to turn back off.
+                    'member_only'    => $request->input('member_only') !== null,
+                    'hidden'         => $request->input('hidden') !== null,
                 ]);
 
                 $categoryIds = array_map('intval', $request->inputArray('categories'));
@@ -153,6 +192,27 @@ final class AdminController extends Controller
         ]);
     }
 
+    /** @param array<string, string> $params */
+    public function editCategory(Request $request, array $params): Response
+    {
+        $this->require(Capability::MANAGE_CATEGORIES);
+
+        /** @var CategoryRepository $categories */
+        $categories = $this->container->get(CategoryRepository::class);
+
+        $category = $categories->find((int) ($params['id'] ?? 0));
+        if ($category === null) {
+            throw HttpException::notFound('That category does not exist.');
+        }
+
+        return $this->admin('category-edit', [
+            'category'       => $category,
+            'flat'           => $categories->all(true),
+            'ancestors'      => $categories->ancestors($category->id),
+            'inheritedLabel' => $this->inheritedCategoryThumbnailLabel($categories, $category),
+        ]);
+    }
+
     public function saveCategory(Request $request): Response
     {
         $this->verifyCsrf($request);
@@ -173,9 +233,15 @@ final class AdminController extends Controller
 
                 case 'update':
                     $categories->update($id, [
-                        'name'        => $request->input('name'),
-                        'description' => $request->input('description'),
-                        'parent_id'   => ($p = (int) ($request->input('parent_id') ?? 0)) > 0 ? $p : null,
+                        'name'           => $request->input('name'),
+                        'slug'           => $request->input('slug'),
+                        'description'    => $request->input('description'),
+                        'parent_id'      => ($p = (int) ($request->input('parent_id') ?? 0)) > 0 ? $p : null,
+                        'thumbnail_mode' => $request->input('thumbnail_mode'),
+                        // Absent means unchecked; see updateVideo().
+                        'is_published'   => $request->input('is_published') !== null,
+                        'member_only'    => $request->input('member_only') !== null,
+                        'hidden'         => $request->input('hidden') !== null,
                     ]);
                     Audit::log($this->db(), $this->user()?->email, 'category.update', 'category', (string) $id);
                     return $this->back($request, 'Category saved.');
@@ -201,6 +267,59 @@ final class AdminController extends Controller
         } catch (HttpException $e) {
             return $this->back($request, $e->getMessage(), 'error');
         }
+    }
+
+    /**
+     * What "Inherit" resolves to for this video, said in words.
+     *
+     * A three-way setting whose default depends on a category chain and a site
+     * setting is exactly the kind of thing an admin cannot verify by looking at
+     * it. Rather than make them reason about the hierarchy, the form states the
+     * answer the resolver actually gives.
+     */
+    private function inheritedThumbnailLabel(VideoRepository $videos, \Portal\Content\Video $video): string
+    {
+        $siteDefault = $this->config()->settingBool('members_thumbnail_default', false);
+
+        // Asked with the video's OWN setting removed, which is the only way to
+        // learn what it would fall back to.
+        $withoutOwn = new \Portal\Content\Video(
+            id: $video->id,
+            providerId: $video->providerId,
+            slug: $video->slug,
+            title: $video->title,
+            thumbnailMode: ThumbnailPolicy::INHERIT,
+        );
+
+        $resolved = $videos->thumbnailModes([$withoutOwn], $siteDefault)[$video->id]
+            ?? ThumbnailPolicy::PUBLIC_ART;
+
+        return $resolved === ThumbnailPolicy::MEMBERS
+            ? 'Inherit — currently members only'
+            : 'Inherit — currently shows the real thumbnail';
+    }
+
+    /**
+     * The same question for a category: what would it inherit from its parents?
+     *
+     * @param \Portal\Content\Category $category
+     */
+    private function inheritedCategoryThumbnailLabel(
+        CategoryRepository $categories,
+        \Portal\Content\Category $category
+    ): string {
+        foreach (array_reverse($categories->ancestors($category->id)) as $ancestor) {
+            if ($ancestor->thumbnailMode === ThumbnailPolicy::MEMBERS) {
+                return 'Inherit — members only, from ' . $ancestor->name;
+            }
+            if ($ancestor->thumbnailMode === ThumbnailPolicy::PUBLIC_ART) {
+                return 'Inherit — real thumbnails, from ' . $ancestor->name;
+            }
+        }
+
+        return $this->config()->settingBool('members_thumbnail_default', false)
+            ? 'Inherit — members only, from the site setting'
+            : 'Inherit — real thumbnails, from the site setting';
     }
 
     private function importCollections(Request $request): Response
@@ -469,6 +588,7 @@ final class AdminController extends Controller
             'settings' => [
                 'site_name' => $this->config()->setting('site_name', 'Video Portal'),
                 'timezone'  => $this->config()->setting('timezone', 'UTC'),
+                'members_thumbnail_default' => $this->config()->setting('members_thumbnail_default', '0'),
             ],
             'cronJobs' => $cron->jobs(),
             'baseUrl'  => $this->config()->baseUrl(),
@@ -498,7 +618,13 @@ final class AdminController extends Controller
             return $this->back($request, 'That is not a recognised timezone.', 'error');
         }
 
-        $this->config()->setSettings(['site_name' => $siteName, 'timezone' => $timezone]);
+        $this->config()->setSettings([
+            'site_name' => $siteName,
+            'timezone'  => $timezone,
+            // Absent means unchecked, so this cannot be read with ?? — that
+            // would make the setting impossible to turn back off.
+            'members_thumbnail_default' => $request->input('members_thumbnail_default') !== null ? '1' : '0',
+        ]);
         Audit::log($this->db(), $this->user()?->email, 'settings.update');
 
         return $this->back($request, 'Settings saved.');

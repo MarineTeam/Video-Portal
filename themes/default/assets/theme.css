@@ -153,6 +153,38 @@ main { padding: 2.5rem 0 4rem; }
   padding: 1rem;
 }
 
+/* Members-only placeholder. Drawn instead of the artwork when the viewer
+   cannot play the video — the real thumbnail URL was never sent to this page,
+   so this is genuinely all there is to see. Deliberately calm rather than
+   alarming: it is an invitation to sign in, not an error. */
+.thumb-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  height: 100%;
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgb(255 255 255 / .022) 0 10px,
+      transparent 10px 20px
+    );
+}
+.thumb-locked svg { opacity: .55; }
+.thumb-locked span {
+  font-size: .75rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+/* The title still reads as a link, but nothing about the card suggests
+   playback is a click away. */
+.video-card.is-locked .card-title { color: var(--text-muted); }
+
 .duration {
   position: absolute;
   right: .5rem;
