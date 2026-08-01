@@ -652,6 +652,43 @@ check(
     'the assignment did not stick'
 );
 
+echo "\nUploading\n";
+
+/*
+ * The upload panel, but deliberately NOT a real upload.
+ *
+ * /admin/upload/ticket creates a video at bunny.net over HTTPS. With the
+ * placeholder credentials this install has, that call blocks until it times
+ * out — and PHP's built-in server is single-threaded, so it would freeze every
+ * check after it. This has already cost three rounds of debugging once.
+ *
+ * The CSRF refusal below is safe precisely because verifyCsrf() runs before
+ * the provider is ever touched, which is worth knowing independently.
+ */
+check('Upload script is served', get($baseUrl . '/assets/upload.js')['status'] === 200);
+
+$videosScreen = getWithJar($baseUrl . '/admin/videos', $jar);
+check('Upload panel renders when a provider is configured', str_contains($videosScreen['body'], 'id="upload-panel"'));
+check('It offers a drop zone', str_contains($videosScreen['body'], 'id="upload-drop"'));
+check(
+    'It explains that files bypass this server',
+    // Deliberately a short phrase: the markup is wrapped, so anything longer
+    // straddles a newline and fails for reasons that have nothing to do with
+    // what is on the screen.
+    str_contains($videosScreen['body'], 'not pass through this site')
+);
+
+$ticketNoCsrf = postWithJar($baseUrl . '/admin/upload/ticket', ['title' => 'Nope'], $jar);
+check(
+    'An upload ticket without a CSRF token is refused',
+    $ticketNoCsrf['status'] === 419,
+    "got {$ticketNoCsrf['status']} — and if this ever hangs instead, CSRF stopped being checked first"
+);
+
+$status = getWithJar($baseUrl . '/admin/upload/status?ids[]=' . $videoRow, $jar);
+check('Encoding status is reported', $status['status'] === 200, "got {$status['status']}");
+check('It names the video it was asked about', str_contains($status['body'], '"id":' . $videoRow));
+
 echo "\nMembers-only thumbnails\n";
 
 /*
