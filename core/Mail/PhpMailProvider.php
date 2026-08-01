@@ -20,6 +20,12 @@ use Portal\Support\Str;
  * Included because "no email at all" is worse: without it, an admin whose host
  * blocks outbound HTTPS and gives no SMTP credentials could not send a single
  * share link.
+ *
+ * One practical warning worth knowing before choosing this: mail() is
+ * synchronous and, on any host where it hands off over SMTP rather than to a
+ * local binary, it blocks until that connection resolves. A host whose mail
+ * relay is unreachable will therefore stall the admin's request rather than
+ * failing quickly. Resend and SMTP both apply real timeouts; this cannot.
  */
 final class PhpMailProvider implements MailProvider
 {

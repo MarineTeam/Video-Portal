@@ -9,6 +9,7 @@ use Portal\Controllers\AssetController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\LibraryController;
+use Portal\Controllers\ShareController;
 use Portal\Controllers\UploadController;
 use Portal\Controllers\WatchController;
 use Portal\Http\Router;
@@ -81,6 +82,24 @@ final class Routes
         $router->post('/admin/upload/complete', [UploadController::class, 'complete'], ['admin.area']);
         $router->post('/admin/upload/cancel', [UploadController::class, 'cancel'], ['admin.area']);
         $router->get('/admin/upload/status', [UploadController::class, 'status'], ['admin.area']);
+
+        // ---------------------------------------------------------- sharing
+
+        // No middleware. These are the recipient-facing pages, and the share
+        // id IS the credential — an unguessable token that decides access.
+        // Both access modes resolve inside the controller, which is also where
+        // "revoked", "expired", "unknown", and "malformed" are made
+        // deliberately indistinguishable.
+        $router->get('/s/{id}', [ShareController::class, 'show']);
+        $router->get('/b/{id}', [ShareController::class, 'showBundle']);
+
+        // The account-free gate's "what is your email address" form.
+        $router->post('/s/{id}/request', [ShareController::class, 'requestLink'], [], 'gate.share');
+        $router->post('/b/{id}/request', [ShareController::class, 'requestLink'], [], 'gate.bundle');
+
+        // Playback telemetry, authenticated by the share id for the same
+        // reason: a gate recipient has no session to authenticate with.
+        $router->post('/api/share-track', [ShareController::class, 'track']);
 
         // ------------------------------------------------------------ cron
 

@@ -17,6 +17,20 @@ declare(strict_types=1);
 
 require __DIR__ . '/../core/bootstrap.php';
 
+/*
+ * Flush every line as it happens.
+ *
+ * PHP buffers stdout when it is a file or a pipe rather than a terminal, so a
+ * run that hangs shows nothing at all — which makes locating the hang far
+ * harder than it needs to be. This script talks to a live server and a live
+ * database, so knowing exactly which check it stopped on is the difference
+ * between a diagnosis and a guess.
+ */
+ob_implicit_flush(true);
+while (ob_get_level() > 0) {
+    ob_end_flush();
+}
+
 use Portal\Config;
 use Portal\Db;
 use Portal\Install\Installer;
@@ -43,6 +57,49 @@ function check(string $label, bool $ok, string $detail = ''): void
         $failed++;
         echo "  FAIL  {$label}" . ($detail !== '' ? " — {$detail}" : '') . "\n";
     }
+}
+
+/**
+ * @param array<string, string> $fields
+ * @return array{status: int, body: string, headers: array<string, string>}
+ */
+function post(string $url, array $fields): array
+{
+    return send($url, 'POST', http_build_query($fields), 'application/x-www-form-urlencoded');
+}
+
+/**
+ * @param array<string, mixed> $payload
+ * @return array{status: int, body: string, headers: array<string, string>}
+ */
+function postJson(string $url, array $payload): array
+{
+    return send($url, 'POST', (string) json_encode($payload), 'application/json');
+}
+
+/** @return array{status: int, body: string, headers: array<string, string>} */
+function send(string $url, string $method, string $body, string $contentType): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER         => true,
+        CURLOPT_CUSTOMREQUEST  => $method,
+        CURLOPT_POSTFIELDS     => $body,
+        CURLOPT_HTTPHEADER     => ['Content-Type: ' . $contentType],
+        CURLOPT_TIMEOUT        => 15,
+    ]);
+
+    $raw = (string) curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    return [
+        'status'  => $status,
+        'body'    => substr($raw, $headerSize),
+        'headers' => [],
+    ];
 }
 
 /** @return array{status: int, body: string, headers: array<string, string>} */
@@ -141,7 +198,17 @@ $result = (new Installer($config))->install([
         'video' => ['slug' => 'bunny', 'credentials' => [
             'library_id' => '1', 'api_key' => 'x', 'token_auth_key' => 'y',
         ]],
-        'mail'  => ['slug' => 'php_mail', 'credentials' => ['from' => 'test@smoke.test']],
+        // SMTP pointed at a port that refuses instantly, NOT php_mail.
+        // mail() hands off to the SMTP host in php.ini — localhost:25 by
+        // default on Windows — and blocks until that connection times out,
+        // which hung this script for the full ten minutes. A refused
+        // connection on loopback fails in microseconds, so the send path is
+        // still exercised end to end and simply reports failure.
+        'mail'  => ['slug' => 'smtp', 'credentials' => [
+            'host' => '127.0.0.1',
+            'port' => '1',
+            'from' => 'Smoke Test <test@smoke.test>',
+        ]],
     ],
 ]);
 
@@ -258,6 +325,98 @@ check('Cron with a wrong key returns 404', $cronBadKey['status'] === 404, "got {
 $written = require PORTAL_CONFIG_FILE;
 $cronOk = get($baseUrl . '/cron?key=' . urlencode((string) $written['cron_secret']));
 check('Cron with the right key runs', $cronOk['status'] === 200, "got {$cronOk['status']}");
+
+echo "\nSharing\n";
+
+/*
+ * Create both kinds of share directly, then drive the recipient-facing routes.
+ * These are the pages someone who has never visited the site will see, so the
+ * refusals matter as much as the successes.
+ */
+$shares = new Portal\Sharing\ShareRepository(
+    $db,
+    new Portal\Content\VideoRepository($db, new Portal\Content\CategoryRepository($db))
+);
+
+$videoRow = (int) $db->value('SELECT id FROM {videos} LIMIT 1');
+
+$accountShare = $shares->create($videoRow, 'recipient@smoke.test', ['accessMode' => 'account']);
+$gateShare    = $shares->create($videoRow, 'recipient@smoke.test', ['accessMode' => 'gate']);
+
+$revoked = $shares->create($videoRow, 'revoked@smoke.test');
+$shares->revoke($revoked->id);
+
+$expired = $shares->create($videoRow, 'expired@smoke.test');
+$db->execute('UPDATE {shares} SET expires_at = DATE_SUB(NOW(), INTERVAL 1 DAY) WHERE id = ?', [$expired->id]);
+
+$accountPage = get($baseUrl . '/s/' . $accountShare->id);
+check(
+    'Account-mode share redirects an anonymous visitor to sign in',
+    $accountPage['status'] === 302 && str_contains($accountPage['headers']['location'] ?? '', '/auth/login'),
+    "got {$accountPage['status']}"
+);
+
+$gatePage = get($baseUrl . '/s/' . $gateShare->id);
+check('Gate-mode share shows the email form', $gatePage['status'] === 200, "got {$gatePage['status']}");
+check('Gate form asks for an address', str_contains($gatePage['body'], 'name="email"'));
+check(
+    'Gate form does not name the recipient',
+    !str_contains($gatePage['body'], 'recipient@smoke.test'),
+    'the page must not reveal who the link was for'
+);
+
+/*
+ * The anti-enumeration requirement, end to end: revoked, expired, and
+ * never-existed must be byte-identical, not merely similar.
+ */
+$revokedPage = get($baseUrl . '/s/' . $revoked->id);
+$expiredPage = get($baseUrl . '/s/' . $expired->id);
+$unknownPage = get($baseUrl . '/s/aaaaaaaaaaaaaaaaaaaa');
+$malformedPage = get($baseUrl . '/s/nope');
+
+check('Revoked share returns 404', $revokedPage['status'] === 404, "got {$revokedPage['status']}");
+check('Expired share returns 404', $expiredPage['status'] === 404, "got {$expiredPage['status']}");
+check('Unknown share returns 404', $unknownPage['status'] === 404, "got {$unknownPage['status']}");
+check('Malformed share id returns 404', $malformedPage['status'] === 404, "got {$malformedPage['status']}");
+
+check(
+    'Revoked and expired are byte-identical',
+    $revokedPage['body'] === $expiredPage['body'],
+    'a recipient must not be able to tell revoked from expired'
+);
+check(
+    'Unknown and revoked are byte-identical',
+    $unknownPage['body'] === $revokedPage['body'],
+    'the page must not reveal whether an id was ever real'
+);
+
+check(
+    'The refusal page names no recipient',
+    !str_contains($revokedPage['body'], 'revoked@smoke.test')
+);
+
+/* Requesting a gate link answers the same way whatever the address. */
+$goodRequest = post($baseUrl . '/s/' . $gateShare->id . '/request', ['email' => 'recipient@smoke.test']);
+$badRequest = post($baseUrl . '/s/' . $gateShare->id . '/request', ['email' => 'nobody@smoke.test']);
+
+check('Gate link request returns 200', $goodRequest['status'] === 200, "got {$goodRequest['status']}");
+check(
+    'Right and wrong addresses get identical answers',
+    $goodRequest['body'] === $badRequest['body'],
+    'the response must not reveal whether the address was correct'
+);
+
+/* Tracking is rejected for a link that no longer works. */
+$trackDead = postJson($baseUrl . '/api/share-track', [
+    'shareId' => $revoked->id, 'event' => 'play', 'percent' => 0,
+]);
+check('Tracking a revoked share is refused', $trackDead['status'] === 404, "got {$trackDead['status']}");
+
+$trackBad = postJson($baseUrl . '/api/share-track', ['shareId' => 'nope', 'event' => 'play']);
+check('Tracking with a malformed id is refused', $trackBad['status'] === 400, "got {$trackBad['status']}");
+
+$shareAsset = get($baseUrl . '/assets/share-track.js');
+check('Share tracking script is served', $shareAsset['status'] === 200, "got {$shareAsset['status']}");
 
 echo "\nRouting\n";
 

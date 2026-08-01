@@ -20,6 +20,13 @@ use Portal\Mail\MailProvider;
 use Portal\Plugins\Hooks;
 use Portal\Plugins\PluginManager;
 use Portal\Providers\ProviderRegistry;
+use Portal\Sharing\AccessResolver;
+use Portal\Sharing\BundleRepository;
+use Portal\Sharing\Gate;
+use Portal\Sharing\PrivateList;
+use Portal\Sharing\ShareMailer;
+use Portal\Sharing\ShareRepository;
+use Portal\Sharing\ViewerGroups;
 use Portal\Support\Cron;
 use Portal\Support\Crypto;
 use Portal\Themes\ThemeManager;
@@ -168,6 +175,45 @@ final class App
         $c->singleton(Cron::class, static fn (Container $c): Cron => new Cron(
             $c->get(Db::class),
             $c->get(App::class),
+        ));
+
+        // ------------------------------------------------------------ sharing
+
+        $c->singleton(ShareRepository::class, static fn (Container $c): ShareRepository => new ShareRepository(
+            $c->get(Db::class),
+            $c->get(VideoRepository::class),
+        ));
+
+        $c->singleton(BundleRepository::class, static fn (Container $c): BundleRepository => new BundleRepository(
+            $c->get(Db::class),
+            $c->get(ShareRepository::class),
+        ));
+
+        $c->singleton(Gate::class, static fn (Container $c): Gate => new Gate(
+            $c->get(Db::class),
+            $c->get(Config::class),
+        ));
+
+        $c->singleton(PrivateList::class, static fn (Container $c): PrivateList => new PrivateList(
+            $c->get(Db::class),
+            $c->get(ShareRepository::class),
+        ));
+
+        $c->singleton(ViewerGroups::class, static fn (Container $c): ViewerGroups
+            => new ViewerGroups($c->get(Db::class)));
+
+        $c->singleton(ShareMailer::class, static fn (Container $c): ShareMailer => new ShareMailer(
+            $c->get(Config::class),
+            $c->get(MailProvider::class),
+            $c->get(ShareRepository::class),
+            $c->get(BundleRepository::class),
+        ));
+
+        $c->singleton(AccessResolver::class, static fn (Container $c): AccessResolver => new AccessResolver(
+            $c->get(ShareRepository::class),
+            $c->get(BundleRepository::class),
+            $c->get(Gate::class),
+            $c->get(Guard::class),
         ));
     }
 
