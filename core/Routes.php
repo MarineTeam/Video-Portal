@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Portal;
 
 use Portal\Controllers\AdminController;
+use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
@@ -82,6 +83,21 @@ final class Routes
         $router->post('/admin/upload/complete', [UploadController::class, 'complete'], ['admin.area']);
         $router->post('/admin/upload/cancel', [UploadController::class, 'cancel'], ['admin.area']);
         $router->get('/admin/upload/status', [UploadController::class, 'status'], ['admin.area']);
+
+        // ------------------------------------------------------ admin sharing
+
+        $router->get('/admin/shares', [AdminShareController::class, 'index'], ['admin.area']);
+        $router->post('/admin/shares/create', [AdminShareController::class, 'create'], ['admin.area']);
+        $router->post('/admin/shares/act', [AdminShareController::class, 'act'], ['admin.area']);
+        $router->post('/admin/shares/cleanup', [AdminShareController::class, 'cleanup'], ['admin.area']);
+
+        // Registered before the {video} pattern below, so "groups" is not
+        // swallowed as a video id.
+        $router->get('/admin/shares/groups', [AdminShareController::class, 'groupsPage'], ['admin.area']);
+        $router->post('/admin/shares/groups', [AdminShareController::class, 'updateGroups'], ['admin.area']);
+
+        $router->post('/admin/shares/private-list', [AdminShareController::class, 'updatePrivateList'], ['admin.area']);
+        $router->get('/admin/shares/video/{video}', [AdminShareController::class, 'privateList'], ['admin.area']);
 
         // ---------------------------------------------------------- sharing
 

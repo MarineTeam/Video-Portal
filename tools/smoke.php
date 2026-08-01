@@ -77,6 +77,64 @@ function postJson(string $url, array $payload): array
     return send($url, 'POST', (string) json_encode($payload), 'application/json');
 }
 
+/**
+ * Requests that carry a session, via a cookie jar.
+ *
+ * @return array{status: int, body: string, headers: array<string, string>}
+ */
+function getWithJar(string $url, string $jar): array
+{
+    return withJar($url, $jar, null);
+}
+
+/**
+ * @param array<string, string|list<string>> $fields
+ * @return array{status: int, body: string, headers: array<string, string>}
+ */
+function postWithJar(string $url, array $fields, string $jar): array
+{
+    // http_build_query turns list values into videos[0]=..., which PHP parses
+    // back into the array the form would have sent.
+    return withJar($url, $jar, http_build_query($fields));
+}
+
+/** @return array{status: int, body: string, headers: array<string, string>} */
+function withJar(string $url, string $jar, ?string $body): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER         => true,
+        CURLOPT_COOKIEJAR      => $jar,
+        CURLOPT_COOKIEFILE     => $jar,
+        CURLOPT_TIMEOUT        => 15,
+        // Deliberately not following: the status code IS the assertion.
+        CURLOPT_FOLLOWLOCATION => false,
+    ]);
+
+    if ($body !== null) {
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+    }
+
+    $raw = (string) curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    return [
+        'status'  => $status,
+        'body'    => substr($raw, $headerSize),
+        'headers' => [],
+    ];
+}
+
+/** Pull the CSRF token out of a rendered form. */
+function csrfFrom(string $html): string
+{
+    return preg_match('/name="_token" value="([^"]+)"/', $html, $m) === 1 ? $m[1] : '';
+}
+
 /** @return array{status: int, body: string, headers: array<string, string>} */
 function send(string $url, string $method, string $body, string $contentType): array
 {
@@ -154,7 +212,7 @@ echo "Created scratch database {$database}\n";
 
 $serverProcess = null;
 
-$cleanup = static function () use ($admin, $database, &$serverProcess): void {
+$cleanup = static function () use ($admin, $database, &$serverProcess, &$serverLog): void {
     if (is_resource($serverProcess)) {
         $status = proc_get_status($serverProcess);
 
@@ -175,6 +233,9 @@ $cleanup = static function () use ($admin, $database, &$serverProcess): void {
     }
     if (is_file(PORTAL_CONFIG_FILE)) {
         @unlink(PORTAL_CONFIG_FILE);
+    }
+    if (isset($serverLog) && is_file($serverLog)) {
+        @unlink($serverLog);
     }
     $admin->exec("DROP DATABASE IF EXISTS `{$database}`");
     echo "\nCleaned up.\n";
@@ -198,15 +259,25 @@ $result = (new Installer($config))->install([
         'video' => ['slug' => 'bunny', 'credentials' => [
             'library_id' => '1', 'api_key' => 'x', 'token_auth_key' => 'y',
         ]],
-        // SMTP pointed at a port that refuses instantly, NOT php_mail.
-        // mail() hands off to the SMTP host in php.ini — localhost:25 by
-        // default on Windows — and blocks until that connection times out,
-        // which hung this script for the full ten minutes. A refused
-        // connection on loopback fails in microseconds, so the send path is
-        // still exercised end to end and simply reports failure.
+        // Mail is deliberately left unconfigured: an empty host makes
+        // SmtpProvider::isConfigured() false, so send() returns a failure
+        // immediately without touching the network.
+        //
+        // Two earlier attempts here both stalled the whole run, because PHP's
+        // built-in server is SINGLE-THREADED — one blocking request freezes
+        // every subsequent one, and the failures show up as connection errors
+        // on unrelated checks further down.
+        //
+        //   php_mail  hands off to the SMTP host in php.ini (localhost:25 by
+        //             default) and blocks until that times out.
+        //   smtp to a refused port  was slower than expected on Windows.
+        //
+        // The send paths are covered thoroughly by ShareMailerTest against a
+        // recording provider, which is the right place for them. What this
+        // script is for is proving the ROUTES behave, and they behave the same
+        // whether or not a message actually left the building.
         'mail'  => ['slug' => 'smtp', 'credentials' => [
-            'host' => '127.0.0.1',
-            'port' => '1',
+            'host' => '',
             'from' => 'Smoke Test <test@smoke.test>',
         ]],
     ],
@@ -234,11 +305,44 @@ $db->insert('videos', [
     'duration' => 125, 'created_at' => $now, 'updated_at' => $now,
 ]);
 
-echo "Seeded content.\n\n";
+/*
+ * Disable the scheduled jobs.
+ *
+ * Pseudo-cron runs after the response is sent, and videos.sync calls the video
+ * provider over HTTPS. With the placeholder credentials this install has, that
+ * call hangs until its timeout — and PHP's built-in server is single-threaded,
+ * so the whole run freezes behind it. The symptom is baffling: unrelated checks
+ * further down fail with connection errors while the server appears alive.
+ *
+ * The /cron endpoint is still exercised below; with nothing due it reports
+ * exactly that, which is all those checks are asserting anyway.
+ */
+$db->execute('UPDATE {cron_jobs} SET is_enabled = 0');
+
+echo "Seeded content, scheduled jobs disabled.\n\n";
 
 // -------------------------------------------------------------------- serve
 
-$descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+/*
+ * The server's output goes to a FILE, not a pipe.
+ *
+ * PHP's built-in server writes a log line per request to stderr. Handed a pipe
+ * that nobody drains, it fills the OS buffer after roughly twenty-five
+ * requests and then blocks forever on the next write — mid-request, holding
+ * the single-threaded server hostage.
+ *
+ * The symptom is thoroughly misleading: the run passes for a while, then every
+ * later check fails with a connection error, and adding checks anywhere makes
+ * previously-passing ones start failing. Two rounds of blaming the mail
+ * provider and the cron scheduler went by before the buffer was the answer.
+ */
+$serverLog = sys_get_temp_dir() . '/portal-smoke-server-' . getmypid() . '.log';
+
+$descriptors = [
+    1 => ['file', $serverLog, 'a'],
+    2 => ['file', $serverLog, 'a'],
+];
+
 $serverProcess = proc_open(
     sprintf('%s -S 127.0.0.1:%d -t %s', escapeshellarg(PHP_BINARY), $serverPort, escapeshellarg(PORTAL_PUBLIC)),
     $descriptors,
@@ -417,6 +521,88 @@ check('Tracking with a malformed id is refused', $trackBad['status'] === 400, "g
 
 $shareAsset = get($baseUrl . '/assets/share-track.js');
 check('Share tracking script is served', $shareAsset['status'] === 200, "got {$shareAsset['status']}");
+
+echo "\nAdmin sharing (signed in)\n";
+
+/*
+ * Everything above is anonymous. This signs in as the administrator the
+ * installer created and drives the admin sharing screens for real — the only
+ * way to know the forms, the routes, and the capability checks agree with each
+ * other.
+ */
+$jar = sys_get_temp_dir() . '/portal-smoke-cookies-' . getmypid() . '.txt';
+@unlink($jar);
+
+$login = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'admin@smoke.test',
+    'password' => 'smoke-test-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $jar)['body']),
+    'returnTo' => '/admin',
+], $jar);
+
+check('Administrator can sign in', $login['status'] === 302, "got {$login['status']}");
+
+$adminHome = getWithJar($baseUrl . '/admin', $jar);
+check('Admin dashboard renders when signed in', $adminHome['status'] === 200, "got {$adminHome['status']}");
+check('Sharing appears in the admin navigation', str_contains($adminHome['body'], '/admin/shares'));
+
+$sharesPage = getWithJar($baseUrl . '/admin/shares', $jar);
+check('Sharing screen renders', $sharesPage['status'] === 200, "got {$sharesPage['status']}");
+check('Share creation form is present', str_contains($sharesPage['body'], 'name="videos[]"'));
+check('Both access modes are offered', str_contains($sharesPage['body'], 'no account needed'));
+
+$groupsPage = getWithJar($baseUrl . '/admin/shares/groups', $jar);
+check('Viewer groups screen renders', $groupsPage['status'] === 200, "got {$groupsPage['status']}");
+check(
+    'Groups screen says a group grants nothing',
+    str_contains($groupsPage['body'], 'grants') || str_contains($groupsPage['body'], 'no access')
+);
+
+/* Create a share through the real form, then open the link it produced. */
+$token = csrfFrom($sharesPage['body']);
+
+$created = postWithJar($baseUrl . '/admin/shares/create', [
+    '_token'      => $token,
+    'videos'      => [(string) $videoRow],
+    'emails'      => 'formtest@smoke.test',
+    'access_mode' => 'gate',
+    'hours'       => '72',
+    'watermark'   => 'default',
+], $jar);
+
+check('Creating a share through the form succeeds', $created['status'] === 302, "got {$created['status']}");
+
+$formShareId = (string) $db->value(
+    'SELECT id FROM {shares} WHERE recipient_email = ? ORDER BY created_at DESC LIMIT 1',
+    ['formtest@smoke.test']
+);
+check('The form actually created a link', $formShareId !== '', 'no share row appeared');
+
+if ($formShareId !== '') {
+    $opened = get($baseUrl . '/s/' . $formShareId);
+    check('That link opens the gate form', $opened['status'] === 200, "got {$opened['status']}");
+
+    /* And revoke it through the same admin route. */
+    $revokedViaUi = postWithJar($baseUrl . '/admin/shares/act', [
+        '_token' => $token,
+        'action' => 'revoke',
+        'id'     => $formShareId,
+    ], $jar);
+
+    check('Revoking through the admin succeeds', $revokedViaUi['status'] === 302, "got {$revokedViaUi['status']}");
+
+    $afterRevoke = get($baseUrl . '/s/' . $formShareId);
+    check('The revoked link stops working immediately', $afterRevoke['status'] === 404, "got {$afterRevoke['status']}");
+}
+
+/* A CSRF-less post must be refused. */
+$noCsrf = postWithJar($baseUrl . '/admin/shares/create', [
+    'videos' => [(string) $videoRow],
+    'emails' => 'nocsrf@smoke.test',
+], $jar);
+check('A form post without a CSRF token is refused', $noCsrf['status'] === 419, "got {$noCsrf['status']}");
+
+@unlink($jar);
 
 echo "\nRouting\n";
 
