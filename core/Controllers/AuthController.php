@@ -100,10 +100,58 @@ final class AuthController extends Controller
                 return $this->redirect('/');
             }
 
+            if ($result->retryable) {
+                return $this->retrySignIn($provider, $request, $result);
+            }
+
             return $this->renderLoginForm($request, '/', $result->error ?? 'Sign-in failed.');
         }
 
         return $this->completeSignIn($result, $result->returnTo);
+    }
+
+    /**
+     * Quietly start the sign-in over.
+     *
+     * Reached when a callback carries a state nothing remembers, which almost
+     * always means the sign-in page outlived the session that issued it — the
+     * Auth0 URL and its state are baked into that HTML, and signing out
+     * discards every pending state. Showing an error there is a dead end:
+     * there is nothing wrong and nothing to fix, and the person's next move is
+     * to click the same button again, which works.
+     *
+     * So click it for them. Nothing is granted here — the rejected code is
+     * discarded and a brand-new authorization request begins — so this cannot
+     * be used to launder an attacker's callback into a session.
+     *
+     * Guarded against looping: one automatic retry per minute. If a second
+     * stale callback arrives that quickly, something is genuinely wrong and
+     * the error is shown rather than bouncing forever.
+     */
+    private function retrySignIn(AuthProvider $provider, Request $request, AuthResult $result): Response
+    {
+        /** @var Session $session */
+        $session = $this->container->get(Session::class);
+
+        $lastRetry = $session->get('auth.retry_at');
+
+        if (is_int($lastRetry) && (time() - $lastRetry) < 60) {
+            $session->forget('auth.retry_at');
+
+            return $this->renderLoginForm(
+                $request,
+                '/',
+                'Sign-in could not be completed. Please close any other sign-in tabs and try once more.'
+            );
+        }
+
+        $session->put('auth.retry_at', time());
+
+        try {
+            return Response::redirect($provider->loginUrl('/'))->private();
+        } catch (Throwable) {
+            return $this->renderLoginForm($request, '/', $result->error ?? 'Sign-in failed.');
+        }
     }
 
     public function logout(Request $request): Response
@@ -145,6 +193,10 @@ final class AuthController extends Controller
         /** @var Session $session */
         $session = $this->container->get(Session::class);
         $session->login($user->id);
+
+        // A successful sign-in clears the retry guard, so a stale page opened
+        // days later still gets its one automatic retry.
+        $session->forget('auth.retry_at');
 
         do_action('user_signed_in', $user);
 

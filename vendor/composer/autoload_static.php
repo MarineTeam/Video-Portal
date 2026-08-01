@@ -105,6 +105,8 @@ class ComposerStaticInitae9cdb4486d610beb9cff40d8f421199
         'Portal\\Providers\\SettingField' => __DIR__ . '/../..' . '/core/Providers/SettingField.php',
         'Portal\\Providers\\TestResult' => __DIR__ . '/../..' . '/core/Providers/TestResult.php',
         'Portal\\Routes' => __DIR__ . '/../..' . '/core/Routes.php',
+        'Portal\\Sharing\\Share' => __DIR__ . '/../..' . '/core/Sharing/Share.php',
+        'Portal\\Sharing\\ShareRepository' => __DIR__ . '/../..' . '/core/Sharing/ShareRepository.php',
         'Portal\\Support\\Audit' => __DIR__ . '/../..' . '/core/Support/Audit.php',
         'Portal\\Support\\Cron' => __DIR__ . '/../..' . '/core/Support/Cron.php',
         'Portal\\Support\\Crypto' => __DIR__ . '/../..' . '/core/Support/Crypto.php',

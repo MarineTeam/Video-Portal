@@ -77,6 +77,8 @@ return array(
     'Portal\\Providers\\SettingField' => $baseDir . '/core/Providers/SettingField.php',
     'Portal\\Providers\\TestResult' => $baseDir . '/core/Providers/TestResult.php',
     'Portal\\Routes' => $baseDir . '/core/Routes.php',
+    'Portal\\Sharing\\Share' => $baseDir . '/core/Sharing/Share.php',
+    'Portal\\Sharing\\ShareRepository' => $baseDir . '/core/Sharing/ShareRepository.php',
     'Portal\\Support\\Audit' => $baseDir . '/core/Support/Audit.php',
     'Portal\\Support\\Cron' => $baseDir . '/core/Support/Cron.php',
     'Portal\\Support\\Crypto' => $baseDir . '/core/Support/Crypto.php',

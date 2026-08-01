@@ -262,7 +262,16 @@ class OidcProvider implements AuthProvider
         $this->session->put(self::SESSION_PENDING, $pending);
 
         if ($flow === null) {
-            return AuthResult::failure(
+            // Marked retryable, not failed. The overwhelmingly common cause is
+            // a sign-in page that outlived the session that issued it: the
+            // Auth0 URL and its state are baked into that HTML, and signing
+            // out discards every pending state. A back button, a restored tab,
+            // or a tab left open across a sign-out then submits a state
+            // nothing remembers.
+            //
+            // The person did nothing wrong and has nothing to fix, so the
+            // caller starts a fresh sign-in rather than showing them this.
+            return AuthResult::retryable(
                 'That sign-in link has already been used or has expired. Please try signing in again.'
             );
         }

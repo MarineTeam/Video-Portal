@@ -25,6 +25,19 @@ final class AuthResult
         public readonly ?string $name = null,
         public readonly string $returnTo = '/',
         public readonly ?string $error = null,
+        /**
+         * Would simply starting again probably work?
+         *
+         * True for a sign-in that failed because its state is unknown — a
+         * stale page, a back button, a tab left open across a sign-out. The
+         * person did nothing wrong and there is nothing for them to fix, so
+         * the caller can quietly begin a fresh sign-in instead of presenting
+         * an error they cannot act on.
+         *
+         * False for a genuine refusal: the provider said no, the token would
+         * not verify, consent was declined.
+         */
+        public readonly bool $retryable = false,
     ) {
     }
 
@@ -48,5 +61,11 @@ final class AuthResult
     public static function failure(string $error): self
     {
         return new self(ok: false, error: $error);
+    }
+
+    /** A failure that starting over would probably resolve. */
+    public static function retryable(string $error): self
+    {
+        return new self(ok: false, error: $error, retryable: true);
     }
 }
