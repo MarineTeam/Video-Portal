@@ -522,37 +522,6 @@ final class AdminController extends Controller
         ]))->private();
     }
 
-    /**
-     * Navigation, filtered by what this person can actually do.
-     *
-     * Showing a link that leads to a 403 is worse than not showing it: it
-     * reads as a broken site rather than a permission boundary.
-     *
-     * @return list<array{label: string, path: string, key: string}>
-     */
-    private function adminNav(): array
-    {
-        $items = [
-            ['label' => 'Dashboard',  'path' => '/admin',            'key' => 'dashboard',  'cap' => null],
-            ['label' => 'Videos',     'path' => '/admin/videos',     'key' => 'videos',     'cap' => Capability::MANAGE_VIDEOS],
-            ['label' => 'Categories', 'path' => '/admin/categories', 'key' => 'categories', 'cap' => Capability::MANAGE_CATEGORIES],
-            ['label' => 'People',     'path' => '/admin/users',      'key' => 'users',      'cap' => Capability::MANAGE_USERS],
-            ['label' => 'Plugins',    'path' => '/admin/plugins',    'key' => 'plugins',    'cap' => Capability::MANAGE_PLUGINS],
-            ['label' => 'Appearance', 'path' => '/admin/themes',     'key' => 'themes',     'cap' => Capability::MANAGE_THEMES],
-            ['label' => 'Services',   'path' => '/admin/providers',  'key' => 'providers',  'cap' => Capability::MANAGE_PROVIDERS],
-            ['label' => 'Settings',   'path' => '/admin/settings',   'key' => 'settings',   'cap' => Capability::MANAGE_SETTINGS],
-        ];
-
-        $visible = [];
-        foreach ($items as $item) {
-            if ($item['cap'] === null || $this->guard()->can($item['cap'])) {
-                $visible[] = ['label' => $item['label'], 'path' => $item['path'], 'key' => $item['key']];
-            }
-        }
-
-        return $visible;
-    }
-
     /** @return array<string, array{slug: ?string, ok: bool}> */
     private function providerSummary(): array
     {

@@ -172,6 +172,40 @@ abstract class Controller
         }
     }
 
+    /**
+     * The admin navigation, filtered by what this person can actually do.
+     *
+     * Lives here rather than on one controller because several render inside
+     * the admin shell, and two copies would drift — showing a link that leads
+     * to a 403 reads as a broken site rather than a permission boundary.
+     *
+     * @return list<array{label: string, path: string, key: string}>
+     */
+    protected function adminNav(): array
+    {
+        $items = [
+            ['label' => 'Dashboard',  'path' => '/admin',               'key' => 'dashboard',     'cap' => null],
+            ['label' => 'Videos',     'path' => '/admin/videos',        'key' => 'videos',        'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
+            ['label' => 'Categories', 'path' => '/admin/categories',    'key' => 'categories',    'cap' => \Portal\Auth\Capability::MANAGE_CATEGORIES],
+            ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],
+            ['label' => 'Groups',     'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => \Portal\Auth\Capability::MANAGE_VIEWERS],
+            ['label' => 'People',     'path' => '/admin/users',         'key' => 'users',         'cap' => \Portal\Auth\Capability::MANAGE_USERS],
+            ['label' => 'Plugins',    'path' => '/admin/plugins',       'key' => 'plugins',       'cap' => \Portal\Auth\Capability::MANAGE_PLUGINS],
+            ['label' => 'Appearance', 'path' => '/admin/themes',        'key' => 'themes',        'cap' => \Portal\Auth\Capability::MANAGE_THEMES],
+            ['label' => 'Services',   'path' => '/admin/providers',     'key' => 'providers',     'cap' => \Portal\Auth\Capability::MANAGE_PROVIDERS],
+            ['label' => 'Settings',   'path' => '/admin/settings',      'key' => 'settings',      'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
+        ];
+
+        $visible = [];
+        foreach ($items as $item) {
+            if ($item['cap'] === null || $this->guard()->can($item['cap'])) {
+                $visible[] = ['label' => $item['label'], 'path' => $item['path'], 'key' => $item['key']];
+            }
+        }
+
+        return $visible;
+    }
+
     /** @param array<string, mixed> $data */
     protected function json(mixed $data, int $status = 200): Response
     {

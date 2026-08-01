@@ -38,6 +38,19 @@ final class AdminView
         return $this->layout($body, $data);
     }
 
+    /**
+     * The admin chrome around a page body.
+     *
+     * Public so the sharing screens can render inside it. Two shells would
+     * drift, and the admin area would stop looking like one application.
+     *
+     * @param array<string, mixed> $data
+     */
+    public function shell(string $body, array $data): string
+    {
+        return $this->layout($body, $data);
+    }
+
     /** @param array<string, mixed> $data */
     private function layout(string $body, array $data): string
     {
@@ -777,7 +790,18 @@ final class AdminView
                  border:1px solid rgba(34,197,94,.5); background:rgba(34,197,94,.08); }
         .flash.error { border-color:rgba(239,68,68,.5); background:rgba(239,68,68,.08); }
         ul.plain { list-style:none; padding:0; }
-        ul.plain li { padding:.375rem 0; border-bottom:1px solid rgba(148,163,184,.1); }
+        ul.plain li { padding:.375rem 0; border-bottom:1px solid rgba(148,163,184,.1);
+                      display:flex; justify-content:space-between; align-items:center; gap:.5rem; }
+        textarea { width:100%; margin-top:.375rem; padding:.5rem .75rem; border-radius:8px;
+                   border:1px solid rgba(148,163,184,.26); background:rgba(15,23,42,.6);
+                   color:#e2e8f0; font:inherit; font-size:.9375rem; resize:vertical; }
+        select[multiple] { height:auto; }
+        label.checkbox { display:flex; align-items:center; gap:.5rem; font-weight:400; }
+        label.checkbox input { width:auto; margin:0; }
+        /* Share URLs are meant to be copied, so they are a selectable input
+           rather than text: click selects the whole thing. */
+        .urlbox { margin-top:.375rem; font-size:.75rem; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                  color:#7dd3fc; background:rgba(15,23,42,.75); cursor:pointer; }
         code { background:rgba(15,23,42,.8); padding:.125rem .375rem; border-radius:5px; font-size:.875rem; }
         .actions { display:flex; gap:.75rem; margin-top:1rem; }
         CSS;
