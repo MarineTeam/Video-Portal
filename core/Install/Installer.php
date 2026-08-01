@@ -339,6 +339,9 @@ final class Installer
             'watermark_default'  => '0',
             'geo_enabled'        => '0',
             'admin_geo_enabled'  => '0',
+            // Off, so a fresh install looks the way people expect: a browsable
+            // catalogue with real artwork, where playing needs an account.
+            'members_thumbnail_default' => '0',
         ] as $key => $value) {
             $db->execute(
                 'INSERT INTO {settings} (`key`, `value`, updated_at) VALUES (?, ?, NOW())

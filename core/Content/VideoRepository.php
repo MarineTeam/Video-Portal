@@ -247,6 +247,101 @@ final class VideoRepository
         return $id === null ? null : (int) $id;
     }
 
+    /**
+     * Resolve the thumbnail mode for many videos at once.
+     *
+     * Batched deliberately. A listing renders up to a hundred cards, and the
+     * obvious per-video implementation would be two queries each — the kind of
+     * thing that is invisible on a seeded test database and crippling on a real
+     * library.
+     *
+     * Where several categories disagree, MEMBERS wins. A video that sits in
+     * both "Sermons" and "Staff training" is in a members-only section
+     * regardless of which one is primary, and the protective reading is the
+     * only one that cannot surprise someone. A video's own explicit setting
+     * still overrides all of it, so a single video can always be forced public.
+     *
+     * @param list<Video> $videos
+     * @return array<int, string> video id => resolved mode
+     */
+    public function thumbnailModes(array $videos, bool $siteDefault = false): array
+    {
+        if ($videos === []) {
+            return [];
+        }
+
+        $ids = array_map(static fn (Video $v): int => $v->id, $videos);
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+        /** @var array<int, list<int>> $categoriesByVideo */
+        $categoriesByVideo = [];
+        foreach ($this->db->all(
+            "SELECT video_id, category_id FROM {video_categories} WHERE video_id IN ({$placeholders})",
+            $ids
+        ) as $row) {
+            $categoriesByVideo[(int) $row['video_id']][] = (int) $row['category_id'];
+        }
+
+        // The whole category table in one read. There are tens of these, not
+        // thousands, and every video's chain is resolved against the same rows.
+        $paths = [];
+        $modes = [];
+        foreach ($this->db->all('SELECT id, path, thumbnail_mode FROM {categories}') as $row) {
+            $id = (int) $row['id'];
+            $paths[$id] = (string) $row['path'];
+            $modes[$id] = (string) $row['thumbnail_mode'];
+        }
+
+        $resolved = [];
+
+        foreach ($videos as $video) {
+            $opinions = [];
+
+            foreach ($categoriesByVideo[$video->id] ?? [] as $categoryId) {
+                $opinion = $this->nearestCategoryOpinion($categoryId, $paths, $modes);
+                if ($opinion !== null) {
+                    $opinions[] = $opinion;
+                }
+            }
+
+            $chain = [];
+            if (in_array(ThumbnailPolicy::MEMBERS, $opinions, true)) {
+                $chain = [ThumbnailPolicy::MEMBERS];
+            } elseif ($opinions !== []) {
+                $chain = [ThumbnailPolicy::PUBLIC_ART];
+            }
+
+            $resolved[$video->id] = ThumbnailPolicy::resolve($video->thumbnailMode, $chain, $siteDefault);
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * Walk one category's ancestors, nearest first, for the first real opinion.
+     *
+     * @param array<int, string> $paths
+     * @param array<int, string> $modes
+     */
+    private function nearestCategoryOpinion(int $categoryId, array $paths, array $modes): ?string
+    {
+        // path is root-first ("/1/7/22/"), and the nearest ancestor wins, so it
+        // is walked in reverse. A category with no path row still gets its own
+        // mode consulted rather than being skipped entirely.
+        $chain = isset($paths[$categoryId])
+            ? array_reverse(array_map('intval', array_filter(explode('/', trim($paths[$categoryId], '/')), 'strlen')))
+            : [$categoryId];
+
+        foreach ($chain as $id) {
+            $mode = $modes[$id] ?? ThumbnailPolicy::INHERIT;
+            if ($mode === ThumbnailPolicy::MEMBERS || $mode === ThumbnailPolicy::PUBLIC_ART) {
+                return $mode;
+            }
+        }
+
+        return null;
+    }
+
     // ---------------------------------------------------------------- writes
 
     /** @param array<string, mixed> $attributes */
@@ -302,6 +397,10 @@ final class VideoRepository
                 throw HttpException::badRequest('Watermark mode must be default, on, or off.');
             }
             $fields['watermark_mode'] = $mode;
+        }
+
+        if (isset($attributes['thumbnail_mode'])) {
+            $fields['thumbnail_mode'] = ThumbnailPolicy::sanitize($attributes['thumbnail_mode']);
         }
 
         if ($fields === []) {

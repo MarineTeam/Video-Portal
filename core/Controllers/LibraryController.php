@@ -7,6 +7,7 @@ namespace Portal\Controllers;
 use Portal\Auth\Capability;
 use Portal\Content\CategoryRepository;
 use Portal\Content\Video;
+use Portal\Content\VideoPresenter;
 use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
@@ -200,39 +201,46 @@ final class LibraryController extends Controller
      * expire, and a cached one produces a 403 that looks to a viewer like a
      * broken image.
      *
+     * The card data itself is built by VideoPresenter, which is where the
+     * members-only rule lives and is tested. This method's remaining job is to
+     * answer the two questions only a request can answer — who is asking, and
+     * what the site default is — and to fire the filter plugins extend.
+     *
      * @param list<Video> $videos
      * @return list<array<string, mixed>>
      */
     private function present(array $videos): array
     {
-        $provider = $this->videoProvider();
+        $presenter = new VideoPresenter($this->videos(), $this->videoProvider());
 
-        $out = [];
-        foreach ($videos as $video) {
-            $thumbnail = null;
-
-            if ($provider !== null) {
-                try {
-                    $thumbnail = $provider->thumbnailUrl($video->providerId, $video->thumbnailFile);
-                } catch (Throwable) {
-                    // A thumbnail is decoration; never fail a page over one.
-                    $thumbnail = null;
-                }
-            }
-
-            $out[] = [
-                'id'             => $video->id,
-                'title'          => $video->title,
-                'url'            => $video->url(),
-                'thumbnail'      => $thumbnail,
-                'duration'       => $video->duration,
-                'status'         => $video->status,
-                'encodeProgress' => $video->encodeProgress,
-            ];
-        }
+        $cards = $presenter->cards(
+            $videos,
+            $this->canWatch(),
+            $this->config()->settingBool('members_thumbnail_default', false)
+        );
 
         /** @var list<array<string, mixed>> */
-        return apply_filters('video_list', $out);
+        return apply_filters('video_list', $cards);
+    }
+
+    /**
+     * Can this visitor actually play a video?
+     *
+     * The same test the /watch route applies, asked here so a listing can tell
+     * the difference between "you may see this exists" and "you may see what it
+     * looks like". Signing in is not enough: an account an administrator has
+     * not approved yet cannot play anything, and that is the state every new
+     * account starts in.
+     */
+    private function canWatch(): bool
+    {
+        if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
+            return true;
+        }
+
+        $user = $this->user();
+
+        return $user !== null && ($user->isAdmin() || $user->authorized);
     }
 
     /**
@@ -271,32 +279,22 @@ final class LibraryController extends Controller
             return [];
         }
 
-        $provider = $this->videoProvider();
-        $out = [];
+        // Presented through the same path as any other card, so someone whose
+        // approval was withdrawn does not keep seeing artwork in their
+        // continue-watching row that the rest of the site now withholds.
+        $videos = array_map(static fn (array $row): Video => Video::fromRow($row), $rows);
+        $cards = $this->present($videos);
 
+        $progressById = [];
         foreach ($rows as $row) {
-            $video = Video::fromRow($row);
             $duration = max(1, (int) $row['duration_seconds']);
-            $percent = (int) round(((int) $row['position_seconds'] / $duration) * 100);
+            $progressById[(int) $row['id']] = (int) round(((int) $row['position_seconds'] / $duration) * 100);
+        }
 
-            $thumbnail = null;
-            if ($provider !== null) {
-                try {
-                    $thumbnail = $provider->thumbnailUrl($video->providerId, $video->thumbnailFile);
-                } catch (Throwable) {
-                    $thumbnail = null;
-                }
-            }
-
-            $out[] = [
-                'id'              => $video->id,
-                'title'           => $video->title,
-                'url'             => $video->url(),
-                'thumbnail'       => $thumbnail,
-                'duration'        => $video->duration,
-                'status'          => $video->status,
-                'progressPercent' => max(0, min(100, $percent)),
-            ];
+        $out = [];
+        foreach ($cards as $card) {
+            $card['progressPercent'] = max(0, min(100, $progressById[(int) $card['id']] ?? 0));
+            $out[] = $card;
         }
 
         return $out;

@@ -6,6 +6,7 @@ namespace Portal\Admin;
 
 use Portal\Auth\Guard;
 use Portal\Content\Category;
+use Portal\Content\ThumbnailPolicy;
 use Portal\Content\Video;
 use Portal\Providers\SettingField;
 use Portal\Support\Str;
@@ -25,8 +26,10 @@ final class AdminView
     {
         $body = match ($screen) {
             'dashboard'  => $this->dashboard($data),
-            'videos'     => $this->videos($data),
-            'categories' => $this->categories($data),
+            'videos'        => $this->videos($data),
+            'video-edit'    => $this->videoEdit($data),
+            'categories'    => $this->categories($data),
+            'category-edit' => $this->categoryEdit($data),
             'users'      => $this->users($data),
             'plugins'    => $this->plugins($data),
             'themes'     => $this->themes($data),
@@ -191,10 +194,11 @@ final class AdminView
 
             $rows .= sprintf(
                 '<tr>
-                   <td><strong>%s</strong><br><span class="muted">%s</span></td>
+                   <td><a href="/admin/videos/%d"><strong>%s</strong></a><br><span class="muted">%s</span></td>
                    <td>%s</td>
                    <td>%s</td>
                    <td class="right">
+                     <a class="btn tiny secondary" href="/admin/videos/%d">Edit</a>
                      <form method="post" class="inline">
                        <input type="hidden" name="_token" value="%s">
                        <input type="hidden" name="id" value="%d">
@@ -204,10 +208,12 @@ final class AdminView
                      </form>
                    </td>
                  </tr>',
+                $video->id,
                 e($video->title),
                 e(Str::duration($video->duration) ?: '—'),
                 $status,
                 $published,
+                $video->id,
                 $token,
                 $video->id,
                 $toggle,
@@ -232,6 +238,127 @@ final class AdminView
           <thead><tr><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr></thead>
           <tbody>{$rows}</tbody>
         </table>
+        HTML;
+    }
+
+    /**
+     * One video's edit form.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function videoEdit(array $data): string
+    {
+        /** @var Video $video */
+        $video = $data['video'];
+        $token = e((string) $data['token']);
+
+        /** @var list<Category> $categories */
+        $categories = (array) ($data['categories'] ?? []);
+        /** @var list<int> $assigned */
+        $assigned = (array) ($data['assigned'] ?? []);
+
+        $checkboxes = '';
+        foreach ($categories as $category) {
+            $checkboxes .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="categories[]" value="%d"%s>%s%s</label>',
+                $category->id,
+                in_array($category->id, $assigned, true) ? ' checked' : '',
+                str_repeat('&nbsp;&nbsp;&nbsp;', $category->depth),
+                e($category->name)
+            );
+        }
+
+        if ($checkboxes === '') {
+            $checkboxes = '<p class="muted small">No categories yet. '
+                . '<a href="/admin/categories">Create one</a> and it will appear here.</p>';
+        }
+
+        $title = e($video->title);
+        $description = e((string) ($video->description ?? ''));
+
+        $thumbnail = $this->modeSelect(
+            'thumbnail_mode',
+            ThumbnailPolicy::choices((string) ($data['inheritedLabel'] ?? 'Inherit')),
+            $video->thumbnailMode
+        );
+
+        $watermark = $this->modeSelect('watermark_mode', [
+            'default' => 'Inherit from the site setting',
+            'on'      => 'Always watermark',
+            'off'     => 'Never watermark',
+        ], $video->watermarkMode);
+
+        $memberOnly = $video->memberOnly ? ' checked' : '';
+        $hidden = $video->hidden ? ' checked' : '';
+        $published = $video->isPublished
+            ? '<span class="pill ok">Published</span>'
+            : '<span class="pill">Draft</span>';
+
+        return <<<HTML
+        <p class="muted small"><a href="/admin/videos">&larr; All videos</a></p>
+        <h1>{$title} {$published}</h1>
+
+        <form method="post" action="/admin/videos">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$video->id}">
+
+          <div class="cols">
+            <div>
+              <fieldset>
+                <legend>Details</legend>
+                <label>Title <input type="text" name="title" value="{$title}" required></label>
+                <label>Description <textarea name="description" rows="5">{$description}</textarea></label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Categories</legend>
+                <p class="muted small">Categories you set here take precedence over the collection this
+                   video came from at your video provider.</p>
+                {$checkboxes}
+              </fieldset>
+            </div>
+
+            <div>
+              <fieldset>
+                <legend>Who can see it</legend>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="member_only" value="1"{$memberOnly}>
+                  Members only
+                </label>
+                <p class="muted small">Removes it from the library entirely for anyone signed out or
+                   not yet approved — they will not know it exists.</p>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="hidden" value="1"{$hidden}>
+                  Hidden
+                </label>
+                <p class="muted small">Not listed anywhere, but still reachable by direct link. Useful
+                   for something you want to share without publishing.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Thumbnail</legend>
+                <label>Who sees the real artwork {$thumbnail}</label>
+                <p class="muted small">Listing and playing are separate here: the library is public and
+                   /watch is not, so anyone can browse titles while only an approved account can play.
+                   Choose "members only" to withhold the artwork too — the image URL is never sent to a
+                   visitor who cannot watch, so it is not merely hidden.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Watermark</legend>
+                <label>Overlay the viewer's email {$watermark}</label>
+                <p class="muted small">Only applies while the Watermark plugin is active.</p>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="btn" name="action" value="save">Save</button>
+            <a class="btn secondary" href="/admin/videos">Cancel</a>
+          </div>
+        </form>
         HTML;
     }
 
@@ -262,10 +389,16 @@ final class AdminView
                 ? '<span class="pill">imported</span>'
                 : '';
 
+            $locked = $category->thumbnailMode === ThumbnailPolicy::MEMBERS
+                ? '<span class="pill warn">members-only art</span>'
+                : '';
+
             $rows .= sprintf(
                 '<tr>
-                   <td>%s<strong>%s</strong> %s<br><span class="muted">/category/%s</span></td>
+                   <td>%s<a href="/admin/categories/%d"><strong>%s</strong></a> %s %s<br>
+                       <span class="muted">/category/%s</span></td>
                    <td class="right">
+                     <a class="btn tiny secondary" href="/admin/categories/%d">Edit</a>
                      <form method="post" class="inline">
                        <input type="hidden" name="_token" value="%s">
                        <input type="hidden" name="id" value="%d">
@@ -275,9 +408,12 @@ final class AdminView
                    </td>
                  </tr>',
                 $indent,
+                $category->id,
                 e($category->name),
                 $imported,
+                $locked,
                 e($category->slug),
+                $category->id,
                 $token,
                 $category->id
             );
@@ -318,6 +454,136 @@ final class AdminView
           </div>
         </div>
         HTML;
+    }
+
+    /**
+     * One category's edit form.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function categoryEdit(array $data): string
+    {
+        /** @var Category $category */
+        $category = $data['category'];
+        $token = e((string) $data['token']);
+
+        /** @var list<Category> $flat */
+        $flat = (array) ($data['flat'] ?? []);
+
+        // A category cannot be moved inside itself or its own descendants, so
+        // its subtree is left out of the parent picker rather than offered and
+        // then rejected on save.
+        $subtree = $category->path;
+        $options = '<option value="0">— top level —</option>';
+        foreach ($flat as $candidate) {
+            if (str_starts_with($candidate->path, $subtree)) {
+                continue;
+            }
+            $options .= sprintf(
+                '<option value="%d"%s>%s%s</option>',
+                $candidate->id,
+                $candidate->id === $category->parentId ? ' selected' : '',
+                str_repeat('&nbsp;&nbsp;&nbsp;', $candidate->depth),
+                e($candidate->name)
+            );
+        }
+
+        $trail = '';
+        foreach ((array) ($data['ancestors'] ?? []) as $ancestor) {
+            $trail .= e($ancestor->name) . ' / ';
+        }
+
+        $name = e($category->name);
+        $slug = e($category->slug);
+        $description = e((string) ($category->description ?? ''));
+
+        $thumbnail = $this->modeSelect(
+            'thumbnail_mode',
+            ThumbnailPolicy::choices((string) ($data['inheritedLabel'] ?? 'Inherit')),
+            $category->thumbnailMode
+        );
+
+        $publishedAttr = $category->isPublished ? ' checked' : '';
+        $memberOnlyAttr = $category->memberOnly ? ' checked' : '';
+        $hiddenAttr = $category->hidden ? ' checked' : '';
+
+        return <<<HTML
+        <p class="muted small"><a href="/admin/categories">&larr; All categories</a></p>
+        <h1><span class="muted">{$trail}</span>{$name}</h1>
+
+        <form method="post" action="/admin/categories">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$category->id}">
+
+          <div class="cols">
+            <div>
+              <fieldset>
+                <legend>Details</legend>
+                <label>Name <input type="text" name="name" value="{$name}" required></label>
+                <label>Address <input type="text" name="slug" value="{$slug}"></label>
+                <p class="muted small">Changing this keeps the old address working — a link printed in
+                   a bulletin will not break because somebody fixed a typo.</p>
+                <label>Parent <select name="parent_id">{$options}</select></label>
+                <label>Description <textarea name="description" rows="4">{$description}</textarea></label>
+              </fieldset>
+            </div>
+
+            <div>
+              <fieldset>
+                <legend>Who can see it</legend>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="is_published" value="1"{$publishedAttr}>
+                  Published
+                </label>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="member_only" value="1"{$memberOnlyAttr}>
+                  Members only
+                </label>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="hidden" value="1"{$hiddenAttr}>
+                  Hidden
+                </label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Thumbnails</legend>
+                <label>Who sees the real artwork {$thumbnail}</label>
+                <p class="muted small">Applies to every video in this category and, unless they say
+                   otherwise, everything nested beneath it. A video's own setting always wins, and where
+                   a video sits in two categories that disagree, "members only" is what applies.</p>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="btn" name="action" value="update">Save</button>
+            <a class="btn secondary" href="/admin/categories">Cancel</a>
+          </div>
+        </form>
+        HTML;
+    }
+
+    /**
+     * A select for one of the three-way inherit/on/off settings.
+     *
+     * @param array<string, string> $choices
+     */
+    private function modeSelect(string $name, array $choices, string $current): string
+    {
+        $options = '';
+        foreach ($choices as $value => $label) {
+            $options .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($value),
+                $value === $current ? ' selected' : '',
+                e($label)
+            );
+        }
+
+        return sprintf('<select name="%s">%s</select>', e($name), $options);
     }
 
     // ---------------------------------------------------------------- users
@@ -692,6 +958,12 @@ final class AdminView
             ? '<span class="muted">not set</span>'
             : e(implode(', ', $list));
 
+        $membersDefault = in_array(
+            (string) ($settings['members_thumbnail_default'] ?? '0'),
+            ['1', 'true', 'on', 'yes'],
+            true
+        ) ? ' checked' : '';
+
         return <<<HTML
         <h1>Settings</h1>
 
@@ -699,6 +971,15 @@ final class AdminView
           <input type="hidden" name="_token" value="{$token}">
           <label>Site name <input type="text" name="site_name" value="{$this->attr($settings['site_name'] ?? '')}"></label>
           <label>Timezone <select name="timezone">{$zones}</select></label>
+
+          <label class="checkbox">
+            <input type="checkbox" name="members_thumbnail_default" value="1"{$membersDefault}>
+            Withhold thumbnails from anyone who cannot watch
+          </label>
+          <p class="muted small">The starting point for every video and category. Anyone signed out or
+             not yet approved sees a "Members only" placeholder instead of the artwork — the image URL
+             is never sent to them. Individual categories and videos can override this either way.</p>
+
           <button class="btn">Save</button>
         </form>
 

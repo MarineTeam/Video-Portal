@@ -256,8 +256,13 @@ $result = (new Installer($config))->install([
     ],
     'providers' => [
         'auth'  => ['slug' => 'local', 'credentials' => []],
+        // A pull zone is configured so thumbnail URLs are actually minted.
+        // Signing is local — no network call — and without it every thumbnail
+        // would be null, which would quietly make the members-only artwork
+        // checks below assert nothing at all.
         'video' => ['slug' => 'bunny', 'credentials' => [
             'library_id' => '1', 'api_key' => 'x', 'token_auth_key' => 'y',
+            'cdn_hostname' => 'vz-smoke-test.b-cdn.net', 'cdn_token_key' => 'z',
         ]],
         // Mail is deliberately left unconfigured: an empty host makes
         // SmtpProvider::isConfigured() false, so send() returns a failure
@@ -601,6 +606,122 @@ $noCsrf = postWithJar($baseUrl . '/admin/shares/create', [
     'emails' => 'nocsrf@smoke.test',
 ], $jar);
 check('A form post without a CSRF token is refused', $noCsrf['status'] === 419, "got {$noCsrf['status']}");
+
+echo "\nContent editing (signed in)\n";
+
+/*
+ * The video and category edit screens.
+ *
+ * Their save handlers existed long before any form did, so everything below is
+ * really asking one question: can an administrator actually reach the settings
+ * the backend has always accepted?
+ */
+$videoList = getWithJar($baseUrl . '/admin/videos', $jar);
+check('Videos screen links to an edit page', str_contains($videoList['body'], '/admin/videos/' . $videoRow));
+
+$videoEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('Video edit screen renders', $videoEdit['status'] === 200, "got {$videoEdit['status']}");
+check('It offers category assignment', str_contains($videoEdit['body'], 'name="categories[]"'));
+check('It offers the thumbnail setting', str_contains($videoEdit['body'], 'name="thumbnail_mode"'));
+check('It says what "inherit" currently resolves to', str_contains($videoEdit['body'], 'Inherit — currently'));
+
+$categoryRow = (int) $db->value('SELECT id FROM {categories} LIMIT 1');
+
+$categoryEdit = getWithJar($baseUrl . '/admin/categories/' . $categoryRow, $jar);
+check('Category edit screen renders', $categoryEdit['status'] === 200, "got {$categoryEdit['status']}");
+check('It offers the thumbnail setting', str_contains($categoryEdit['body'], 'name="thumbnail_mode"'));
+
+/* Put the video in the category — the thing that was impossible before. */
+$assigned = postWithJar($baseUrl . '/admin/videos', [
+    '_token'         => csrfFrom($videoEdit['body']),
+    'id'             => (string) $videoRow,
+    'action'         => 'save',
+    'title'          => 'A Test Video',
+    'categories'     => [(string) $categoryRow],
+    'thumbnail_mode' => 'default',
+    'watermark_mode' => 'default',
+], $jar);
+
+check('Saving a video succeeds', $assigned['status'] === 302, "got {$assigned['status']}");
+check(
+    'The video is now in the category',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {video_categories} WHERE video_id = ? AND category_id = ?',
+        [$videoRow, $categoryRow]
+    ) === 1,
+    'the assignment did not stick'
+);
+
+echo "\nMembers-only thumbnails\n";
+
+/*
+ * The artwork is withheld by never minting the URL, so the only honest test is
+ * to read what a signed-out visitor's HTML actually contains.
+ */
+$publicBefore = get($baseUrl . '/');
+check(
+    'A guest sees real artwork by default',
+    str_contains($publicBefore['body'], 'b-cdn.net'),
+    'no thumbnail URL was rendered at all, so the checks below would prove nothing'
+);
+
+/* Lock the whole category. */
+$lockCategory = postWithJar($baseUrl . '/admin/categories', [
+    '_token'         => csrfFrom($categoryEdit['body']),
+    'id'             => (string) $categoryRow,
+    'action'         => 'update',
+    'name'           => 'Sermons',
+    'is_published'   => '1',
+    'thumbnail_mode' => 'members',
+], $jar);
+
+check('Locking a category succeeds', $lockCategory['status'] === 302, "got {$lockCategory['status']}");
+
+$publicAfter = get($baseUrl . '/');
+check('The library still lists the video', str_contains($publicAfter['body'], 'A Test Video'));
+check('A guest is shown the placeholder', str_contains($publicAfter['body'], 'Members only'));
+check(
+    'The real thumbnail URL is never sent',
+    !str_contains($publicAfter['body'], 'b-cdn.net'),
+    'the artwork was hidden in the markup rather than withheld — it is a right-click away'
+);
+
+/* An administrator can still watch, so they still see the artwork. */
+$adminView = getWithJar($baseUrl . '/', $jar);
+check(
+    'Someone who can watch still sees the artwork',
+    str_contains($adminView['body'], 'b-cdn.net'),
+    'the placeholder is showing to people who are entitled to the real thing'
+);
+
+/* And one video can be forced public inside a locked category. */
+$forcePublic = postWithJar($baseUrl . '/admin/videos', [
+    '_token'         => csrfFrom($videoEdit['body']),
+    'id'             => (string) $videoRow,
+    'action'         => 'save',
+    'title'          => 'A Test Video',
+    'categories'     => [(string) $categoryRow],
+    'thumbnail_mode' => 'public',
+], $jar);
+
+check('Overriding one video succeeds', $forcePublic['status'] === 302, "got {$forcePublic['status']}");
+
+$publicOverride = get($baseUrl . '/');
+check(
+    'A video set to public overrides its locked category',
+    str_contains($publicOverride['body'], 'b-cdn.net'),
+    'the per-video escape hatch does not work'
+);
+
+/* Put it back, so the plugin checks below run against a normal library. */
+postWithJar($baseUrl . '/admin/categories', [
+    '_token'         => csrfFrom($categoryEdit['body']),
+    'id'             => (string) $categoryRow,
+    'action'         => 'update',
+    'name'           => 'Sermons',
+    'is_published'   => '1',
+    'thumbnail_mode' => 'default',
+], $jar);
 
 echo "\nBundled plugins (signed in)\n";
 

@@ -63,8 +63,10 @@ final class Routes
         $router->get('/admin', [AdminController::class, 'dashboard'], ['admin.area']);
         $router->get('/admin/videos', [AdminController::class, 'videos'], ['admin.area']);
         $router->post('/admin/videos', [AdminController::class, 'updateVideo'], ['admin.area']);
+        $router->get('/admin/videos/{id}', [AdminController::class, 'editVideo'], ['admin.area']);
         $router->get('/admin/categories', [AdminController::class, 'categories'], ['admin.area']);
         $router->post('/admin/categories', [AdminController::class, 'saveCategory'], ['admin.area']);
+        $router->get('/admin/categories/{id}', [AdminController::class, 'editCategory'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
         $router->post('/admin/users', [AdminController::class, 'saveUser'], ['admin.area']);
         $router->get('/admin/plugins', [AdminController::class, 'plugins'], ['admin.area']);
