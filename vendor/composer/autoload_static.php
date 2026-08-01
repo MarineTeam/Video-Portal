@@ -103,6 +103,7 @@ class ComposerStaticInitae9cdb4486d610beb9cff40d8f421199
         'Portal\\Plugins\\PluginContext' => __DIR__ . '/../..' . '/core/Plugins/PluginContext.php',
         'Portal\\Plugins\\PluginHeader' => __DIR__ . '/../..' . '/core/Plugins/PluginHeader.php',
         'Portal\\Plugins\\PluginManager' => __DIR__ . '/../..' . '/core/Plugins/PluginManager.php',
+        'Portal\\Plugins\\PluginPage' => __DIR__ . '/../..' . '/core/Plugins/PluginPage.php',
         'Portal\\Providers\\Provider' => __DIR__ . '/../..' . '/core/Providers/Provider.php',
         'Portal\\Providers\\ProviderRegistry' => __DIR__ . '/../..' . '/core/Providers/ProviderRegistry.php',
         'Portal\\Providers\\SettingField' => __DIR__ . '/../..' . '/core/Providers/SettingField.php',

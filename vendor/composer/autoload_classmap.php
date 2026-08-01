@@ -75,6 +75,7 @@ return array(
     'Portal\\Plugins\\PluginContext' => $baseDir . '/core/Plugins/PluginContext.php',
     'Portal\\Plugins\\PluginHeader' => $baseDir . '/core/Plugins/PluginHeader.php',
     'Portal\\Plugins\\PluginManager' => $baseDir . '/core/Plugins/PluginManager.php',
+    'Portal\\Plugins\\PluginPage' => $baseDir . '/core/Plugins/PluginPage.php',
     'Portal\\Providers\\Provider' => $baseDir . '/core/Providers/Provider.php',
     'Portal\\Providers\\ProviderRegistry' => $baseDir . '/core/Providers/ProviderRegistry.php',
     'Portal\\Providers\\SettingField' => $baseDir . '/core/Providers/SettingField.php',

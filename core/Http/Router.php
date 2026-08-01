@@ -94,6 +94,22 @@ final class Router
         $this->globalMiddleware = $names;
     }
 
+    /**
+     * Add one middleware to every route, keeping what is already there.
+     *
+     * The wholesale setter above cannot be used by a plugin: two plugins each
+     * calling it would leave only the second one's guard installed, and the
+     * first would fail silently and completely. Since a plugin that wants a
+     * global guard is usually enforcing something (geo-blocking, maintenance
+     * mode), silent removal is the worst possible failure mode.
+     */
+    public function addGlobalMiddleware(string $name): void
+    {
+        if (!in_array($name, $this->globalMiddleware, true)) {
+            $this->globalMiddleware[] = $name;
+        }
+    }
+
     /** @return list<Route> */
     public function routes(): array
     {

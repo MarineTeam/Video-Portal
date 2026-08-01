@@ -203,7 +203,37 @@ abstract class Controller
             }
         }
 
+        // Pages registered by plugins, filtered by the same capability rule.
+        // Without this a plugin could call addAdminPage() and get a working
+        // route that nothing on the site ever links to — a page reachable only
+        // by someone who read the source.
+        foreach ($this->pluginPages() as $page) {
+            if ($this->guard()->can($page['capability'])) {
+                $visible[] = [
+                    'label' => $page['title'],
+                    'path'  => $page['path'],
+                    'key'   => 'plugin:' . $page['plugin'],
+                ];
+            }
+        }
+
         return $visible;
+    }
+
+    /**
+     * @return list<array{plugin: string, title: string, path: string, capability: string, position: int}>
+     */
+    private function pluginPages(): array
+    {
+        try {
+            /** @var \Portal\Plugins\PluginManager $plugins */
+            $plugins = $this->container->get(\Portal\Plugins\PluginManager::class);
+            return $plugins->adminPages();
+        } catch (\Throwable) {
+            // A navigation bar is not worth a 500. Losing a plugin's link is
+            // survivable; losing the screen that deactivates it is not.
+            return [];
+        }
     }
 
     /** @param array<string, mixed> $data */
