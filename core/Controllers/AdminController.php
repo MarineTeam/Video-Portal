@@ -16,6 +16,7 @@ use Portal\Http\Response;
 use Portal\Plugins\PluginManager;
 use Portal\Providers\ProviderRegistry;
 use Portal\Support\Audit;
+use Portal\Support\PackageInstaller;
 use Throwable;
 
 /**
@@ -185,6 +186,209 @@ final class AdminController extends Controller
                 return $this->back($request, 'Video saved.');
         }
     }
+
+    // --------------------------------------------------------- distribution
+
+    public function installPlugin(Request $request): Response
+    {
+        return $this->installPackage($request, PackageInstaller::KIND_PLUGIN, Capability::MANAGE_PLUGINS);
+    }
+
+    public function installTheme(Request $request): Response
+    {
+        return $this->installPackage($request, PackageInstaller::KIND_THEME, Capability::MANAGE_THEMES);
+    }
+
+    /**
+     * Install a plugin or theme from an uploaded ZIP.
+     *
+     * Both kinds share everything but a capability and a directory, and the
+     * dangerous part — extraction — is the same code either way. Two copies of
+     * this would eventually be two different sets of safety checks.
+     */
+    private function installPackage(Request $request, string $kind, string $capability): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require($capability);
+
+        if (!PackageInstaller::uploadsAllowed($this->config())) {
+            return $this->back(
+                $request,
+                'Installing from a file is switched off on this site. Remove allow_package_uploads '
+                . 'from config.php to turn it back on, or upload the folder over FTP.',
+                'error'
+            );
+        }
+
+        /** @var array<string, mixed> $file */
+        $file = (array) ($request->files['package'] ?? []);
+
+        $result = (new PackageInstaller($kind))->installUpload($file);
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            $kind . '.install',
+            $kind,
+            $result['slug'] ?? null,
+            $result['ok'] ? 'installed' : $result['message']
+        );
+
+        // Discovery is memoised, and the listing it holds was taken before this
+        // upload existed. Without forgetting it first, the screen reports
+        // "Installed" and then does not list the thing it just installed.
+        if ($result['ok'] && $kind === PackageInstaller::KIND_PLUGIN) {
+            $plugins = $this->container->get(PluginManager::class);
+            $plugins->forgetDiscovered();
+            $plugins->sync();
+        }
+
+        if ($result['ok'] && $kind === PackageInstaller::KIND_THEME) {
+            $this->themeManager()->forgetDiscovered();
+            $this->themeManager()->sync();
+        }
+
+        return $this->back($request, $result['message'], $result['ok'] ? 'success' : 'error');
+    }
+
+    /**
+     * Download this site's configuration as JSON.
+     *
+     * Deliberately excludes every credential. Provider secrets are encrypted
+     * with this install's APP_KEY and would not decrypt anywhere else, so
+     * exporting them would produce a file that is both a liability and useless.
+     */
+    public function exportSettings(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $themes = $this->themeManager();
+
+        $payload = [
+            'exportedAt' => date('c'),
+            'version'    => PORTAL_VERSION,
+            'settings'   => $this->exportableSettings(),
+            'theme'      => [
+                'active'   => $themes->activeSlug(),
+                'settings' => $themes->settings($themes->activeSlug()),
+            ],
+            'plugins'    => $this->db()->column('SELECT slug FROM {plugins} WHERE is_active = 1'),
+        ];
+
+        Audit::log($this->db(), $this->user()?->email, 'settings.export');
+
+        $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}';
+
+        return Response::html($json)
+            ->header('Content-Type', 'application/json; charset=utf-8')
+            ->header(
+                'Content-Disposition',
+                'attachment; filename="video-portal-settings-' . date('Y-m-d') . '.json"'
+            )
+            ->private();
+    }
+
+    public function importSettings(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        /** @var array<string, mixed> $file */
+        $file = (array) ($request->files['settings'] ?? []);
+        $tmp = (string) ($file['tmp_name'] ?? '');
+
+        if ($tmp === '' || !is_uploaded_file($tmp)) {
+            return $this->back($request, 'No file was chosen.', 'error');
+        }
+
+        $decoded = json_decode((string) file_get_contents($tmp), true);
+
+        if (!is_array($decoded)) {
+            return $this->back($request, 'That file is not a settings export.', 'error');
+        }
+
+        $applied = $this->applyImport($decoded);
+
+        Audit::log($this->db(), $this->user()?->email, 'settings.import', null, null, implode(', ', $applied));
+
+        return $this->back($request, $applied === []
+            ? 'Nothing in that file could be applied.'
+            : 'Imported: ' . implode(', ', $applied) . '.');
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<string> what was actually changed
+     */
+    private function applyImport(array $payload): array
+    {
+        $applied = [];
+
+        if (isset($payload['settings']) && is_array($payload['settings'])) {
+            $pairs = [];
+            foreach ($payload['settings'] as $key => $value) {
+                // Only keys this version knows about. An export from a newer
+                // version would otherwise write settings nothing reads, which
+                // then reappear if the site is upgraded and behave unexpectedly.
+                if (is_string($key) && is_scalar($value) && in_array($key, self::EXPORTABLE_SETTINGS, true)) {
+                    $pairs[$key] = (string) $value;
+                }
+            }
+
+            if ($pairs !== []) {
+                $this->config()->setSettings($pairs);
+                $applied[] = count($pairs) . ' site setting(s)';
+            }
+        }
+
+        if (isset($payload['theme']['settings']) && is_array($payload['theme']['settings'])) {
+            $themes = $this->themeManager();
+            $values = [];
+            foreach ($payload['theme']['settings'] as $key => $value) {
+                if (is_string($key) && is_scalar($value)) {
+                    $values[$key] = (string) $value;
+                }
+            }
+
+            if ($values !== []) {
+                // Applied to the CURRENTLY active theme, not the one named in
+                // the file. Importing settings must not silently switch the
+                // site's appearance to a theme that may not be installed.
+                $themes->saveSettings($themes->activeSlug(), $values);
+                $applied[] = 'theme customisations';
+            }
+        }
+
+        return $applied;
+    }
+
+    /** @return array<string, string|null> */
+    private function exportableSettings(): array
+    {
+        $out = [];
+        foreach (self::EXPORTABLE_SETTINGS as $key) {
+            $out[$key] = $this->config()->setting($key);
+        }
+
+        return $out;
+    }
+
+    /**
+     * Settings safe to move between installs.
+     *
+     * An allow-list rather than "everything except secrets", because the
+     * dangerous direction is a setting added later that nobody remembers to
+     * exclude. A new key is invisible to export until someone adds it here on
+     * purpose.
+     */
+    private const EXPORTABLE_SETTINGS = [
+        'site_name',
+        'timezone',
+        'watermark_default',
+        'members_thumbnail_default',
+        'geo_enabled',
+        'admin_geo_enabled',
+    ];
 
     // ---------------------------------------------------------- permissions
 
@@ -918,7 +1122,10 @@ final class AdminController extends Controller
         /** @var PluginManager $plugins */
         $plugins = $this->container->get(PluginManager::class);
 
-        return $this->admin('plugins', ['plugins' => $plugins->listForAdmin()]);
+        return $this->admin('plugins', [
+            'plugins'        => $plugins->listForAdmin(),
+            'uploadsAllowed' => PackageInstaller::uploadsAllowed($this->config()),
+        ]);
     }
 
     public function togglePlugin(Request $request): Response
@@ -954,10 +1161,11 @@ final class AdminController extends Controller
         $active = $themes->active();
 
         return $this->admin('themes', [
-            'themes'     => $themes->listForAdmin(),
-            'customizer' => $active->customizer,
-            'settings'   => $themes->settings($active->slug) + $active->defaults(),
-            'activeSlug' => $active->slug,
+            'themes'         => $themes->listForAdmin(),
+            'customizer'     => $active->customizer,
+            'settings'       => $themes->settings($active->slug) + $active->defaults(),
+            'activeSlug'     => $active->slug,
+            'uploadsAllowed' => PackageInstaller::uploadsAllowed($this->config()),
         ]);
     }
 

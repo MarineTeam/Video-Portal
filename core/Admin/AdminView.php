@@ -1451,18 +1451,65 @@ final class AdminView
         }
 
         if ($rows === '') {
-            $rows = '<tr><td colspan="3" class="muted">No plugins are installed. '
-                . 'Add one by copying its folder into plugins/.</td></tr>';
+            $rows = '<tr><td colspan="3" class="muted">No plugins are installed.</td></tr>';
         }
+
+        $installer = $this->packageForm($data, 'plugin', '/admin/plugins/install');
 
         return <<<HTML
         <h1>Plugins</h1>
         <p class="muted">Deactivating keeps a plugin's data, so turning it back on restores everything.
            Uninstalling removes its data permanently.</p>
+        {$installer}
         <table>
           <thead><tr><th>Plugin</th><th>Status</th><th></th></tr></thead>
           <tbody>{$rows}</tbody>
         </table>
+        HTML;
+    }
+
+    /**
+     * The install-from-a-file form, shared by plugins and themes.
+     *
+     * Says out loud what installing a package means. Everyone knows a plugin is
+     * code; not everyone has connected that to "this runs on my site with the
+     * same access the site has", and an admin about to install something from a
+     * forum post is exactly who needs the reminder.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function packageForm(array $data, string $kind, string $action): string
+    {
+        $token = e((string) $data['token']);
+
+        if (empty($data['uploadsAllowed'])) {
+            return <<<HTML
+            <fieldset>
+              <legend>Install from a file</legend>
+              <p class="muted small">Switched off on this site. Remove
+                 <code>allow_package_uploads</code> from <code>config.php</code> to turn it back on,
+                 or upload the folder over FTP.</p>
+            </fieldset>
+            HTML;
+        }
+
+        $folder = $kind === 'plugin' ? 'plugins/' : 'themes/';
+
+        return <<<HTML
+        <fieldset>
+          <legend>Install from a file</legend>
+          <form method="post" action="{$action}" enctype="multipart/form-data" class="toolbar">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="file" name="package" accept=".zip,application/zip" required>
+            <button class="btn secondary">Install</button>
+          </form>
+          <p class="muted small">A .zip containing one folder. Uploading a {$kind} that is already
+             installed replaces its files and keeps its settings.</p>
+          <p class="muted small"><strong>A {$kind} is code that runs on this site</strong>, with the same
+             access this site has to your database and your video service. Install them from sources you
+             trust, exactly as you would anything else you run on a server. You can also copy the folder
+             into <code>{$folder}</code> over FTP and skip this form entirely.</p>
+        </fieldset>
         HTML;
     }
 
@@ -1523,8 +1570,11 @@ final class AdminView
             );
         }
 
+        $installer = $this->packageForm($data, 'theme', '/admin/themes/install');
+
         return <<<HTML
         <h1>Appearance</h1>
+        {$installer}
         <div class="cards">{$cards}</div>
 
         <h2>Customize</h2>
@@ -1738,6 +1788,23 @@ final class AdminView
           <thead><tr><th>Task</th><th>Last run</th><th>Result</th><th>Next</th></tr></thead>
           <tbody>{$jobs}</tbody>
         </table>
+
+        <h2>Move this site's setup elsewhere</h2>
+        <p class="muted">Exports the settings on this page, your theme customisations, and which plugins
+           are switched on. <strong>Credentials are deliberately left out</strong> — they are encrypted
+           with this install's key and would not decrypt anywhere else, so exporting them would produce
+           a file that is both a liability and useless.</p>
+        <div class="actions">
+          <a class="btn secondary" href="/admin/settings/export">Download settings</a>
+        </div>
+        <form method="post" action="/admin/settings/import" enctype="multipart/form-data" class="toolbar">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="file" name="settings" accept=".json,application/json" required>
+          <button class="btn secondary">Import</button>
+        </form>
+        <p class="muted small">Importing applies theme customisations to whichever theme is active here,
+           not the one named in the file — bringing settings across should never silently change how the
+           site looks by switching to a theme that may not be installed.</p>
 
         <h2>Country restrictions</h2>
         <p class="muted">These live in config.php and cannot be edited here on purpose: whitelisting

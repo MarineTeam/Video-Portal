@@ -107,6 +107,20 @@ final class PluginManager
     }
 
     /**
+     * Forget what is on disk, so the next discover() looks again.
+     *
+     * Discovery is memoised per request, which is right for the usual path —
+     * several calls per admin page render, one glob. It is wrong immediately
+     * after installing a package: the folder appeared during THIS request, and
+     * without this the screen reports "Installed" and then does not list it,
+     * because sync() reconciles against a listing taken before the upload.
+     */
+    public function forgetDiscovered(): void
+    {
+        $this->discovered = null;
+    }
+
+    /**
      * Reconcile the database against what is on disk.
      *
      * Plugins are installed by copying a directory, so the database can be out

@@ -98,6 +98,44 @@ function postWithJar(string $url, array $fields, string $jar): array
     return withJar($url, $jar, http_build_query($fields));
 }
 
+/**
+ * A real multipart file upload, cookies and all.
+ *
+ * CURLFile rather than a hand-built body: the point is to exercise the same
+ * path a browser takes, and a form that only ever receives urlencoded input in
+ * testing is not the form anybody actually uses.
+ *
+ * @param array<string, string> $fields
+ * @return array{status: int, body: string, headers: array<string, string>}
+ */
+function uploadWithJar(string $url, array $fields, string $fileField, string $path, string $jar): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER         => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $fields + [
+            $fileField => new CURLFile($path, 'application/zip', basename($path)),
+        ],
+        CURLOPT_COOKIEJAR      => $jar,
+        CURLOPT_COOKIEFILE     => $jar,
+        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_FOLLOWLOCATION => false,
+    ]);
+
+    $raw = (string) curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    return [
+        'status'  => $status,
+        'body'    => substr($raw, $headerSize),
+        'headers' => parseHeaders(substr($raw, 0, $headerSize)),
+    ];
+}
+
 /** @return array{status: int, body: string, headers: array<string, string>} */
 function withJar(string $url, string $jar, ?string $body): array
 {
@@ -249,6 +287,50 @@ $cleanup = static function () use ($admin, $database, &$serverProcess, &$serverL
     if (is_file(PORTAL_CONFIG_FILE)) {
         @unlink(PORTAL_CONFIG_FILE);
     }
+    // Anything the install-from-a-file checks put on disk. Deliberately named
+    // one by one rather than wiping plugins/, which holds the bundled ones.
+    $strays = [PORTAL_PLUGINS . '/smoketest', PORTAL_PLUGINS . '/evil'];
+    foreach ((array) glob(PORTAL_PLUGINS . '/.*.replacing-*', GLOB_ONLYDIR) as $backup) {
+        if (is_string($backup)) {
+            $strays[] = $backup;
+        }
+    }
+
+    foreach ($strays as $stray) {
+        if (!is_dir($stray)) {
+            continue;
+        }
+
+        foreach ((array) glob($stray . '/*') as $file) {
+            if (is_string($file)) {
+                @unlink($file);
+            }
+        }
+
+        // Retried, because on Windows rmdir routinely loses a race with the OS
+        // releasing the handle to a file deleted microseconds earlier. Left
+        // alone this leaves an empty folder in plugins/ — harmless, since
+        // discovery skips anything without a plugin.php, but it accumulates and
+        // it makes a clean tree look dirty.
+        for ($attempt = 0; $attempt < 5 && is_dir($stray); $attempt++) {
+            clearstatcache(true, $stray);
+            @rmdir($stray);
+            if (is_dir($stray)) {
+                usleep(100000);
+            }
+        }
+
+        if (is_dir($stray)) {
+            // Something outside this script is holding it — on a tree synced by
+            // OneDrive, which is where this repo lives, that is routine. The
+            // folder is now empty and discovery ignores anything without a
+            // plugin.php, so it is untidy rather than harmful, and the next run
+            // sweeps it at startup.
+            echo "  note: {$stray} is empty but could not be removed; the next run will clear it.\n";
+        }
+    }
+    @unlink(PORTAL_PUBLIC . '/smoke-hack.php');
+
     if (isset($serverLog) && is_file($serverLog)) {
         @unlink($serverLog);
     }
@@ -257,6 +339,25 @@ $cleanup = static function () use ($admin, $database, &$serverProcess, &$serverL
 };
 
 register_shutdown_function($cleanup);
+
+/*
+ * Sweep anything a previous run could not delete.
+ *
+ * Removing a directory can fail on a tree a sync agent is watching, so the
+ * teardown is not guaranteed to succeed. Doing it again at STARTUP is, because
+ * by now nothing is holding it — and it means residue can never accumulate
+ * across runs even when an individual teardown loses the race.
+ */
+foreach ([PORTAL_PLUGINS . '/smoketest', PORTAL_PLUGINS . '/evil'] as $stale) {
+    if (is_dir($stale)) {
+        foreach ((array) glob($stale . '/*') as $file) {
+            if (is_string($file)) {
+                @unlink($file);
+            }
+        }
+        @rmdir($stale);
+    }
+}
 
 $config = new Config();
 $result = (new Installer($config))->install([
@@ -665,6 +766,99 @@ check(
         [$videoRow, $categoryRow]
     ) === 1,
     'the assignment did not stick'
+);
+
+echo "\nInstalling from a file\n";
+
+$pluginsScreen = getWithJar($baseUrl . '/admin/plugins', $jar);
+check('Plugins screen offers an installer', str_contains($pluginsScreen['body'], 'name="package"'));
+check(
+    'It says plainly that a plugin is code',
+    str_contains($pluginsScreen['body'], 'is code that runs on this site'),
+    'an admin about to install something from a forum post is exactly who needs telling'
+);
+
+$themesScreen = getWithJar($baseUrl . '/admin/themes', $jar);
+check('Appearance screen offers an installer', str_contains($themesScreen['body'], 'name="package"'));
+
+/*
+ * Upload a real archive through the real form, then a hostile one.
+ *
+ * multipart has to be built by hand here because postWithJar sends urlencoded
+ * bodies; a form that only ever gets urlencoded input is not the form users hit.
+ */
+$goodZip = sys_get_temp_dir() . '/portal-smoke-plugin-' . getmypid() . '.zip';
+$zip = new ZipArchive();
+$zip->open($goodZip, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+$zip->addFromString('smoketest/plugin.php', "<?php\n/**\n * Plugin Name: Smoke Test Plugin\n */\n");
+$zip->close();
+
+$installed = uploadWithJar(
+    $baseUrl . '/admin/plugins/install',
+    ['_token' => csrfFrom($pluginsScreen['body'])],
+    'package',
+    $goodZip,
+    $jar
+);
+
+check('Installing a plugin from a file succeeds', $installed['status'] === 302, "got {$installed['status']}");
+check(
+    'The plugin folder appeared',
+    is_dir(PORTAL_PLUGINS . '/smoketest'),
+    'nothing was written'
+);
+check(
+    'It is recorded but switched off',
+    (int) ($db->value('SELECT is_active FROM {plugins} WHERE slug = ?', ['smoketest']) ?? -1) === 0,
+    'an uploaded plugin must not activate itself'
+);
+
+$evilZip = sys_get_temp_dir() . '/portal-smoke-evil-' . getmypid() . '.zip';
+$zip = new ZipArchive();
+$zip->open($evilZip, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+$zip->addFromString('evil/plugin.php', "<?php\n/**\n * Plugin Name: Evil\n */\n");
+$zip->addFromString('evil/../../public/smoke-hack.php', '<?php echo "pwned";');
+$zip->close();
+
+uploadWithJar(
+    $baseUrl . '/admin/plugins/install',
+    ['_token' => csrfFrom($pluginsScreen['body'])],
+    'package',
+    $evilZip,
+    $jar
+);
+
+check(
+    'A traversal archive writes nothing outside its folder',
+    !is_file(PORTAL_PUBLIC . '/smoke-hack.php'),
+    'AN ARCHIVE ESCAPED ITS DIRECTORY'
+);
+check('And it is not installed either', !is_dir(PORTAL_PLUGINS . '/evil'));
+
+$noCsrfInstall = uploadWithJar($baseUrl . '/admin/plugins/install', [], 'package', $goodZip, $jar);
+check(
+    'Installing without a CSRF token is refused',
+    $noCsrfInstall['status'] === 419,
+    "got {$noCsrfInstall['status']}"
+);
+
+@unlink($goodZip);
+@unlink($evilZip);
+
+echo "\nExport and import\n";
+
+$export = getWithJar($baseUrl . '/admin/settings/export', $jar);
+check('Settings export downloads', $export['status'] === 200, "got {$export['status']}");
+check('It is offered as a file', str_contains($export['headers']['content-disposition'] ?? '', 'attachment'));
+
+$exported = json_decode($export['body'], true);
+check('It is valid JSON', is_array($exported), 'the export could not be parsed');
+check('It carries the site settings', isset($exported['settings']['site_name']));
+check(
+    'It carries no credentials',
+    !str_contains(strtolower($export['body']), 'api_key')
+        && !str_contains(strtolower($export['body']), 'password'),
+    'a settings export must not become a secrets leak'
 );
 
 echo "\nPermissions\n";
