@@ -186,6 +186,206 @@ final class AdminController extends Controller
         }
     }
 
+    // ---------------------------------------------------------- permissions
+
+    public function permissions(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_PERMISSIONS);
+
+        $repo = $this->permissionRepo();
+
+        return $this->admin('permissions', [
+            'roles'        => $repo->roles(),
+            'groups'       => $repo->groups(),
+            'grants'       => $repo->grants(),
+            'capabilities' => Capability::all(),
+            'siteOnly'     => Capability::siteOnly(),
+            'categories'   => $this->container->get(CategoryRepository::class)->all(true),
+            'seriesList'   => $this->seriesRepo()->all(true),
+        ]);
+    }
+
+    public function savePermissions(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_PERMISSIONS);
+
+        $repo = $this->permissionRepo();
+        $action = $request->input('action') ?? '';
+        $actor = $this->user()?->email;
+
+        try {
+            $message = match ($action) {
+                'role' => $this->saveRoleCapabilities($repo, $request, $actor),
+                'group-create' => $this->createPermissionGroup($repo, $request, $actor),
+                'group-delete' => $this->deletePermissionGroup($repo, $request, $actor),
+                'group-capabilities' => $this->saveGroupCapabilities($repo, $request, $actor),
+                'group-add-member' => $this->addPermissionGroupMember($repo, $request, $actor),
+                'group-remove-member' => $this->removePermissionGroupMember($repo, $request, $actor),
+                'grant' => $this->createGrant($repo, $request, $actor),
+                'revoke' => $this->revokeGrant($repo, $request, $actor),
+                default => throw HttpException::badRequest('Unknown action.'),
+            };
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        // Anything cached during this request now describes the state the admin
+        // just changed away from.
+        $this->container->get(\Portal\Auth\Capabilities::class)->flush();
+
+        return $this->back($request, $message);
+    }
+
+    private function saveRoleCapabilities(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $roleId = (int) ($request->input('role_id') ?? 0);
+        $repo->setRoleCapabilities($roleId, $request->inputArray('capabilities'));
+
+        Audit::log($this->db(), $actor, 'permissions.role', 'role', (string) $roleId);
+
+        return 'Role updated.';
+    }
+
+    private function createPermissionGroup(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = $repo->createGroup(
+            $request->input('name') ?? '',
+            $request->input('description')
+        );
+
+        Audit::log($this->db(), $actor, 'permissions.group.create', 'group', (string) $id);
+
+        return 'Group created.';
+    }
+
+    private function deletePermissionGroup(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $repo->deleteGroup($id);
+
+        Audit::log($this->db(), $actor, 'permissions.group.delete', 'group', (string) $id);
+
+        return 'Group deleted. Everyone in it loses whatever it granted.';
+    }
+
+    private function saveGroupCapabilities(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $repo->setGroupCapabilities($id, $request->inputArray('capabilities'));
+
+        Audit::log($this->db(), $actor, 'permissions.group.capabilities', 'group', (string) $id);
+
+        return 'Group permissions updated.';
+    }
+
+    private function addPermissionGroupMember(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $email = $request->input('email') ?? '';
+        $repo->addGroupMember($id, $email);
+
+        Audit::log($this->db(), $actor, 'permissions.group.add', 'group', (string) $id, $email);
+
+        return 'Added to the group.';
+    }
+
+    private function removePermissionGroupMember(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $email = $request->input('email') ?? '';
+        $repo->removeGroupMember($id, $email);
+
+        Audit::log($this->db(), $actor, 'permissions.group.remove', 'group', (string) $id, $email);
+
+        return 'Removed from the group.';
+    }
+
+    private function createGrant(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $subjectType = $request->input('subject_type') ?? 'email';
+
+        // The scope picker is one dropdown — "site", or "category:12" — because
+        // a type select plus an id select would let someone choose a category
+        // type with a series id and produce a grant that silently matches
+        // nothing.
+        [$scopeType, $scopeId] = $this->parseScope($request->input('scope') ?? 'site');
+
+        $repo->grant(
+            $subjectType,
+            $subjectType === 'email'
+                ? ($request->input('email') ?? '')
+                : ($request->input('subject_id') ?? '0'),
+            $request->input('capability') ?? '',
+            $scopeType,
+            $scopeId,
+            $actor
+        );
+
+        Audit::log($this->db(), $actor, 'permissions.grant', null, null, $request->input('capability'));
+
+        return 'Permission granted.';
+    }
+
+    private function revokeGrant(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('grant_id') ?? 0);
+        $repo->revoke($id);
+
+        Audit::log($this->db(), $actor, 'permissions.revoke', null, (string) $id);
+
+        return 'Permission removed.';
+    }
+
+    private function permissionRepo(): \Portal\Auth\PermissionRepository
+    {
+        return new \Portal\Auth\PermissionRepository($this->db());
+    }
+
+    /**
+     * "site" or "category:12" into a type and an id.
+     *
+     * Anything unrecognised becomes site-wide rather than throwing. That is the
+     * safe direction here only because the repository re-validates the type and
+     * refuses a scoped grant with no id — this is parsing, not authorisation.
+     *
+     * @return array{0: string, 1: int}
+     */
+    private function parseScope(string $raw): array
+    {
+        if (!str_contains($raw, ':')) {
+            return ['site', 0];
+        }
+
+        [$type, $id] = explode(':', $raw, 2);
+
+        return [$type, (int) $id];
+    }
+
     // ---------------------------------------------------------------- trash
 
     public function trash(Request $request): Response

@@ -192,6 +192,7 @@ abstract class Controller
             ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],
             ['label' => 'Groups',     'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => \Portal\Auth\Capability::MANAGE_VIEWERS],
             ['label' => 'People',     'path' => '/admin/users',         'key' => 'users',         'cap' => \Portal\Auth\Capability::MANAGE_USERS],
+            ['label' => 'Permissions', 'path' => '/admin/permissions',  'key' => 'permissions',   'cap' => \Portal\Auth\Capability::MANAGE_PERMISSIONS],
             ['label' => 'Plugins',    'path' => '/admin/plugins',       'key' => 'plugins',       'cap' => \Portal\Auth\Capability::MANAGE_PLUGINS],
             ['label' => 'Appearance', 'path' => '/admin/themes',        'key' => 'themes',        'cap' => \Portal\Auth\Capability::MANAGE_THEMES],
             ['label' => 'Services',   'path' => '/admin/providers',     'key' => 'providers',     'cap' => \Portal\Auth\Capability::MANAGE_PROVIDERS],

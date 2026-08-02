@@ -36,7 +36,8 @@ final class AdminView
             'series'        => $this->series($data),
             'series-edit'   => $this->seriesEdit($data),
             'speakers'      => $this->speakers($data),
-            'users'      => $this->users($data),
+            'users'       => $this->users($data),
+            'permissions' => $this->permissions($data),
             'plugins'    => $this->plugins($data),
             'themes'     => $this->themes($data),
             'providers'  => $this->providers($data),
@@ -1041,6 +1042,293 @@ final class AdminView
             </table>
           </div>
           <div>{$form}</div>
+        </div>
+        HTML;
+    }
+
+    // ---------------------------------------------------------- permissions
+
+    /**
+     * Roles, groups, and scoped grants.
+     *
+     * One screen rather than three, because the question an admin actually
+     * arrives with is "why can this person do that", and the answer can live in
+     * any of the three. Splitting them would mean checking three pages to
+     * answer one question.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function permissions(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        /** @var array<string, string> $capabilities */
+        $capabilities = (array) ($data['capabilities'] ?? []);
+        /** @var list<string> $siteOnly */
+        $siteOnly = (array) ($data['siteOnly'] ?? []);
+
+        $roles = '';
+        foreach ((array) ($data['roles'] ?? []) as $role) {
+            $roles .= $this->roleCard($role, $capabilities, $token);
+        }
+
+        $groups = '';
+        foreach ((array) ($data['groups'] ?? []) as $group) {
+            $groups .= $this->groupCard($group, $capabilities, $token);
+        }
+
+        $grantRows = '';
+        foreach ((array) ($data['grants'] ?? []) as $grant) {
+            $grantRows .= sprintf(
+                '<tr>
+                   <td>%s</td><td><code>%s</code></td><td>%s</td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="grant_id" value="%d">
+                       <button name="action" value="revoke" class="btn tiny danger">Remove</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e((string) $grant['subject']),
+                e((string) $grant['capability']),
+                e((string) $grant['scope']),
+                $token,
+                (int) $grant['id']
+            );
+        }
+
+        if ($grantRows === '') {
+            $grantRows = '<tr><td colspan="4" class="muted">No individual permissions granted.</td></tr>';
+        }
+
+        $capabilityOptions = '';
+        foreach ($capabilities as $slug => $description) {
+            $capabilityOptions .= sprintf(
+                '<option value="%s"%s>%s — %s</option>',
+                e($slug),
+                in_array($slug, $siteOnly, true) ? ' data-site-only="1"' : '',
+                e($slug),
+                e($description)
+            );
+        }
+
+        $scopeOptions = '<option value="site">The whole site</option>';
+        foreach ((array) ($data['categories'] ?? []) as $category) {
+            $scopeOptions .= sprintf(
+                '<option value="category:%d">%sCategory: %s</option>',
+                $category->id,
+                str_repeat('&nbsp;&nbsp;', $category->depth),
+                e($category->name)
+            );
+        }
+        foreach ((array) ($data['seriesList'] ?? []) as $item) {
+            $scopeOptions .= sprintf('<option value="series:%d">Series: %s</option>', $item->id, e($item->title));
+        }
+
+        $groupOptions = '';
+        foreach ((array) ($data['groups'] ?? []) as $group) {
+            $groupOptions .= sprintf('<option value="%d">%s</option>', (int) $group['id'], e((string) $group['name']));
+        }
+
+        return <<<HTML
+        <h1>Permissions</h1>
+
+        <p class="muted">Three ways somebody can hold a permission, checked in this order: their
+           <strong>role</strong>, any <strong>group</strong> they are in, and finally an individual
+           <strong>grant</strong>. A grant can be limited to one category or series, and is inherited
+           by everything inside it.</p>
+
+        <p class="muted small"><strong>Administrator is not on this screen by design.</strong> It is a
+           role, never a permission, so nobody editing this page can make themselves one — including
+           you. Change who is an administrator under <a href="/admin/users">People</a>.</p>
+
+        <h2>Roles</h2>
+        <div class="cards">{$roles}</div>
+
+        <h2>Groups</h2>
+        <p class="muted small">A named bundle of permissions with a list of email addresses.
+           Membership is by address, so somebody can be given permissions before they have ever
+           signed in.</p>
+
+        <form method="post" class="toolbar">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="text" name="name" placeholder="New group name" required>
+          <button class="btn secondary" name="action" value="group-create">Create group</button>
+        </form>
+
+        <div class="cards">{$groups}</div>
+
+        <h2>Individual permissions</h2>
+
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+          <fieldset>
+            <legend>Grant a permission</legend>
+
+            <div class="cols">
+              <div>
+                <label>To
+                  <select name="subject_type">
+                    <option value="email">One person, by email</option>
+                    <option value="group">Everyone in a group</option>
+                    <option value="role">Everyone with a role</option>
+                  </select>
+                </label>
+                <label>Email address <input type="email" name="email" placeholder="someone@example.com"></label>
+                <label>Or pick a group <select name="subject_id"><option value="0">—</option>{$groupOptions}</select></label>
+              </div>
+              <div>
+                <label>Permission <select name="capability">{$capabilityOptions}</select></label>
+                <label>Limited to <select name="scope">{$scopeOptions}</select></label>
+                <p class="muted small">Some permissions — managing plugins, themes, services, users,
+                   or settings — only make sense site-wide, and are stored that way whatever is
+                   chosen here.</p>
+              </div>
+            </div>
+
+            <button class="btn" name="action" value="grant">Grant</button>
+          </fieldset>
+        </form>
+
+        <table>
+          <thead><tr><th>Who</th><th>May</th><th>Where</th><th></th></tr></thead>
+          <tbody>{$grantRows}</tbody>
+        </table>
+        HTML;
+    }
+
+    /**
+     * @param array<string, mixed>  $role
+     * @param array<string, string> $capabilities
+     */
+    private function roleCard(array $role, array $capabilities, string $token): string
+    {
+        $name = e((string) $role['name']);
+        $slug = (string) $role['slug'];
+        $users = (int) $role['users'];
+        $people = $users === 1 ? '1 person' : $users . ' people';
+
+        // The administrator role holds everything implicitly and short-circuits
+        // every check, so there is genuinely nothing here to edit — and a form
+        // that appeared to work while doing nothing would be worse than none.
+        if ($slug === 'admin') {
+            return <<<HTML
+            <div class="card">
+              <h3>{$name} <span class="pill ok">system</span></h3>
+              <p class="muted small">{$people}. Holds everything, always. Not editable — an
+                 administrator cannot be partially disarmed, and pretending otherwise would be
+                 misleading.</p>
+            </div>
+            HTML;
+        }
+
+        /** @var list<string> $held */
+        $held = (array) $role['capabilities'];
+
+        $boxes = '';
+        foreach ($capabilities as $capability => $description) {
+            $boxes .= sprintf(
+                '<label class="checkbox" title="%s"><input type="checkbox" name="capabilities[]" value="%s"%s>%s</label>',
+                e($description),
+                e($capability),
+                in_array($capability, $held, true) ? ' checked' : '',
+                e($capability)
+            );
+        }
+
+        return sprintf(
+            '<div class="card">
+               <h3>%s</h3>
+               <p class="muted small">%s</p>
+               <form method="post">
+                 <input type="hidden" name="_token" value="%s">
+                 <input type="hidden" name="role_id" value="%d">
+                 %s
+                 <button class="btn tiny" name="action" value="role">Save</button>
+               </form>
+             </div>',
+            $name,
+            e($people),
+            $token,
+            (int) $role['id'],
+            $boxes
+        );
+    }
+
+    /**
+     * @param array<string, mixed>  $group
+     * @param array<string, string> $capabilities
+     */
+    private function groupCard(array $group, array $capabilities, string $token): string
+    {
+        $id = (int) $group['id'];
+        $name = e((string) $group['name']);
+
+        /** @var list<string> $held */
+        $held = (array) $group['capabilities'];
+
+        $boxes = '';
+        foreach ($capabilities as $capability => $description) {
+            $boxes .= sprintf(
+                '<label class="checkbox" title="%s"><input type="checkbox" name="capabilities[]" value="%s"%s>%s</label>',
+                e($description),
+                e($capability),
+                in_array($capability, $held, true) ? ' checked' : '',
+                e($capability)
+            );
+        }
+
+        $members = '';
+        foreach ((array) $group['members'] as $email) {
+            $members .= sprintf(
+                '<li>%s
+                   <form method="post" class="inline">
+                     <input type="hidden" name="_token" value="%s">
+                     <input type="hidden" name="group_id" value="%d">
+                     <input type="hidden" name="email" value="%s">
+                     <button name="action" value="group-remove-member" class="btn tiny danger">Remove</button>
+                   </form>
+                 </li>',
+                e((string) $email),
+                $token,
+                $id,
+                e((string) $email)
+            );
+        }
+
+        if ($members === '') {
+            $members = '<li class="muted">Nobody yet.</li>';
+        }
+
+        return <<<HTML
+        <div class="card">
+          <h3>{$name}</h3>
+
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="group_id" value="{$id}">
+            {$boxes}
+            <button class="btn tiny" name="action" value="group-capabilities">Save permissions</button>
+          </form>
+
+          <ul class="plain">{$members}</ul>
+
+          <form method="post" class="toolbar">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="group_id" value="{$id}">
+            <input type="email" name="email" placeholder="add someone@example.com" required>
+            <button class="btn tiny secondary" name="action" value="group-add-member">Add</button>
+          </form>
+
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="group_id" value="{$id}">
+            <button name="action" value="group-delete" class="btn tiny danger"
+                    onclick="return confirm('Delete this group? Everyone in it loses whatever it granted.')">
+              Delete group
+            </button>
+          </form>
         </div>
         HTML;
     }

@@ -78,6 +78,8 @@ final class Routes
         $router->post('/admin/speakers', [AdminController::class, 'saveSpeaker'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
         $router->post('/admin/users', [AdminController::class, 'saveUser'], ['admin.area']);
+        $router->get('/admin/permissions', [AdminController::class, 'permissions'], ['admin.area']);
+        $router->post('/admin/permissions', [AdminController::class, 'savePermissions'], ['admin.area']);
         $router->get('/admin/plugins', [AdminController::class, 'plugins'], ['admin.area']);
         $router->post('/admin/plugins', [AdminController::class, 'togglePlugin'], ['admin.area']);
         $router->get('/admin/themes', [AdminController::class, 'themes'], ['admin.area']);

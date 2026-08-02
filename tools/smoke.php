@@ -667,6 +667,84 @@ check(
     'the assignment did not stick'
 );
 
+echo "\nPermissions\n";
+
+$permsScreen = getWithJar($baseUrl . '/admin/permissions', $jar);
+check('Permissions screen renders', $permsScreen['status'] === 200, "got {$permsScreen['status']}");
+check('It lists the roles', str_contains($permsScreen['body'], 'Editor'));
+check(
+    'It says administrator is not editable here',
+    str_contains($permsScreen['body'], 'Administrator is not on this screen'),
+    'the no-self-escalation rule should be stated where someone would look for it'
+);
+
+$permsToken = csrfFrom($permsScreen['body']);
+
+$madeGroup = postWithJar($baseUrl . '/admin/permissions', [
+    '_token' => $permsToken,
+    'action' => 'group-create',
+    'name'   => 'Smoke Group',
+], $jar);
+
+check('Creating a permission group succeeds', $madeGroup['status'] === 302, "got {$madeGroup['status']}");
+
+$groupId = (int) $db->value('SELECT id FROM {permission_groups} WHERE name = ?', ['Smoke Group']);
+check('The group row exists', $groupId > 0, 'nothing was created');
+
+$addedMember = postWithJar($baseUrl . '/admin/permissions', [
+    '_token'   => $permsToken,
+    'action'   => 'group-add-member',
+    'group_id' => (string) $groupId,
+    'email'    => 'Future.Person@Example.COM',
+], $jar);
+
+check('Adding a member succeeds', $addedMember['status'] === 302, "got {$addedMember['status']}");
+check(
+    'The address is normalised on the way in',
+    $db->value('SELECT email FROM {group_members} WHERE group_id = ?', [$groupId]) === 'future.person@example.com',
+    'stored as typed, so the same person could be added twice'
+);
+
+/* A scoped grant, and the rule that a site-only capability cannot be scoped. */
+$grantScoped = postWithJar($baseUrl . '/admin/permissions', [
+    '_token'       => $permsToken,
+    'action'       => 'grant',
+    'subject_type' => 'email',
+    'email'        => 'scoped@smoke.test',
+    'capability'   => 'manage_videos',
+    'scope'        => 'category:' . $categoryRow,
+], $jar);
+
+check('Granting a scoped permission succeeds', $grantScoped['status'] === 302, "got {$grantScoped['status']}");
+check(
+    'It is stored against the category',
+    (int) $db->value(
+        'SELECT scope_id FROM {grants} g JOIN {capabilities} c ON c.id = g.capability_id
+          WHERE g.email = ? AND c.slug = ?',
+        ['scoped@smoke.test', 'manage_videos']
+    ) === $categoryRow,
+    'the scope was lost'
+);
+
+postWithJar($baseUrl . '/admin/permissions', [
+    '_token'       => $permsToken,
+    'action'       => 'grant',
+    'subject_type' => 'email',
+    'email'        => 'sitewide@smoke.test',
+    'capability'   => 'manage_plugins',
+    'scope'        => 'category:' . $categoryRow,
+], $jar);
+
+check(
+    'A site-only capability is forced site-wide',
+    (string) $db->value(
+        'SELECT scope_type FROM {grants} g JOIN {capabilities} c ON c.id = g.capability_id
+          WHERE g.email = ? AND c.slug = ?',
+        ['sitewide@smoke.test', 'manage_plugins']
+    ) === 'site',
+    'a grant was stored implying a limit that is never applied when it is checked'
+);
+
 echo "\nTrash\n";
 
 /*
