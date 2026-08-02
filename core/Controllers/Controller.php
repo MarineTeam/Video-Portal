@@ -144,16 +144,7 @@ abstract class Controller
      */
     protected function csrfToken(): string
     {
-        /** @var \Portal\Auth\Session $session */
-        $session = $this->container->get(\Portal\Auth\Session::class);
-
-        $token = $session->get('csrf');
-        if (!is_string($token) || $token === '') {
-            $token = \Portal\Support\Crypto::token(16);
-            $session->put('csrf', $token);
-        }
-
-        return $token;
+        return \Portal\Support\Csrf::token($this->container->get(\Portal\Auth\Session::class));
     }
 
     /**
@@ -165,11 +156,7 @@ abstract class Controller
      */
     protected function verifyCsrf(Request $request): void
     {
-        $submitted = (string) ($request->post['_token'] ?? $request->header('x-csrf-token') ?? '');
-
-        if ($submitted === '' || !\Portal\Support\Crypto::verify($this->csrfToken(), $submitted)) {
-            throw new HttpException(419, 'This form has expired. Reload the page and try again.');
-        }
+        \Portal\Support\Csrf::verify($this->container->get(\Portal\Auth\Session::class), $request);
     }
 
     /**

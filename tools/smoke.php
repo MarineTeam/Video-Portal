@@ -459,6 +459,33 @@ echo "Seeded content, scheduled jobs disabled.\n\n";
  */
 $serverLog = sys_get_temp_dir() . '/portal-smoke-server-' . getmypid() . '.log';
 
+/*
+ * Refuse to start if something is already on the port.
+ *
+ * The teardown kills the server through its process tree, and that does not
+ * always work — a run interrupted at the wrong moment, or a shell that exited
+ * before its child, leaves the old server listening. The readiness probe below
+ * would then connect to IT: old code, and a database this run is about to
+ * create and the previous run already dropped.
+ *
+ * Every check would still execute, and the failures would point everywhere
+ * except at the cause. Better to stop before the first one.
+ */
+$occupied = @fsockopen('127.0.0.1', $serverPort, $errno, $errstr, 1);
+if ($occupied !== false) {
+    fclose($occupied);
+    fwrite(STDERR, sprintf(
+        "Something is already listening on port %d — almost certainly a server left over from an\n"
+        . "earlier run. This script would silently test that one instead of the code you just changed.\n\n"
+        . "Stop it first:\n"
+        . "  Windows:  Get-Process php ^| Stop-Process -Force\n"
+        . "  Otherwise: pkill -f 'php -S 127.0.0.1:%d'\n",
+        $serverPort,
+        $serverPort
+    ));
+    exit(1);
+}
+
 $descriptors = [
     1 => ['file', $serverLog, 'a'],
     2 => ['file', $serverLog, 'a'],
@@ -1219,7 +1246,7 @@ check('Country restrictions is listed', str_contains($pluginsPage['body'], 'Coun
 
 $pluginToken = csrfFrom($pluginsPage['body']);
 
-foreach (['watermark', 'geo'] as $slug) {
+foreach (['watermark', 'geo', 'comments'] as $slug) {
     $activated = postWithJar($baseUrl . '/admin/plugins', [
         '_token' => $pluginToken,
         'slug'   => $slug,
@@ -1300,7 +1327,136 @@ check(
 $adminStillUp = getWithJar($baseUrl . '/admin', $jar);
 check('The admin area is still reachable with geo active', $adminStillUp['status'] === 200, "got {$adminStillUp['status']}");
 
-@unlink($jar);
+echo "\nComments\n";
+
+/*
+ * The comments plugin is active by now — the loop above switched it on. What
+ * matters here is the moderation boundary: a held comment must not reach the
+ * page, which is the one failure nobody notices until it is public.
+ */
+$commentsAdmin = getWithJar($baseUrl . '/admin/comments', $jar);
+check('Moderation screen renders', $commentsAdmin['status'] === 200, "got {$commentsAdmin['status']}");
+check('It offers the moderation setting', str_contains($commentsAdmin['body'], 'name="moderation"'));
+
+$videoSlug = (string) $db->value('SELECT slug FROM {videos} WHERE id = ?', [$videoRow]);
+
+$watchPage = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check('The thread renders under the video', str_contains($watchPage['body'], 'id="comments"'));
+check('A signed-in viewer gets a form', str_contains($watchPage['body'], 'class="comment-form"'));
+
+$posted = postWithJar($baseUrl . '/comments/' . $videoRow, [
+    '_token'    => csrfFrom($watchPage['body']),
+    'body'      => 'A first comment from the smoke test.',
+    'parent_id' => '',
+], $jar);
+
+/*
+ * The redirect TARGET is asserted, not just the 302.
+ *
+ * Signed out, this endpoint also answers 302 — to the sign-in page. A bare
+ * status check therefore passes while testing nothing, which is exactly what
+ * happened the first time this section ran with an expired cookie jar.
+ */
+check(
+    'Posting a comment succeeds',
+    $posted['status'] === 302 && str_contains($posted['headers']['location'] ?? '', '/watch/'),
+    'got ' . $posted['status'] . ' to ' . ($posted['headers']['location'] ?? 'nowhere')
+);
+
+$commentId = (int) $db->value('SELECT id FROM {comments} ORDER BY id DESC LIMIT 1');
+check('The comment was stored', $commentId > 0, 'nothing was written');
+
+/*
+ * The administrator is a newcomer by the plugin's own rule — no approved
+ * comments yet — so this one is held. That is the default doing its job.
+ */
+$storedStatus = (string) $db->value('SELECT status FROM {comments} WHERE id = ?', [$commentId]);
+check(
+    "A newcomer's first comment is held",
+    $storedStatus === 'pending',
+    "got '{$storedStatus}'"
+);
+
+$anonymousWatch = get($baseUrl . '/watch/' . $videoSlug);
+check(
+    'A held comment is not on the page',
+    !str_contains($anonymousWatch['body'], 'A first comment from the smoke test'),
+    'AN UNMODERATED COMMENT WAS PUBLISHED'
+);
+
+/* Approve it, and only then does it appear. */
+$approved = postWithJar($baseUrl . '/admin/comments', [
+    '_token' => csrfFrom($commentsAdmin['body']),
+    'id'     => (string) $commentId,
+    'action' => 'approved',
+], $jar);
+
+check('Approving succeeds', $approved['status'] === 302, "got {$approved['status']}");
+
+$afterApproval = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'An approved comment appears',
+    str_contains($afterApproval['body'], 'A first comment from the smoke test'),
+    'approval did not publish it'
+);
+
+/* Spam is held whatever the setting says. */
+postWithJar($baseUrl . '/admin/comments', [
+    '_token'     => csrfFrom($commentsAdmin['body']),
+    'action'     => 'settings',
+    'moderation' => 'none',
+], $jar);
+
+postWithJar($baseUrl . '/comments/' . $videoRow, [
+    '_token'    => csrfFrom($watchPage['body']),
+    'body'      => 'http://a.test http://b.test http://c.test http://d.test',
+    'parent_id' => '',
+], $jar);
+
+$spamStatus = (string) $db->value('SELECT status FROM {comments} ORDER BY id DESC LIMIT 1');
+check(
+    'Obvious spam is held even with moderation off',
+    $spamStatus === 'pending',
+    "got '{$spamStatus}' — turning moderation off should not publish link farms"
+);
+
+$noCsrfComment = postWithJar($baseUrl . '/comments/' . $videoRow, ['body' => 'no token'], $jar);
+check('Commenting without a CSRF token is refused', $noCsrfComment['status'] === 419, "got {$noCsrfComment['status']}");
+
+/*
+ * Reporting, end to end.
+ *
+ * The repository method had integration tests from the start and the feature
+ * still did not exist: nothing on any page called it. Only a check that goes
+ * through the rendered page and a real POST can tell those two apart.
+ */
+$afterApproval = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check('An approved comment offers a report button', str_contains($afterApproval['body'], 'comment-report'));
+
+$reported = postWithJar($baseUrl . '/comments/report', [
+    '_token'     => csrfFrom($afterApproval['body']),
+    'comment_id' => (string) $commentId,
+    'reason'     => 'smoke test',
+], $jar);
+
+check('Reporting succeeds', $reported['status'] === 302, "got {$reported['status']}");
+check(
+    'The report reaches the moderation queue',
+    (int) $db->value('SELECT report_count FROM {comments} WHERE id = ?', [$commentId]) === 1,
+    'the count did not move, so a moderator would never see it'
+);
+
+$reportedTwice = postWithJar($baseUrl . '/comments/report', [
+    '_token'     => csrfFrom($afterApproval['body']),
+    'comment_id' => (string) $commentId,
+], $jar);
+
+check('Reporting twice is accepted but not double-counted', $reportedTwice['status'] === 302);
+check(
+    'The same person cannot inflate the count',
+    (int) $db->value('SELECT report_count FROM {comments} WHERE id = ?', [$commentId]) === 1,
+    'one visitor could make an ordinary comment look like a crisis'
+);
 
 echo "\nRouting\n";
 
