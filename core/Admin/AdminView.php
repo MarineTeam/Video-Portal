@@ -30,6 +30,7 @@ final class AdminView
             'dashboard'  => $this->dashboard($data),
             'videos'        => $this->videos($data),
             'video-edit'    => $this->videoEdit($data),
+            'trash'         => $this->trash($data),
             'categories'    => $this->categories($data),
             'category-edit' => $this->categoryEdit($data),
             'series'        => $this->series($data),
@@ -234,8 +235,17 @@ final class AdminView
         $total = (int) ($data['total'] ?? 0);
         $upload = $this->uploader($data);
 
+        $trashed = (int) ($data['trashed'] ?? 0);
+        $trashLink = $trashed === 0
+            ? ''
+            : sprintf(
+                '<p class="muted small"><a href="/admin/videos/trash">Trash (%d)</a></p>',
+                $trashed
+            );
+
         return <<<HTML
         <h1>Videos <span class="muted">({$total})</span></h1>
+        {$trashLink}
         {$upload}
         <form method="get" class="toolbar">
           <input type="search" name="q" value="{$search}" placeholder="Search titles and descriptions…">
@@ -243,6 +253,68 @@ final class AdminView
         </form>
         <table>
           <thead><tr><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr></thead>
+          <tbody>{$rows}</tbody>
+        </table>
+        HTML;
+    }
+
+    /**
+     * The trash.
+     *
+     * Reachable from the Videos screen rather than the top navigation: it is a
+     * rare destination, and a permanent-delete button does not belong one
+     * mis-click away from everyday work.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function trash(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $rows = '';
+        foreach ((array) ($data['videos'] ?? []) as $video) {
+            $rows .= sprintf(
+                '<tr>
+                   <td><strong>%s</strong><br><span class="muted">%s</span></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="restore" class="btn tiny">Restore</button>
+                       <button name="action" value="purge" class="btn tiny danger"
+                               onclick="return confirm(\'%s\')">Delete for good</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($video->title),
+                e(Str::duration($video->duration) ?: '—'),
+                $token,
+                $video->id,
+                e(sprintf(
+                    'Permanently delete "%s"? This also deletes the file at your video service and '
+                    . 'cannot be undone.',
+                    $video->title
+                ))
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">The trash is empty.</td></tr>';
+        }
+
+        return <<<HTML
+        <p class="muted small"><a href="/admin/videos">&larr; All videos</a></p>
+        <h1>Trash</h1>
+
+        <p class="muted">Deleted videos are kept here rather than removed, so a mistake is
+           recoverable. They do not appear anywhere on the site while they are in the trash.</p>
+
+        <p class="muted small"><strong>Deleting for good removes the file at your video service too.</strong>
+           It has to: leaving it there means the next sync re-imports it, and the delete would appear
+           to have failed at random. If your video service refuses, the video stays here and says why.</p>
+
+        <table>
+          <thead><tr><th>Title</th><th></th></tr></thead>
           <tbody>{$rows}</tbody>
         </table>
         HTML;

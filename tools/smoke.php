@@ -667,6 +667,79 @@ check(
     'the assignment did not stick'
 );
 
+echo "\nTrash\n";
+
+/*
+ * Delete, restore, and confirm a permanent delete refuses when the video
+ * service cannot be reached — which, with this install's placeholder
+ * credentials, is always. That refusal is the interesting path: removing the
+ * local row alone would let the next sync re-import the video.
+ */
+$trashVideo = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-trash', 'slug' => 'trash-me',
+    'title' => 'Trash Me', 'status' => 'ready', 'is_published' => 1,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$deleted = postWithJar($baseUrl . '/admin/videos', [
+    '_token' => $token,
+    'id'     => (string) $trashVideo,
+    'action' => 'delete',
+], $jar);
+
+check('Deleting a video succeeds', $deleted['status'] === 302, "got {$deleted['status']}");
+check(
+    'It is a soft delete',
+    $db->value('SELECT deleted_at FROM {videos} WHERE id = ?', [$trashVideo]) !== null,
+    'the row was destroyed rather than trashed'
+);
+
+$publicAfterDelete = get($baseUrl . '/');
+check('A trashed video leaves the library', !str_contains($publicAfterDelete['body'], 'Trash Me'));
+
+$trashScreen = getWithJar($baseUrl . '/admin/videos/trash', $jar);
+check('Trash screen renders', $trashScreen['status'] === 200, "got {$trashScreen['status']}");
+check('The trashed video is listed', str_contains($trashScreen['body'], 'Trash Me'));
+
+$trashToken = csrfFrom($trashScreen['body']);
+
+$purge = postWithJar($baseUrl . '/admin/videos/trash', [
+    '_token' => $trashToken,
+    'id'     => (string) $trashVideo,
+    'action' => 'purge',
+], $jar);
+
+check('Permanent delete is attempted', $purge['status'] === 302, "got {$purge['status']}");
+check(
+    'It refuses when the video service cannot be reached',
+    $db->value('SELECT id FROM {videos} WHERE id = ?', [$trashVideo]) !== null,
+    'the row went even though the provider delete failed — the next sync would bring it back'
+);
+
+$restored = postWithJar($baseUrl . '/admin/videos/trash', [
+    '_token' => $trashToken,
+    'id'     => (string) $trashVideo,
+    'action' => 'restore',
+], $jar);
+
+check('Restoring succeeds', $restored['status'] === 302, "got {$restored['status']}");
+check(
+    'The video comes back',
+    $db->value('SELECT deleted_at FROM {videos} WHERE id = ?', [$trashVideo]) === null,
+    'restore did not clear the deletion'
+);
+
+/*
+ * Put it back in the trash before moving on.
+ *
+ * A restored video sits outside the category the thumbnail checks below lock,
+ * so leaving it visible puts a legitimate CDN URL on the homepage and fails
+ * "the real thumbnail URL is never sent" for a reason that has nothing to do
+ * with thumbnails. A section that leaves state behind is the bug, not the
+ * assertion that trips over it.
+ */
+$db->execute('UPDATE {videos} SET deleted_at = NOW() WHERE id = ?', [$trashVideo]);
+
 echo "\nSeries and speakers\n";
 
 $seriesScreen = getWithJar($baseUrl . '/admin/series', $jar);

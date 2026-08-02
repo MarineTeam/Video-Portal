@@ -87,6 +87,7 @@ final class AdminController extends Controller
             'search'     => $request->query('q') ?? '',
             'categories' => $categories->all(true),
             'canUpload'  => $this->canUpload(),
+            'trashed'    => $videos->trashedCount(),
         ]);
     }
 
@@ -183,6 +184,74 @@ final class AdminController extends Controller
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video saved.');
         }
+    }
+
+    // ---------------------------------------------------------------- trash
+
+    public function trash(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        return $this->admin('trash', ['videos' => $videos->trashed()]);
+    }
+
+    /**
+     * Restore, or destroy for good.
+     *
+     * Permanent deletion removes the video at the provider FIRST, and gives up
+     * if that fails. Removing only the local row would be worse than useless:
+     * the file is still at the provider, so the next sync re-imports it and the
+     * admin is left believing the delete silently failed at random.
+     */
+    public function updateTrash(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        $id = (int) ($request->input('id') ?? 0);
+        $video = $videos->find($id) ?? $this->trashedVideo($id);
+
+        if ($video === null) {
+            return $this->back($request, 'That video is not in the trash.', 'error');
+        }
+
+        if (($request->input('action') ?? '') === 'restore') {
+            $videos->restore($id);
+            Audit::log($this->db(), $this->user()?->email, 'video.restore', 'video', (string) $id, $video->title);
+
+            return $this->back($request, 'Restored “' . $video->title . '”.');
+        }
+
+        // Permanent.
+        try {
+            $this->container->get(\Portal\Video\VideoProvider::class)->deleteVideo($video->providerId);
+        } catch (Throwable $e) {
+            return $this->back($request, sprintf(
+                'Could not delete “%s” at your video service, so it has been left in the trash: %s '
+                . 'Deleting it here alone would not work — the next sync would bring it straight back.',
+                $video->title,
+                $e->getMessage()
+            ), 'error');
+        }
+
+        $videos->forceDelete($id);
+        Audit::log($this->db(), $this->user()?->email, 'video.purge', 'video', (string) $id, $video->title);
+
+        return $this->back($request, 'Deleted “' . $video->title . '” for good.');
+    }
+
+    /** find() hides trashed rows, which is exactly what this screen works on. */
+    private function trashedVideo(int $id): ?\Portal\Content\Video
+    {
+        $row = $this->db()->first('SELECT * FROM {videos} WHERE id = ? AND deleted_at IS NOT NULL', [$id]);
+
+        return $row === null ? null : \Portal\Content\Video::fromRow($row);
     }
 
     // --------------------------------------------------------------- series

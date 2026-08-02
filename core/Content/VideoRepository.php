@@ -422,6 +422,31 @@ final class VideoRepository
      * Soft delete. The row survives so share links keep resolving to a clear
      * "this is gone" rather than a 404 that looks like a broken link.
      */
+    /**
+     * Everything in the trash, newest deletion first.
+     *
+     * Not routed through query(), which filters deleted rows out by design.
+     * Reaching for an includeDeleted flag there would put a "show me the
+     * deleted ones" switch on the same method every public listing calls, and
+     * one wrong caller would then leak deleted content.
+     *
+     * @return list<Video>
+     */
+    public function trashed(int $limit = 100): array
+    {
+        $rows = $this->db->all(
+            'SELECT * FROM {videos} WHERE deleted_at IS NOT NULL
+              ORDER BY deleted_at DESC LIMIT ' . max(1, min(500, $limit))
+        );
+
+        return array_map(static fn (array $row): Video => Video::fromRow($row), $rows);
+    }
+
+    public function trashedCount(): int
+    {
+        return (int) $this->db->value('SELECT COUNT(*) FROM {videos} WHERE deleted_at IS NOT NULL');
+    }
+
     public function softDelete(int $id): void
     {
         $this->db->execute(

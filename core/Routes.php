@@ -64,6 +64,9 @@ final class Routes
         $router->get('/admin', [AdminController::class, 'dashboard'], ['admin.area']);
         $router->get('/admin/videos', [AdminController::class, 'videos'], ['admin.area']);
         $router->post('/admin/videos', [AdminController::class, 'updateVideo'], ['admin.area']);
+        // Registered before {id} so "trash" is not swallowed as a video id.
+        $router->get('/admin/videos/trash', [AdminController::class, 'trash'], ['admin.area']);
+        $router->post('/admin/videos/trash', [AdminController::class, 'updateTrash'], ['admin.area']);
         $router->get('/admin/videos/{id}', [AdminController::class, 'editVideo'], ['admin.area']);
         $router->get('/admin/categories', [AdminController::class, 'categories'], ['admin.area']);
         $router->post('/admin/categories', [AdminController::class, 'saveCategory'], ['admin.area']);
