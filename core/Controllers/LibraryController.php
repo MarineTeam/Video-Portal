@@ -6,6 +6,8 @@ namespace Portal\Controllers;
 
 use Portal\Auth\Capability;
 use Portal\Content\CategoryRepository;
+use Portal\Content\SeriesRepository;
+use Portal\Content\SpeakerRepository;
 use Portal\Content\Video;
 use Portal\Content\VideoPresenter;
 use Portal\Content\VideoRepository;
@@ -106,36 +108,86 @@ final class LibraryController extends Controller
     /** @param array<string, string> $params */
     public function series(Request $request, array $params): Response
     {
-        $slug = $params['slug'] ?? '';
+        /** @var SeriesRepository $repo */
+        $repo = $this->container->get(SeriesRepository::class);
 
-        $row = $this->db()->first('SELECT * FROM {series} WHERE slug = ?', [$slug]);
-        if ($row === null) {
+        $slug = $params['slug'] ?? '';
+        $series = $repo->findBySlug($slug);
+
+        if ($series === null) {
+            // Honour an address from before a rename.
+            $aliased = $repo->findByAlias($slug);
+            if ($aliased !== null) {
+                return Response::redirect($this->config()->url($aliased->url()), 301);
+            }
             throw HttpException::notFound('There is no series at that address.');
         }
 
-        if (!$this->canSee(
-            (bool) $row['is_published'],
-            (bool) $row['member_only'],
-            (bool) $row['hidden']
-        )) {
+        if (!$this->canSee($series->isPublished, $series->memberOnly, $series->hidden)) {
             throw HttpException::notFound('There is no series at that address.');
         }
 
         $videos = $this->videos()->forSeries(
-            (int) $row['id'],
+            $series->id,
             $this->guard()->can(Capability::MANAGE_VIDEOS)
         );
 
         return $this->view(
-            $this->themeManager()->loader()->hierarchy('series', ['slug' => (string) $row['slug']]),
+            $this->themeManager()->loader()->hierarchy('series', ['slug' => $series->slug]),
             [
-                'title'               => (string) $row['title'],
-                'heading'             => (string) $row['title'],
-                'description'         => $row['description'] !== null ? (string) $row['description'] : null,
+                'title'               => $series->title,
+                'heading'             => $series->title,
+                'description'         => $series->description,
                 'videos'              => $this->present($videos),
                 'children'            => [],
                 'thumbnailsAvailable' => $this->thumbnailsAvailable(),
                 'pagination'          => ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null],
+            ]
+        );
+    }
+
+    /**
+     * Everything by one speaker.
+     *
+     * No visibility flags of its own — a speaker is not content, just a name to
+     * group by. What each visitor may see is decided by the videos, through the
+     * same filters every other listing uses.
+     *
+     * @param array<string, string> $params
+     */
+    public function speaker(Request $request, array $params): Response
+    {
+        /** @var SpeakerRepository $repo */
+        $repo = $this->container->get(SpeakerRepository::class);
+
+        $slug = $params['slug'] ?? '';
+        $speaker = $repo->findBySlug($slug);
+
+        if ($speaker === null) {
+            $aliased = $repo->findByAlias($slug);
+            if ($aliased !== null) {
+                return Response::redirect($this->config()->url($aliased->url()), 301);
+            }
+            throw HttpException::notFound('There is nobody at that address.');
+        }
+
+        $page = max(1, (int) ($request->query('page') ?? 1));
+        $result = $this->videos()->query(
+            $this->visibilityFilters(['speakerId' => $speaker->id]),
+            $page,
+            $this->perPage()
+        );
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('speaker', ['slug' => $speaker->slug]),
+            [
+                'title'               => $speaker->name,
+                'heading'             => $speaker->name,
+                'description'         => $speaker->bio,
+                'videos'              => $this->present($result['items']),
+                'children'            => [],
+                'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+                'pagination'          => $this->paginate($result['total'], $page, $request),
             ]
         );
     }

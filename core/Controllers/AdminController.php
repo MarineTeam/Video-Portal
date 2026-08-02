@@ -87,6 +87,7 @@ final class AdminController extends Controller
             'search'     => $request->query('q') ?? '',
             'categories' => $categories->all(true),
             'canUpload'  => $this->canUpload(),
+            'trashed'    => $videos->trashedCount(),
         ]);
     }
 
@@ -118,6 +119,8 @@ final class AdminController extends Controller
             'video'          => $video,
             'categories'     => $categories->all(true),
             'assigned'       => $videos->categoryIds($video->id),
+            'series'         => $this->seriesRepo()->all(true),
+            'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
         ]);
     }
@@ -163,6 +166,11 @@ final class AdminController extends Controller
                     'description'    => $request->input('description'),
                     'watermark_mode' => $request->input('watermark_mode') ?? $video->watermarkMode,
                     'thumbnail_mode' => $request->input('thumbnail_mode') ?? $video->thumbnailMode,
+                    // Zero means "none", which has to be expressible — so these
+                    // are normalised to null rather than left as 0, which no
+                    // series or speaker will ever have as an id.
+                    'series_id'      => ($s = (int) ($request->input('series_id') ?? 0)) > 0 ? $s : null,
+                    'speaker_id'     => ($p = (int) ($request->input('speaker_id') ?? 0)) > 0 ? $p : null,
                     // Unchecked checkboxes are simply absent from a POST, so
                     // presence is the value. Reading these with ?? would make
                     // every flag impossible to turn back off.
@@ -176,6 +184,467 @@ final class AdminController extends Controller
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video saved.');
         }
+    }
+
+    // ---------------------------------------------------------- permissions
+
+    public function permissions(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_PERMISSIONS);
+
+        $repo = $this->permissionRepo();
+
+        return $this->admin('permissions', [
+            'roles'        => $repo->roles(),
+            'groups'       => $repo->groups(),
+            'grants'       => $repo->grants(),
+            'capabilities' => Capability::all(),
+            'siteOnly'     => Capability::siteOnly(),
+            'categories'   => $this->container->get(CategoryRepository::class)->all(true),
+            'seriesList'   => $this->seriesRepo()->all(true),
+        ]);
+    }
+
+    public function savePermissions(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_PERMISSIONS);
+
+        $repo = $this->permissionRepo();
+        $action = $request->input('action') ?? '';
+        $actor = $this->user()?->email;
+
+        try {
+            $message = match ($action) {
+                'role' => $this->saveRoleCapabilities($repo, $request, $actor),
+                'group-create' => $this->createPermissionGroup($repo, $request, $actor),
+                'group-delete' => $this->deletePermissionGroup($repo, $request, $actor),
+                'group-capabilities' => $this->saveGroupCapabilities($repo, $request, $actor),
+                'group-add-member' => $this->addPermissionGroupMember($repo, $request, $actor),
+                'group-remove-member' => $this->removePermissionGroupMember($repo, $request, $actor),
+                'grant' => $this->createGrant($repo, $request, $actor),
+                'revoke' => $this->revokeGrant($repo, $request, $actor),
+                default => throw HttpException::badRequest('Unknown action.'),
+            };
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        // Anything cached during this request now describes the state the admin
+        // just changed away from.
+        $this->container->get(\Portal\Auth\Capabilities::class)->flush();
+
+        return $this->back($request, $message);
+    }
+
+    private function saveRoleCapabilities(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $roleId = (int) ($request->input('role_id') ?? 0);
+        $repo->setRoleCapabilities($roleId, $request->inputArray('capabilities'));
+
+        Audit::log($this->db(), $actor, 'permissions.role', 'role', (string) $roleId);
+
+        return 'Role updated.';
+    }
+
+    private function createPermissionGroup(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = $repo->createGroup(
+            $request->input('name') ?? '',
+            $request->input('description')
+        );
+
+        Audit::log($this->db(), $actor, 'permissions.group.create', 'group', (string) $id);
+
+        return 'Group created.';
+    }
+
+    private function deletePermissionGroup(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $repo->deleteGroup($id);
+
+        Audit::log($this->db(), $actor, 'permissions.group.delete', 'group', (string) $id);
+
+        return 'Group deleted. Everyone in it loses whatever it granted.';
+    }
+
+    private function saveGroupCapabilities(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $repo->setGroupCapabilities($id, $request->inputArray('capabilities'));
+
+        Audit::log($this->db(), $actor, 'permissions.group.capabilities', 'group', (string) $id);
+
+        return 'Group permissions updated.';
+    }
+
+    private function addPermissionGroupMember(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $email = $request->input('email') ?? '';
+        $repo->addGroupMember($id, $email);
+
+        Audit::log($this->db(), $actor, 'permissions.group.add', 'group', (string) $id, $email);
+
+        return 'Added to the group.';
+    }
+
+    private function removePermissionGroupMember(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('group_id') ?? 0);
+        $email = $request->input('email') ?? '';
+        $repo->removeGroupMember($id, $email);
+
+        Audit::log($this->db(), $actor, 'permissions.group.remove', 'group', (string) $id, $email);
+
+        return 'Removed from the group.';
+    }
+
+    private function createGrant(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $subjectType = $request->input('subject_type') ?? 'email';
+
+        // The scope picker is one dropdown — "site", or "category:12" — because
+        // a type select plus an id select would let someone choose a category
+        // type with a series id and produce a grant that silently matches
+        // nothing.
+        [$scopeType, $scopeId] = $this->parseScope($request->input('scope') ?? 'site');
+
+        $repo->grant(
+            $subjectType,
+            $subjectType === 'email'
+                ? ($request->input('email') ?? '')
+                : ($request->input('subject_id') ?? '0'),
+            $request->input('capability') ?? '',
+            $scopeType,
+            $scopeId,
+            $actor
+        );
+
+        Audit::log($this->db(), $actor, 'permissions.grant', null, null, $request->input('capability'));
+
+        return 'Permission granted.';
+    }
+
+    private function revokeGrant(
+        \Portal\Auth\PermissionRepository $repo,
+        Request $request,
+        ?string $actor
+    ): string {
+        $id = (int) ($request->input('grant_id') ?? 0);
+        $repo->revoke($id);
+
+        Audit::log($this->db(), $actor, 'permissions.revoke', null, (string) $id);
+
+        return 'Permission removed.';
+    }
+
+    private function permissionRepo(): \Portal\Auth\PermissionRepository
+    {
+        return new \Portal\Auth\PermissionRepository($this->db());
+    }
+
+    /**
+     * "site" or "category:12" into a type and an id.
+     *
+     * Anything unrecognised becomes site-wide rather than throwing. That is the
+     * safe direction here only because the repository re-validates the type and
+     * refuses a scoped grant with no id — this is parsing, not authorisation.
+     *
+     * @return array{0: string, 1: int}
+     */
+    private function parseScope(string $raw): array
+    {
+        if (!str_contains($raw, ':')) {
+            return ['site', 0];
+        }
+
+        [$type, $id] = explode(':', $raw, 2);
+
+        return [$type, (int) $id];
+    }
+
+    // ---------------------------------------------------------------- trash
+
+    public function trash(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        return $this->admin('trash', ['videos' => $videos->trashed()]);
+    }
+
+    /**
+     * Restore, or destroy for good.
+     *
+     * Permanent deletion removes the video at the provider FIRST, and gives up
+     * if that fails. Removing only the local row would be worse than useless:
+     * the file is still at the provider, so the next sync re-imports it and the
+     * admin is left believing the delete silently failed at random.
+     */
+    public function updateTrash(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        $id = (int) ($request->input('id') ?? 0);
+        $video = $videos->find($id) ?? $this->trashedVideo($id);
+
+        if ($video === null) {
+            return $this->back($request, 'That video is not in the trash.', 'error');
+        }
+
+        if (($request->input('action') ?? '') === 'restore') {
+            $videos->restore($id);
+            Audit::log($this->db(), $this->user()?->email, 'video.restore', 'video', (string) $id, $video->title);
+
+            return $this->back($request, 'Restored “' . $video->title . '”.');
+        }
+
+        // Permanent.
+        try {
+            $this->container->get(\Portal\Video\VideoProvider::class)->deleteVideo($video->providerId);
+        } catch (Throwable $e) {
+            return $this->back($request, sprintf(
+                'Could not delete “%s” at your video service, so it has been left in the trash: %s '
+                . 'Deleting it here alone would not work — the next sync would bring it straight back.',
+                $video->title,
+                $e->getMessage()
+            ), 'error');
+        }
+
+        $videos->forceDelete($id);
+        Audit::log($this->db(), $this->user()?->email, 'video.purge', 'video', (string) $id, $video->title);
+
+        return $this->back($request, 'Deleted “' . $video->title . '” for good.');
+    }
+
+    /** find() hides trashed rows, which is exactly what this screen works on. */
+    private function trashedVideo(int $id): ?\Portal\Content\Video
+    {
+        $row = $this->db()->first('SELECT * FROM {videos} WHERE id = ? AND deleted_at IS NOT NULL', [$id]);
+
+        return $row === null ? null : \Portal\Content\Video::fromRow($row);
+    }
+
+    // --------------------------------------------------------------- series
+
+    public function series(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        return $this->admin('series', [
+            'series'     => $this->seriesRepo()->all(true),
+            'categories' => $this->container->get(CategoryRepository::class)->all(true),
+        ]);
+    }
+
+    /** @param array<string, string> $params */
+    public function editSeries(Request $request, array $params): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        $series = $this->seriesRepo()->find((int) ($params['id'] ?? 0));
+        if ($series === null) {
+            throw HttpException::notFound('That series does not exist.');
+        }
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        return $this->admin('series-edit', [
+            'series'     => $series,
+            'categories' => $this->container->get(CategoryRepository::class)->all(true),
+            // In series order, so the list on screen is the running order.
+            'episodes'   => $videos->forSeries($series->id, true),
+            'available'  => $this->unassignedVideos($series->id),
+        ]);
+    }
+
+    public function saveSeries(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SERIES);
+
+        $repo = $this->seriesRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'series.delete', 'series', (string) $id);
+                    return $this->back($request, 'Series deleted. Its videos were kept.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'        => $request->input('title'),
+                        'slug'         => $request->input('slug'),
+                        'description'  => $request->input('description'),
+                        'category_id'  => $request->input('category_id'),
+                        // Absent means unchecked; see updateVideo().
+                        'is_published' => $request->input('is_published') !== null,
+                        'member_only'  => $request->input('member_only') !== null,
+                        'hidden'       => $request->input('hidden') !== null,
+                        'featured'     => $request->input('featured') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'series.update', 'series', (string) $id);
+                    return $this->back($request, 'Series saved.');
+
+                case 'episodes':
+                    $repo->setVideos($id, array_map('intval', $request->inputArray('videos')));
+                    Audit::log($this->db(), $this->user()?->email, 'series.episodes', 'series', (string) $id);
+                    return $this->back($request, 'Episodes updated.');
+
+                case 'up':
+                case 'down':
+                    $repo->move((int) ($request->input('video') ?? 0), $action === 'up' ? -1 : 1);
+                    return $this->back($request, '');
+
+                default:
+                    $created = $repo->create(['title' => $request->input('title')]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'series.create',
+                        'series',
+                        (string) $created->id,
+                        $created->title
+                    );
+                    return $this->redirect('/admin/series/' . $created->id);
+            }
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    // ------------------------------------------------------------- speakers
+
+    public function speakers(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SPEAKERS);
+
+        return $this->admin('speakers', [
+            'speakers' => $this->speakerRepo()->all(),
+            'editing'  => $this->speakerRepo()->find((int) ($request->query('edit') ?? 0)),
+        ]);
+    }
+
+    public function saveSpeaker(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SPEAKERS);
+
+        $repo = $this->speakerRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $count = $repo->videoCount($id);
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'speaker.delete', 'speaker', (string) $id);
+
+                    return $this->back($request, $count === 0
+                        ? 'Speaker removed.'
+                        : sprintf(
+                            'Speaker removed. %d video%s kept, now with no speaker.',
+                            $count,
+                            $count === 1 ? '' : 's'
+                        ));
+
+                case 'update':
+                    $repo->update($id, [
+                        'name'      => $request->input('name'),
+                        'slug'      => $request->input('slug'),
+                        'bio'       => $request->input('bio'),
+                        'image_url' => $request->input('image_url'),
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'speaker.update', 'speaker', (string) $id);
+                    return $this->back($request, 'Speaker saved.');
+
+                default:
+                    $created = $repo->create([
+                        'name' => $request->input('name'),
+                        'bio'  => $request->input('bio'),
+                    ]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'speaker.create',
+                        'speaker',
+                        (string) $created->id,
+                        $created->name
+                    );
+                    return $this->back($request, 'Speaker added.');
+            }
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    /**
+     * Videos that could be added to this series.
+     *
+     * Anything already in ANOTHER series is excluded rather than offered and
+     * then silently stolen: a video belongs to at most one series, so adding it
+     * here would remove it from there without anyone being told.
+     *
+     * @return list<\Portal\Content\Video>
+     */
+    private function unassignedVideos(int $seriesId): array
+    {
+        $rows = $this->db()->all(
+            'SELECT * FROM {videos}
+              WHERE deleted_at IS NULL AND (series_id IS NULL OR series_id = ?)
+              ORDER BY COALESCE(published_at, created_at) DESC
+              LIMIT 200',
+            [$seriesId]
+        );
+
+        return array_map(
+            static fn (array $row): \Portal\Content\Video => \Portal\Content\Video::fromRow($row),
+            $rows
+        );
+    }
+
+    private function seriesRepo(): \Portal\Content\SeriesRepository
+    {
+        return $this->container->get(\Portal\Content\SeriesRepository::class);
+    }
+
+    private function speakerRepo(): \Portal\Content\SpeakerRepository
+    {
+        return $this->container->get(\Portal\Content\SpeakerRepository::class);
     }
 
     // ----------------------------------------------------------- categories

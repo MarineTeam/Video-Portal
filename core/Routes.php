@@ -32,6 +32,7 @@ final class Routes
         $router->get('/', [LibraryController::class, 'index']);
         $router->get('/category/{slug}', [LibraryController::class, 'category']);
         $router->get('/series/{slug}', [LibraryController::class, 'series']);
+        $router->get('/speaker/{slug}', [LibraryController::class, 'speaker']);
         $router->get('/search', [LibraryController::class, 'search']);
 
         // Theme and plugin assets. Served by PHP because they live outside the
@@ -63,12 +64,22 @@ final class Routes
         $router->get('/admin', [AdminController::class, 'dashboard'], ['admin.area']);
         $router->get('/admin/videos', [AdminController::class, 'videos'], ['admin.area']);
         $router->post('/admin/videos', [AdminController::class, 'updateVideo'], ['admin.area']);
+        // Registered before {id} so "trash" is not swallowed as a video id.
+        $router->get('/admin/videos/trash', [AdminController::class, 'trash'], ['admin.area']);
+        $router->post('/admin/videos/trash', [AdminController::class, 'updateTrash'], ['admin.area']);
         $router->get('/admin/videos/{id}', [AdminController::class, 'editVideo'], ['admin.area']);
         $router->get('/admin/categories', [AdminController::class, 'categories'], ['admin.area']);
         $router->post('/admin/categories', [AdminController::class, 'saveCategory'], ['admin.area']);
         $router->get('/admin/categories/{id}', [AdminController::class, 'editCategory'], ['admin.area']);
+        $router->get('/admin/series', [AdminController::class, 'series'], ['admin.area']);
+        $router->post('/admin/series', [AdminController::class, 'saveSeries'], ['admin.area']);
+        $router->get('/admin/series/{id}', [AdminController::class, 'editSeries'], ['admin.area']);
+        $router->get('/admin/speakers', [AdminController::class, 'speakers'], ['admin.area']);
+        $router->post('/admin/speakers', [AdminController::class, 'saveSpeaker'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
         $router->post('/admin/users', [AdminController::class, 'saveUser'], ['admin.area']);
+        $router->get('/admin/permissions', [AdminController::class, 'permissions'], ['admin.area']);
+        $router->post('/admin/permissions', [AdminController::class, 'savePermissions'], ['admin.area']);
         $router->get('/admin/plugins', [AdminController::class, 'plugins'], ['admin.area']);
         $router->post('/admin/plugins', [AdminController::class, 'togglePlugin'], ['admin.area']);
         $router->get('/admin/themes', [AdminController::class, 'themes'], ['admin.area']);

@@ -6,6 +6,8 @@ namespace Portal\Admin;
 
 use Portal\Auth\Guard;
 use Portal\Content\Category;
+use Portal\Content\Series;
+use Portal\Content\Speaker;
 use Portal\Content\ThumbnailPolicy;
 use Portal\Content\Video;
 use Portal\Providers\SettingField;
@@ -28,9 +30,14 @@ final class AdminView
             'dashboard'  => $this->dashboard($data),
             'videos'        => $this->videos($data),
             'video-edit'    => $this->videoEdit($data),
+            'trash'         => $this->trash($data),
             'categories'    => $this->categories($data),
             'category-edit' => $this->categoryEdit($data),
-            'users'      => $this->users($data),
+            'series'        => $this->series($data),
+            'series-edit'   => $this->seriesEdit($data),
+            'speakers'      => $this->speakers($data),
+            'users'       => $this->users($data),
+            'permissions' => $this->permissions($data),
             'plugins'    => $this->plugins($data),
             'themes'     => $this->themes($data),
             'providers'  => $this->providers($data),
@@ -229,8 +236,17 @@ final class AdminView
         $total = (int) ($data['total'] ?? 0);
         $upload = $this->uploader($data);
 
+        $trashed = (int) ($data['trashed'] ?? 0);
+        $trashLink = $trashed === 0
+            ? ''
+            : sprintf(
+                '<p class="muted small"><a href="/admin/videos/trash">Trash (%d)</a></p>',
+                $trashed
+            );
+
         return <<<HTML
         <h1>Videos <span class="muted">({$total})</span></h1>
+        {$trashLink}
         {$upload}
         <form method="get" class="toolbar">
           <input type="search" name="q" value="{$search}" placeholder="Search titles and descriptions…">
@@ -238,6 +254,68 @@ final class AdminView
         </form>
         <table>
           <thead><tr><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr></thead>
+          <tbody>{$rows}</tbody>
+        </table>
+        HTML;
+    }
+
+    /**
+     * The trash.
+     *
+     * Reachable from the Videos screen rather than the top navigation: it is a
+     * rare destination, and a permanent-delete button does not belong one
+     * mis-click away from everyday work.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function trash(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $rows = '';
+        foreach ((array) ($data['videos'] ?? []) as $video) {
+            $rows .= sprintf(
+                '<tr>
+                   <td><strong>%s</strong><br><span class="muted">%s</span></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="restore" class="btn tiny">Restore</button>
+                       <button name="action" value="purge" class="btn tiny danger"
+                               onclick="return confirm(\'%s\')">Delete for good</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($video->title),
+                e(Str::duration($video->duration) ?: '—'),
+                $token,
+                $video->id,
+                e(sprintf(
+                    'Permanently delete "%s"? This also deletes the file at your video service and '
+                    . 'cannot be undone.',
+                    $video->title
+                ))
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">The trash is empty.</td></tr>';
+        }
+
+        return <<<HTML
+        <p class="muted small"><a href="/admin/videos">&larr; All videos</a></p>
+        <h1>Trash</h1>
+
+        <p class="muted">Deleted videos are kept here rather than removed, so a mistake is
+           recoverable. They do not appear anywhere on the site while they are in the trash.</p>
+
+        <p class="muted small"><strong>Deleting for good removes the file at your video service too.</strong>
+           It has to: leaving it there means the next sync re-imports it, and the delete would appear
+           to have failed at random. If your video service refuses, the video stays here and says why.</p>
+
+        <table>
+          <thead><tr><th>Title</th><th></th></tr></thead>
           <tbody>{$rows}</tbody>
         </table>
         HTML;
@@ -319,6 +397,26 @@ final class AdminView
                 . '<a href="/admin/categories">Create one</a> and it will appear here.</p>';
         }
 
+        $seriesOptions = '<option value="0">— none —</option>';
+        foreach ((array) ($data['series'] ?? []) as $item) {
+            $seriesOptions .= sprintf(
+                '<option value="%d"%s>%s</option>',
+                $item->id,
+                $item->id === $video->seriesId ? ' selected' : '',
+                e($item->title)
+            );
+        }
+
+        $speakerOptions = '<option value="0">— none —</option>';
+        foreach ((array) ($data['speakers'] ?? []) as $speaker) {
+            $speakerOptions .= sprintf(
+                '<option value="%d"%s>%s</option>',
+                $speaker->id,
+                $speaker->id === $video->speakerId ? ' selected' : '',
+                e($speaker->name)
+            );
+        }
+
         $title = e($video->title);
         $description = e((string) ($video->description ?? ''));
 
@@ -361,6 +459,14 @@ final class AdminView
                 <p class="muted small">Categories you set here take precedence over the collection this
                    video came from at your video provider.</p>
                 {$checkboxes}
+              </fieldset>
+
+              <fieldset>
+                <legend>Series and speaker</legend>
+                <label>Series <select name="series_id">{$seriesOptions}</select></label>
+                <p class="muted small">A video belongs to at most one series. Its position in the
+                   running order is set on the <a href="/admin/series">series</a> screen.</p>
+                <label>Speaker <select name="speaker_id">{$speakerOptions}</select></label>
               </fieldset>
             </div>
 
@@ -630,6 +736,601 @@ final class AdminView
         }
 
         return sprintf('<select name="%s">%s</select>', e($name), $options);
+    }
+
+    // --------------------------------------------------------------- series
+
+    /** @param array<string, mixed> $data */
+    private function series(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $rows = '';
+        foreach ((array) ($data['series'] ?? []) as $item) {
+            $state = $item->isPublished
+                ? '<span class="pill ok">Published</span>'
+                : '<span class="pill">Draft</span>';
+
+            $count = $item->videoCount === 1 ? '1 video' : $item->videoCount . ' videos';
+
+            $rows .= sprintf(
+                '<tr>
+                   <td><a href="/admin/series/%d"><strong>%s</strong></a> %s<br>
+                       <span class="muted">/series/%s — %s</span></td>
+                   <td class="right">
+                     <a class="btn tiny secondary" href="/admin/series/%d">Edit</a>
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="delete" class="btn tiny danger"
+                               onclick="return confirm(\'Delete this series? Its videos are kept.\')">Delete</button>
+                     </form>
+                   </td>
+                 </tr>',
+                $item->id,
+                e($item->title),
+                $state,
+                e($item->slug),
+                e($count),
+                $item->id,
+                $token,
+                $item->id
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">No series yet.</td></tr>';
+        }
+
+        return <<<HTML
+        <h1>Series</h1>
+
+        <p class="muted">A series is an <strong>order</strong> — episode 1, 2, 3. A category is a
+           <strong>place</strong>. A video can sit in several categories but belongs to at most one
+           series, because "episode 3" cannot mean two things at once.</p>
+
+        <div class="cols">
+          <div>
+            <table>
+              <thead><tr><th>Title</th><th></th></tr></thead>
+              <tbody>{$rows}</tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Add a series</h2>
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <label>Title <input type="text" name="title" required></label>
+              <button class="btn" name="action" value="create">Create</button>
+            </form>
+            <p class="muted small">You will land on its edit screen, where you can add episodes.</p>
+          </div>
+        </div>
+        HTML;
+    }
+
+    /** @param array<string, mixed> $data */
+    private function seriesEdit(array $data): string
+    {
+        /** @var Series $series */
+        $series = $data['series'];
+        $token = e((string) $data['token']);
+
+        $categoryOptions = '<option value="0">— none —</option>';
+        foreach ((array) ($data['categories'] ?? []) as $category) {
+            $categoryOptions .= sprintf(
+                '<option value="%d"%s>%s%s</option>',
+                $category->id,
+                $category->id === $series->categoryId ? ' selected' : '',
+                str_repeat('&nbsp;&nbsp;&nbsp;', $category->depth),
+                e($category->name)
+            );
+        }
+
+        /** @var list<Video> $episodes */
+        $episodes = (array) ($data['episodes'] ?? []);
+
+        $running = '';
+        $position = 1;
+        foreach ($episodes as $video) {
+            $running .= sprintf(
+                '<tr>
+                   <td class="muted">%d</td>
+                   <td><a href="/admin/videos/%d">%s</a></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <input type="hidden" name="video" value="%d">
+                       <button name="action" value="up" class="btn tiny secondary"
+                               aria-label="Move up"%s>&uarr;</button>
+                       <button name="action" value="down" class="btn tiny secondary"
+                               aria-label="Move down"%s>&darr;</button>
+                     </form>
+                   </td>
+                 </tr>',
+                $position,
+                $video->id,
+                e($video->title),
+                $token,
+                $series->id,
+                $video->id,
+                $position === 1 ? ' disabled' : '',
+                $position === count($episodes) ? ' disabled' : ''
+            );
+            $position++;
+        }
+
+        if ($running === '') {
+            $running = '<tr><td colspan="3" class="muted">No episodes yet. Add some below.</td></tr>';
+        }
+
+        $assigned = array_map(static fn (Video $v): int => $v->id, $episodes);
+
+        $picker = '';
+        foreach ((array) ($data['available'] ?? []) as $video) {
+            $picker .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="videos[]" value="%d"%s>%s</label>',
+                $video->id,
+                in_array($video->id, $assigned, true) ? ' checked' : '',
+                e($video->title)
+            );
+        }
+
+        if ($picker === '') {
+            $picker = '<p class="muted small">No videos available to add.</p>';
+        }
+
+        $title = e($series->title);
+        $slug = e($series->slug);
+        $description = e((string) ($series->description ?? ''));
+
+        $publishedAttr = $series->isPublished ? ' checked' : '';
+        $memberAttr = $series->memberOnly ? ' checked' : '';
+        $hiddenAttr = $series->hidden ? ' checked' : '';
+        $featuredAttr = $series->featured ? ' checked' : '';
+
+        return <<<HTML
+        <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
+        <h1>{$title}</h1>
+
+        <div class="cols">
+          <div>
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <input type="hidden" name="id" value="{$series->id}">
+              <fieldset>
+                <legend>Details</legend>
+                <label>Title <input type="text" name="title" value="{$title}" required></label>
+                <label>Address <input type="text" name="slug" value="{$slug}"></label>
+                <p class="muted small">Changing this keeps the old address working.</p>
+                <label>Category <select name="category_id">{$categoryOptions}</select></label>
+                <label>Description <textarea name="description" rows="4">{$description}</textarea></label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Visibility</legend>
+                <label class="checkbox"><input type="checkbox" name="is_published" value="1"{$publishedAttr}> Published</label>
+                <label class="checkbox"><input type="checkbox" name="member_only" value="1"{$memberAttr}> Members only</label>
+                <label class="checkbox"><input type="checkbox" name="hidden" value="1"{$hiddenAttr}> Hidden</label>
+                <label class="checkbox"><input type="checkbox" name="featured" value="1"{$featuredAttr}> Featured</label>
+              </fieldset>
+
+              <button class="btn" name="action" value="update">Save</button>
+            </form>
+          </div>
+
+          <div>
+            <fieldset>
+              <legend>Running order</legend>
+              <table>
+                <tbody>{$running}</tbody>
+              </table>
+            </fieldset>
+
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <input type="hidden" name="id" value="{$series->id}">
+              <fieldset>
+                <legend>Episodes</legend>
+                <p class="muted small">Ticking adds a video; unticking removes it. Videos already in
+                   another series are not listed — a video belongs to one series, so adding it here
+                   would quietly take it out of that one.</p>
+                {$picker}
+                <button class="btn" name="action" value="episodes">Update episodes</button>
+              </fieldset>
+            </form>
+          </div>
+        </div>
+        HTML;
+    }
+
+    // ------------------------------------------------------------- speakers
+
+    /** @param array<string, mixed> $data */
+    private function speakers(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        /** @var Speaker|null $editing */
+        $editing = $data['editing'] ?? null;
+
+        $rows = '';
+        foreach ((array) ($data['speakers'] ?? []) as $speaker) {
+            $count = $speaker->videoCount === 1 ? '1 video' : $speaker->videoCount . ' videos';
+
+            $warning = $speaker->videoCount === 0
+                ? 'Remove this speaker?'
+                : sprintf(
+                    'Remove this speaker? %d video%s will be kept but lose their speaker.',
+                    $speaker->videoCount,
+                    $speaker->videoCount === 1 ? '' : 's'
+                );
+
+            $rows .= sprintf(
+                '<tr>
+                   <td><strong>%s</strong><br><span class="muted">/speaker/%s — %s</span></td>
+                   <td class="right">
+                     <a class="btn tiny secondary" href="/admin/speakers?edit=%d">Edit</a>
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="delete" class="btn tiny danger"
+                               onclick="return confirm(\'%s\')">Delete</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($speaker->name),
+                e($speaker->slug),
+                e($count),
+                $speaker->id,
+                $token,
+                $speaker->id,
+                e($warning)
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">Nobody yet.</td></tr>';
+        }
+
+        $form = $editing === null
+            ? <<<HTML
+              <h2>Add a speaker</h2>
+              <form method="post">
+                <input type="hidden" name="_token" value="{$token}">
+                <label>Name <input type="text" name="name" required></label>
+                <label>Bio <textarea name="bio" rows="4"></textarea></label>
+                <button class="btn" name="action" value="create">Add</button>
+              </form>
+              HTML
+            : sprintf(
+                '<h2>Edit %s</h2>
+                 <form method="post">
+                   <input type="hidden" name="_token" value="%s">
+                   <input type="hidden" name="id" value="%d">
+                   <label>Name <input type="text" name="name" value="%s" required></label>
+                   <label>Address <input type="text" name="slug" value="%s"></label>
+                   <label>Bio <textarea name="bio" rows="4">%s</textarea></label>
+                   <label>Photo URL <input type="url" name="image_url" value="%s"></label>
+                   <div class="actions">
+                     <button class="btn" name="action" value="update">Save</button>
+                     <a class="btn secondary" href="/admin/speakers">Cancel</a>
+                   </div>
+                 </form>',
+                e($editing->name),
+                $token,
+                $editing->id,
+                e($editing->name),
+                e($editing->slug),
+                e((string) ($editing->bio ?? '')),
+                e((string) ($editing->imageUrl ?? ''))
+            );
+
+        return <<<HTML
+        <h1>Speakers</h1>
+
+        <p class="muted">Whoever is talking. Deliberately separate from user accounts: a guest from
+           four years ago still needs a name under their video, and deleting a login should never
+           erase attribution.</p>
+
+        <div class="cols">
+          <div>
+            <table>
+              <thead><tr><th>Name</th><th></th></tr></thead>
+              <tbody>{$rows}</tbody>
+            </table>
+          </div>
+          <div>{$form}</div>
+        </div>
+        HTML;
+    }
+
+    // ---------------------------------------------------------- permissions
+
+    /**
+     * Roles, groups, and scoped grants.
+     *
+     * One screen rather than three, because the question an admin actually
+     * arrives with is "why can this person do that", and the answer can live in
+     * any of the three. Splitting them would mean checking three pages to
+     * answer one question.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function permissions(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        /** @var array<string, string> $capabilities */
+        $capabilities = (array) ($data['capabilities'] ?? []);
+        /** @var list<string> $siteOnly */
+        $siteOnly = (array) ($data['siteOnly'] ?? []);
+
+        $roles = '';
+        foreach ((array) ($data['roles'] ?? []) as $role) {
+            $roles .= $this->roleCard($role, $capabilities, $token);
+        }
+
+        $groups = '';
+        foreach ((array) ($data['groups'] ?? []) as $group) {
+            $groups .= $this->groupCard($group, $capabilities, $token);
+        }
+
+        $grantRows = '';
+        foreach ((array) ($data['grants'] ?? []) as $grant) {
+            $grantRows .= sprintf(
+                '<tr>
+                   <td>%s</td><td><code>%s</code></td><td>%s</td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="grant_id" value="%d">
+                       <button name="action" value="revoke" class="btn tiny danger">Remove</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e((string) $grant['subject']),
+                e((string) $grant['capability']),
+                e((string) $grant['scope']),
+                $token,
+                (int) $grant['id']
+            );
+        }
+
+        if ($grantRows === '') {
+            $grantRows = '<tr><td colspan="4" class="muted">No individual permissions granted.</td></tr>';
+        }
+
+        $capabilityOptions = '';
+        foreach ($capabilities as $slug => $description) {
+            $capabilityOptions .= sprintf(
+                '<option value="%s"%s>%s — %s</option>',
+                e($slug),
+                in_array($slug, $siteOnly, true) ? ' data-site-only="1"' : '',
+                e($slug),
+                e($description)
+            );
+        }
+
+        $scopeOptions = '<option value="site">The whole site</option>';
+        foreach ((array) ($data['categories'] ?? []) as $category) {
+            $scopeOptions .= sprintf(
+                '<option value="category:%d">%sCategory: %s</option>',
+                $category->id,
+                str_repeat('&nbsp;&nbsp;', $category->depth),
+                e($category->name)
+            );
+        }
+        foreach ((array) ($data['seriesList'] ?? []) as $item) {
+            $scopeOptions .= sprintf('<option value="series:%d">Series: %s</option>', $item->id, e($item->title));
+        }
+
+        $groupOptions = '';
+        foreach ((array) ($data['groups'] ?? []) as $group) {
+            $groupOptions .= sprintf('<option value="%d">%s</option>', (int) $group['id'], e((string) $group['name']));
+        }
+
+        return <<<HTML
+        <h1>Permissions</h1>
+
+        <p class="muted">Three ways somebody can hold a permission, checked in this order: their
+           <strong>role</strong>, any <strong>group</strong> they are in, and finally an individual
+           <strong>grant</strong>. A grant can be limited to one category or series, and is inherited
+           by everything inside it.</p>
+
+        <p class="muted small"><strong>Administrator is not on this screen by design.</strong> It is a
+           role, never a permission, so nobody editing this page can make themselves one — including
+           you. Change who is an administrator under <a href="/admin/users">People</a>.</p>
+
+        <h2>Roles</h2>
+        <div class="cards">{$roles}</div>
+
+        <h2>Groups</h2>
+        <p class="muted small">A named bundle of permissions with a list of email addresses.
+           Membership is by address, so somebody can be given permissions before they have ever
+           signed in.</p>
+
+        <form method="post" class="toolbar">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="text" name="name" placeholder="New group name" required>
+          <button class="btn secondary" name="action" value="group-create">Create group</button>
+        </form>
+
+        <div class="cards">{$groups}</div>
+
+        <h2>Individual permissions</h2>
+
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+          <fieldset>
+            <legend>Grant a permission</legend>
+
+            <div class="cols">
+              <div>
+                <label>To
+                  <select name="subject_type">
+                    <option value="email">One person, by email</option>
+                    <option value="group">Everyone in a group</option>
+                    <option value="role">Everyone with a role</option>
+                  </select>
+                </label>
+                <label>Email address <input type="email" name="email" placeholder="someone@example.com"></label>
+                <label>Or pick a group <select name="subject_id"><option value="0">—</option>{$groupOptions}</select></label>
+              </div>
+              <div>
+                <label>Permission <select name="capability">{$capabilityOptions}</select></label>
+                <label>Limited to <select name="scope">{$scopeOptions}</select></label>
+                <p class="muted small">Some permissions — managing plugins, themes, services, users,
+                   or settings — only make sense site-wide, and are stored that way whatever is
+                   chosen here.</p>
+              </div>
+            </div>
+
+            <button class="btn" name="action" value="grant">Grant</button>
+          </fieldset>
+        </form>
+
+        <table>
+          <thead><tr><th>Who</th><th>May</th><th>Where</th><th></th></tr></thead>
+          <tbody>{$grantRows}</tbody>
+        </table>
+        HTML;
+    }
+
+    /**
+     * @param array<string, mixed>  $role
+     * @param array<string, string> $capabilities
+     */
+    private function roleCard(array $role, array $capabilities, string $token): string
+    {
+        $name = e((string) $role['name']);
+        $slug = (string) $role['slug'];
+        $users = (int) $role['users'];
+        $people = $users === 1 ? '1 person' : $users . ' people';
+
+        // The administrator role holds everything implicitly and short-circuits
+        // every check, so there is genuinely nothing here to edit — and a form
+        // that appeared to work while doing nothing would be worse than none.
+        if ($slug === 'admin') {
+            return <<<HTML
+            <div class="card">
+              <h3>{$name} <span class="pill ok">system</span></h3>
+              <p class="muted small">{$people}. Holds everything, always. Not editable — an
+                 administrator cannot be partially disarmed, and pretending otherwise would be
+                 misleading.</p>
+            </div>
+            HTML;
+        }
+
+        /** @var list<string> $held */
+        $held = (array) $role['capabilities'];
+
+        $boxes = '';
+        foreach ($capabilities as $capability => $description) {
+            $boxes .= sprintf(
+                '<label class="checkbox" title="%s"><input type="checkbox" name="capabilities[]" value="%s"%s>%s</label>',
+                e($description),
+                e($capability),
+                in_array($capability, $held, true) ? ' checked' : '',
+                e($capability)
+            );
+        }
+
+        return sprintf(
+            '<div class="card">
+               <h3>%s</h3>
+               <p class="muted small">%s</p>
+               <form method="post">
+                 <input type="hidden" name="_token" value="%s">
+                 <input type="hidden" name="role_id" value="%d">
+                 %s
+                 <button class="btn tiny" name="action" value="role">Save</button>
+               </form>
+             </div>',
+            $name,
+            e($people),
+            $token,
+            (int) $role['id'],
+            $boxes
+        );
+    }
+
+    /**
+     * @param array<string, mixed>  $group
+     * @param array<string, string> $capabilities
+     */
+    private function groupCard(array $group, array $capabilities, string $token): string
+    {
+        $id = (int) $group['id'];
+        $name = e((string) $group['name']);
+
+        /** @var list<string> $held */
+        $held = (array) $group['capabilities'];
+
+        $boxes = '';
+        foreach ($capabilities as $capability => $description) {
+            $boxes .= sprintf(
+                '<label class="checkbox" title="%s"><input type="checkbox" name="capabilities[]" value="%s"%s>%s</label>',
+                e($description),
+                e($capability),
+                in_array($capability, $held, true) ? ' checked' : '',
+                e($capability)
+            );
+        }
+
+        $members = '';
+        foreach ((array) $group['members'] as $email) {
+            $members .= sprintf(
+                '<li>%s
+                   <form method="post" class="inline">
+                     <input type="hidden" name="_token" value="%s">
+                     <input type="hidden" name="group_id" value="%d">
+                     <input type="hidden" name="email" value="%s">
+                     <button name="action" value="group-remove-member" class="btn tiny danger">Remove</button>
+                   </form>
+                 </li>',
+                e((string) $email),
+                $token,
+                $id,
+                e((string) $email)
+            );
+        }
+
+        if ($members === '') {
+            $members = '<li class="muted">Nobody yet.</li>';
+        }
+
+        return <<<HTML
+        <div class="card">
+          <h3>{$name}</h3>
+
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="group_id" value="{$id}">
+            {$boxes}
+            <button class="btn tiny" name="action" value="group-capabilities">Save permissions</button>
+          </form>
+
+          <ul class="plain">{$members}</ul>
+
+          <form method="post" class="toolbar">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="group_id" value="{$id}">
+            <input type="email" name="email" placeholder="add someone@example.com" required>
+            <button class="btn tiny secondary" name="action" value="group-add-member">Add</button>
+          </form>
+
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="group_id" value="{$id}">
+            <button name="action" value="group-delete" class="btn tiny danger"
+                    onclick="return confirm('Delete this group? Everyone in it loses whatever it granted.')">
+              Delete group
+            </button>
+          </form>
+        </div>
+        HTML;
     }
 
     // ---------------------------------------------------------------- users
