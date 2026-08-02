@@ -70,6 +70,7 @@ final class WatchController extends Controller
                     'embedUrl'    => $embedUrl,
                     'duration'    => $video->duration,
                     'speaker'     => $this->speakerName($video),
+                    'speakerLink' => $this->speakerLink($video),
                     'series'      => $this->seriesLink($video),
                     'recordedAt'  => $this->formatDate($video->recordedAt),
                     'resumeAt'    => $this->resumePosition($video->id),
@@ -202,6 +203,33 @@ final class WatchController extends Controller
         } catch (Throwable) {
             return null;
         }
+    }
+
+    /**
+     * The speaker as a link to everything else they have said.
+     *
+     * Separate from speakerName() so the plain string stays available: a theme
+     * that only wants to print a name should not have to strip markup, and a
+     * name is safe to escape where a link is not.
+     *
+     * @return array{name: string, url: string}|null
+     */
+    private function speakerLink(Video $video): ?array
+    {
+        if ($video->speakerId === null) {
+            return null;
+        }
+
+        try {
+            $row = $this->db()->first('SELECT name, slug FROM {speakers} WHERE id = ?', [$video->speakerId]);
+        } catch (Throwable) {
+            return null;
+        }
+
+        return $row === null ? null : [
+            'name' => (string) $row['name'],
+            'url'  => '/speaker/' . $row['slug'],
+        ];
     }
 
     /** @return array{title: string, url: string}|null */

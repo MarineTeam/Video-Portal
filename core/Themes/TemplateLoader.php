@@ -170,10 +170,17 @@ final class TemplateLoader
         $candidates[] = $type;
 
         // Generic fallbacks by kind.
+        //
+        // Series and speaker pages are LISTINGS — a heading, a description, and
+        // a grid of videos — so they fall back to archive alongside categories,
+        // not to single. archive.php has always named them in its own docblock;
+        // routing them to single was a mismatch that cost them pagination and
+        // sub-listings, and meant a theme author overriding archive.php did not
+        // affect the pages it claimed to cover.
         $candidates = [...$candidates, ...match ($type) {
-            'video', 'series', 'speaker' => ['single', 'index'],
-            'category', 'tag', 'search'  => ['archive', 'index'],
-            default                      => ['index'],
+            'video'                                        => ['single', 'index'],
+            'category', 'series', 'speaker', 'tag', 'search' => ['archive', 'index'],
+            default                                        => ['index'],
         }];
 
         /** @var list<string> */

@@ -10,6 +10,8 @@ use Portal\Auth\Guard;
 use Portal\Auth\Session;
 use Portal\Auth\UserRepository;
 use Portal\Content\CategoryRepository;
+use Portal\Content\SeriesRepository;
+use Portal\Content\SpeakerRepository;
 use Portal\Content\VideoRepository;
 use Portal\Http\ErrorPage;
 use Portal\Http\HttpException;
@@ -154,6 +156,10 @@ final class App
 
         $c->singleton(CategoryRepository::class, static fn (Container $c): CategoryRepository
             => new CategoryRepository($c->get(Db::class)));
+        $c->singleton(SeriesRepository::class, static fn (Container $c): SeriesRepository
+            => new SeriesRepository($c->get(Db::class)));
+        $c->singleton(SpeakerRepository::class, static fn (Container $c): SpeakerRepository
+            => new SpeakerRepository($c->get(Db::class)));
         $c->singleton(VideoRepository::class, static fn (Container $c): VideoRepository => new VideoRepository(
             $c->get(Db::class),
             $c->get(CategoryRepository::class),

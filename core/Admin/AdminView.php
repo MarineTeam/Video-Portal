@@ -6,6 +6,8 @@ namespace Portal\Admin;
 
 use Portal\Auth\Guard;
 use Portal\Content\Category;
+use Portal\Content\Series;
+use Portal\Content\Speaker;
 use Portal\Content\ThumbnailPolicy;
 use Portal\Content\Video;
 use Portal\Providers\SettingField;
@@ -30,6 +32,9 @@ final class AdminView
             'video-edit'    => $this->videoEdit($data),
             'categories'    => $this->categories($data),
             'category-edit' => $this->categoryEdit($data),
+            'series'        => $this->series($data),
+            'series-edit'   => $this->seriesEdit($data),
+            'speakers'      => $this->speakers($data),
             'users'      => $this->users($data),
             'plugins'    => $this->plugins($data),
             'themes'     => $this->themes($data),
@@ -319,6 +324,26 @@ final class AdminView
                 . '<a href="/admin/categories">Create one</a> and it will appear here.</p>';
         }
 
+        $seriesOptions = '<option value="0">— none —</option>';
+        foreach ((array) ($data['series'] ?? []) as $item) {
+            $seriesOptions .= sprintf(
+                '<option value="%d"%s>%s</option>',
+                $item->id,
+                $item->id === $video->seriesId ? ' selected' : '',
+                e($item->title)
+            );
+        }
+
+        $speakerOptions = '<option value="0">— none —</option>';
+        foreach ((array) ($data['speakers'] ?? []) as $speaker) {
+            $speakerOptions .= sprintf(
+                '<option value="%d"%s>%s</option>',
+                $speaker->id,
+                $speaker->id === $video->speakerId ? ' selected' : '',
+                e($speaker->name)
+            );
+        }
+
         $title = e($video->title);
         $description = e((string) ($video->description ?? ''));
 
@@ -361,6 +386,14 @@ final class AdminView
                 <p class="muted small">Categories you set here take precedence over the collection this
                    video came from at your video provider.</p>
                 {$checkboxes}
+              </fieldset>
+
+              <fieldset>
+                <legend>Series and speaker</legend>
+                <label>Series <select name="series_id">{$seriesOptions}</select></label>
+                <p class="muted small">A video belongs to at most one series. Its position in the
+                   running order is set on the <a href="/admin/series">series</a> screen.</p>
+                <label>Speaker <select name="speaker_id">{$speakerOptions}</select></label>
               </fieldset>
             </div>
 
@@ -630,6 +663,314 @@ final class AdminView
         }
 
         return sprintf('<select name="%s">%s</select>', e($name), $options);
+    }
+
+    // --------------------------------------------------------------- series
+
+    /** @param array<string, mixed> $data */
+    private function series(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $rows = '';
+        foreach ((array) ($data['series'] ?? []) as $item) {
+            $state = $item->isPublished
+                ? '<span class="pill ok">Published</span>'
+                : '<span class="pill">Draft</span>';
+
+            $count = $item->videoCount === 1 ? '1 video' : $item->videoCount . ' videos';
+
+            $rows .= sprintf(
+                '<tr>
+                   <td><a href="/admin/series/%d"><strong>%s</strong></a> %s<br>
+                       <span class="muted">/series/%s — %s</span></td>
+                   <td class="right">
+                     <a class="btn tiny secondary" href="/admin/series/%d">Edit</a>
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="delete" class="btn tiny danger"
+                               onclick="return confirm(\'Delete this series? Its videos are kept.\')">Delete</button>
+                     </form>
+                   </td>
+                 </tr>',
+                $item->id,
+                e($item->title),
+                $state,
+                e($item->slug),
+                e($count),
+                $item->id,
+                $token,
+                $item->id
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">No series yet.</td></tr>';
+        }
+
+        return <<<HTML
+        <h1>Series</h1>
+
+        <p class="muted">A series is an <strong>order</strong> — episode 1, 2, 3. A category is a
+           <strong>place</strong>. A video can sit in several categories but belongs to at most one
+           series, because "episode 3" cannot mean two things at once.</p>
+
+        <div class="cols">
+          <div>
+            <table>
+              <thead><tr><th>Title</th><th></th></tr></thead>
+              <tbody>{$rows}</tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Add a series</h2>
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <label>Title <input type="text" name="title" required></label>
+              <button class="btn" name="action" value="create">Create</button>
+            </form>
+            <p class="muted small">You will land on its edit screen, where you can add episodes.</p>
+          </div>
+        </div>
+        HTML;
+    }
+
+    /** @param array<string, mixed> $data */
+    private function seriesEdit(array $data): string
+    {
+        /** @var Series $series */
+        $series = $data['series'];
+        $token = e((string) $data['token']);
+
+        $categoryOptions = '<option value="0">— none —</option>';
+        foreach ((array) ($data['categories'] ?? []) as $category) {
+            $categoryOptions .= sprintf(
+                '<option value="%d"%s>%s%s</option>',
+                $category->id,
+                $category->id === $series->categoryId ? ' selected' : '',
+                str_repeat('&nbsp;&nbsp;&nbsp;', $category->depth),
+                e($category->name)
+            );
+        }
+
+        /** @var list<Video> $episodes */
+        $episodes = (array) ($data['episodes'] ?? []);
+
+        $running = '';
+        $position = 1;
+        foreach ($episodes as $video) {
+            $running .= sprintf(
+                '<tr>
+                   <td class="muted">%d</td>
+                   <td><a href="/admin/videos/%d">%s</a></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <input type="hidden" name="video" value="%d">
+                       <button name="action" value="up" class="btn tiny secondary"
+                               aria-label="Move up"%s>&uarr;</button>
+                       <button name="action" value="down" class="btn tiny secondary"
+                               aria-label="Move down"%s>&darr;</button>
+                     </form>
+                   </td>
+                 </tr>',
+                $position,
+                $video->id,
+                e($video->title),
+                $token,
+                $series->id,
+                $video->id,
+                $position === 1 ? ' disabled' : '',
+                $position === count($episodes) ? ' disabled' : ''
+            );
+            $position++;
+        }
+
+        if ($running === '') {
+            $running = '<tr><td colspan="3" class="muted">No episodes yet. Add some below.</td></tr>';
+        }
+
+        $assigned = array_map(static fn (Video $v): int => $v->id, $episodes);
+
+        $picker = '';
+        foreach ((array) ($data['available'] ?? []) as $video) {
+            $picker .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="videos[]" value="%d"%s>%s</label>',
+                $video->id,
+                in_array($video->id, $assigned, true) ? ' checked' : '',
+                e($video->title)
+            );
+        }
+
+        if ($picker === '') {
+            $picker = '<p class="muted small">No videos available to add.</p>';
+        }
+
+        $title = e($series->title);
+        $slug = e($series->slug);
+        $description = e((string) ($series->description ?? ''));
+
+        $publishedAttr = $series->isPublished ? ' checked' : '';
+        $memberAttr = $series->memberOnly ? ' checked' : '';
+        $hiddenAttr = $series->hidden ? ' checked' : '';
+        $featuredAttr = $series->featured ? ' checked' : '';
+
+        return <<<HTML
+        <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
+        <h1>{$title}</h1>
+
+        <div class="cols">
+          <div>
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <input type="hidden" name="id" value="{$series->id}">
+              <fieldset>
+                <legend>Details</legend>
+                <label>Title <input type="text" name="title" value="{$title}" required></label>
+                <label>Address <input type="text" name="slug" value="{$slug}"></label>
+                <p class="muted small">Changing this keeps the old address working.</p>
+                <label>Category <select name="category_id">{$categoryOptions}</select></label>
+                <label>Description <textarea name="description" rows="4">{$description}</textarea></label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Visibility</legend>
+                <label class="checkbox"><input type="checkbox" name="is_published" value="1"{$publishedAttr}> Published</label>
+                <label class="checkbox"><input type="checkbox" name="member_only" value="1"{$memberAttr}> Members only</label>
+                <label class="checkbox"><input type="checkbox" name="hidden" value="1"{$hiddenAttr}> Hidden</label>
+                <label class="checkbox"><input type="checkbox" name="featured" value="1"{$featuredAttr}> Featured</label>
+              </fieldset>
+
+              <button class="btn" name="action" value="update">Save</button>
+            </form>
+          </div>
+
+          <div>
+            <fieldset>
+              <legend>Running order</legend>
+              <table>
+                <tbody>{$running}</tbody>
+              </table>
+            </fieldset>
+
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <input type="hidden" name="id" value="{$series->id}">
+              <fieldset>
+                <legend>Episodes</legend>
+                <p class="muted small">Ticking adds a video; unticking removes it. Videos already in
+                   another series are not listed — a video belongs to one series, so adding it here
+                   would quietly take it out of that one.</p>
+                {$picker}
+                <button class="btn" name="action" value="episodes">Update episodes</button>
+              </fieldset>
+            </form>
+          </div>
+        </div>
+        HTML;
+    }
+
+    // ------------------------------------------------------------- speakers
+
+    /** @param array<string, mixed> $data */
+    private function speakers(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        /** @var Speaker|null $editing */
+        $editing = $data['editing'] ?? null;
+
+        $rows = '';
+        foreach ((array) ($data['speakers'] ?? []) as $speaker) {
+            $count = $speaker->videoCount === 1 ? '1 video' : $speaker->videoCount . ' videos';
+
+            $warning = $speaker->videoCount === 0
+                ? 'Remove this speaker?'
+                : sprintf(
+                    'Remove this speaker? %d video%s will be kept but lose their speaker.',
+                    $speaker->videoCount,
+                    $speaker->videoCount === 1 ? '' : 's'
+                );
+
+            $rows .= sprintf(
+                '<tr>
+                   <td><strong>%s</strong><br><span class="muted">/speaker/%s — %s</span></td>
+                   <td class="right">
+                     <a class="btn tiny secondary" href="/admin/speakers?edit=%d">Edit</a>
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="delete" class="btn tiny danger"
+                               onclick="return confirm(\'%s\')">Delete</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($speaker->name),
+                e($speaker->slug),
+                e($count),
+                $speaker->id,
+                $token,
+                $speaker->id,
+                e($warning)
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">Nobody yet.</td></tr>';
+        }
+
+        $form = $editing === null
+            ? <<<HTML
+              <h2>Add a speaker</h2>
+              <form method="post">
+                <input type="hidden" name="_token" value="{$token}">
+                <label>Name <input type="text" name="name" required></label>
+                <label>Bio <textarea name="bio" rows="4"></textarea></label>
+                <button class="btn" name="action" value="create">Add</button>
+              </form>
+              HTML
+            : sprintf(
+                '<h2>Edit %s</h2>
+                 <form method="post">
+                   <input type="hidden" name="_token" value="%s">
+                   <input type="hidden" name="id" value="%d">
+                   <label>Name <input type="text" name="name" value="%s" required></label>
+                   <label>Address <input type="text" name="slug" value="%s"></label>
+                   <label>Bio <textarea name="bio" rows="4">%s</textarea></label>
+                   <label>Photo URL <input type="url" name="image_url" value="%s"></label>
+                   <div class="actions">
+                     <button class="btn" name="action" value="update">Save</button>
+                     <a class="btn secondary" href="/admin/speakers">Cancel</a>
+                   </div>
+                 </form>',
+                e($editing->name),
+                $token,
+                $editing->id,
+                e($editing->name),
+                e($editing->slug),
+                e((string) ($editing->bio ?? '')),
+                e((string) ($editing->imageUrl ?? ''))
+            );
+
+        return <<<HTML
+        <h1>Speakers</h1>
+
+        <p class="muted">Whoever is talking. Deliberately separate from user accounts: a guest from
+           four years ago still needs a name under their video, and deleting a login should never
+           erase attribution.</p>
+
+        <div class="cols">
+          <div>
+            <table>
+              <thead><tr><th>Name</th><th></th></tr></thead>
+              <tbody>{$rows}</tbody>
+            </table>
+          </div>
+          <div>{$form}</div>
+        </div>
+        HTML;
     }
 
     // ---------------------------------------------------------------- users

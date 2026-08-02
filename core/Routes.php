@@ -32,6 +32,7 @@ final class Routes
         $router->get('/', [LibraryController::class, 'index']);
         $router->get('/category/{slug}', [LibraryController::class, 'category']);
         $router->get('/series/{slug}', [LibraryController::class, 'series']);
+        $router->get('/speaker/{slug}', [LibraryController::class, 'speaker']);
         $router->get('/search', [LibraryController::class, 'search']);
 
         // Theme and plugin assets. Served by PHP because they live outside the
@@ -67,6 +68,11 @@ final class Routes
         $router->get('/admin/categories', [AdminController::class, 'categories'], ['admin.area']);
         $router->post('/admin/categories', [AdminController::class, 'saveCategory'], ['admin.area']);
         $router->get('/admin/categories/{id}', [AdminController::class, 'editCategory'], ['admin.area']);
+        $router->get('/admin/series', [AdminController::class, 'series'], ['admin.area']);
+        $router->post('/admin/series', [AdminController::class, 'saveSeries'], ['admin.area']);
+        $router->get('/admin/series/{id}', [AdminController::class, 'editSeries'], ['admin.area']);
+        $router->get('/admin/speakers', [AdminController::class, 'speakers'], ['admin.area']);
+        $router->post('/admin/speakers', [AdminController::class, 'saveSpeaker'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
         $router->post('/admin/users', [AdminController::class, 'saveUser'], ['admin.area']);
         $router->get('/admin/plugins', [AdminController::class, 'plugins'], ['admin.area']);

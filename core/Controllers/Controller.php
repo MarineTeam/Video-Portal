@@ -187,6 +187,8 @@ abstract class Controller
             ['label' => 'Dashboard',  'path' => '/admin',               'key' => 'dashboard',     'cap' => null],
             ['label' => 'Videos',     'path' => '/admin/videos',        'key' => 'videos',        'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
             ['label' => 'Categories', 'path' => '/admin/categories',    'key' => 'categories',    'cap' => \Portal\Auth\Capability::MANAGE_CATEGORIES],
+            ['label' => 'Series',     'path' => '/admin/series',        'key' => 'series',        'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
+            ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => \Portal\Auth\Capability::MANAGE_SPEAKERS],
             ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],
             ['label' => 'Groups',     'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => \Portal\Auth\Capability::MANAGE_VIEWERS],
             ['label' => 'People',     'path' => '/admin/users',         'key' => 'users',         'cap' => \Portal\Auth\Capability::MANAGE_USERS],

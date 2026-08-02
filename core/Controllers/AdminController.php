@@ -118,6 +118,8 @@ final class AdminController extends Controller
             'video'          => $video,
             'categories'     => $categories->all(true),
             'assigned'       => $videos->categoryIds($video->id),
+            'series'         => $this->seriesRepo()->all(true),
+            'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
         ]);
     }
@@ -163,6 +165,11 @@ final class AdminController extends Controller
                     'description'    => $request->input('description'),
                     'watermark_mode' => $request->input('watermark_mode') ?? $video->watermarkMode,
                     'thumbnail_mode' => $request->input('thumbnail_mode') ?? $video->thumbnailMode,
+                    // Zero means "none", which has to be expressible — so these
+                    // are normalised to null rather than left as 0, which no
+                    // series or speaker will ever have as an id.
+                    'series_id'      => ($s = (int) ($request->input('series_id') ?? 0)) > 0 ? $s : null,
+                    'speaker_id'     => ($p = (int) ($request->input('speaker_id') ?? 0)) > 0 ? $p : null,
                     // Unchecked checkboxes are simply absent from a POST, so
                     // presence is the value. Reading these with ?? would make
                     // every flag impossible to turn back off.
@@ -176,6 +183,199 @@ final class AdminController extends Controller
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video saved.');
         }
+    }
+
+    // --------------------------------------------------------------- series
+
+    public function series(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        return $this->admin('series', [
+            'series'     => $this->seriesRepo()->all(true),
+            'categories' => $this->container->get(CategoryRepository::class)->all(true),
+        ]);
+    }
+
+    /** @param array<string, string> $params */
+    public function editSeries(Request $request, array $params): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        $series = $this->seriesRepo()->find((int) ($params['id'] ?? 0));
+        if ($series === null) {
+            throw HttpException::notFound('That series does not exist.');
+        }
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        return $this->admin('series-edit', [
+            'series'     => $series,
+            'categories' => $this->container->get(CategoryRepository::class)->all(true),
+            // In series order, so the list on screen is the running order.
+            'episodes'   => $videos->forSeries($series->id, true),
+            'available'  => $this->unassignedVideos($series->id),
+        ]);
+    }
+
+    public function saveSeries(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SERIES);
+
+        $repo = $this->seriesRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'series.delete', 'series', (string) $id);
+                    return $this->back($request, 'Series deleted. Its videos were kept.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'        => $request->input('title'),
+                        'slug'         => $request->input('slug'),
+                        'description'  => $request->input('description'),
+                        'category_id'  => $request->input('category_id'),
+                        // Absent means unchecked; see updateVideo().
+                        'is_published' => $request->input('is_published') !== null,
+                        'member_only'  => $request->input('member_only') !== null,
+                        'hidden'       => $request->input('hidden') !== null,
+                        'featured'     => $request->input('featured') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'series.update', 'series', (string) $id);
+                    return $this->back($request, 'Series saved.');
+
+                case 'episodes':
+                    $repo->setVideos($id, array_map('intval', $request->inputArray('videos')));
+                    Audit::log($this->db(), $this->user()?->email, 'series.episodes', 'series', (string) $id);
+                    return $this->back($request, 'Episodes updated.');
+
+                case 'up':
+                case 'down':
+                    $repo->move((int) ($request->input('video') ?? 0), $action === 'up' ? -1 : 1);
+                    return $this->back($request, '');
+
+                default:
+                    $created = $repo->create(['title' => $request->input('title')]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'series.create',
+                        'series',
+                        (string) $created->id,
+                        $created->title
+                    );
+                    return $this->redirect('/admin/series/' . $created->id);
+            }
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    // ------------------------------------------------------------- speakers
+
+    public function speakers(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SPEAKERS);
+
+        return $this->admin('speakers', [
+            'speakers' => $this->speakerRepo()->all(),
+            'editing'  => $this->speakerRepo()->find((int) ($request->query('edit') ?? 0)),
+        ]);
+    }
+
+    public function saveSpeaker(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SPEAKERS);
+
+        $repo = $this->speakerRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $count = $repo->videoCount($id);
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'speaker.delete', 'speaker', (string) $id);
+
+                    return $this->back($request, $count === 0
+                        ? 'Speaker removed.'
+                        : sprintf(
+                            'Speaker removed. %d video%s kept, now with no speaker.',
+                            $count,
+                            $count === 1 ? '' : 's'
+                        ));
+
+                case 'update':
+                    $repo->update($id, [
+                        'name'      => $request->input('name'),
+                        'slug'      => $request->input('slug'),
+                        'bio'       => $request->input('bio'),
+                        'image_url' => $request->input('image_url'),
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'speaker.update', 'speaker', (string) $id);
+                    return $this->back($request, 'Speaker saved.');
+
+                default:
+                    $created = $repo->create([
+                        'name' => $request->input('name'),
+                        'bio'  => $request->input('bio'),
+                    ]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'speaker.create',
+                        'speaker',
+                        (string) $created->id,
+                        $created->name
+                    );
+                    return $this->back($request, 'Speaker added.');
+            }
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    /**
+     * Videos that could be added to this series.
+     *
+     * Anything already in ANOTHER series is excluded rather than offered and
+     * then silently stolen: a video belongs to at most one series, so adding it
+     * here would remove it from there without anyone being told.
+     *
+     * @return list<\Portal\Content\Video>
+     */
+    private function unassignedVideos(int $seriesId): array
+    {
+        $rows = $this->db()->all(
+            'SELECT * FROM {videos}
+              WHERE deleted_at IS NULL AND (series_id IS NULL OR series_id = ?)
+              ORDER BY COALESCE(published_at, created_at) DESC
+              LIMIT 200',
+            [$seriesId]
+        );
+
+        return array_map(
+            static fn (array $row): \Portal\Content\Video => \Portal\Content\Video::fromRow($row),
+            $rows
+        );
+    }
+
+    private function seriesRepo(): \Portal\Content\SeriesRepository
+    {
+        return $this->container->get(\Portal\Content\SeriesRepository::class);
+    }
+
+    private function speakerRepo(): \Portal\Content\SpeakerRepository
+    {
+        return $this->container->get(\Portal\Content\SpeakerRepository::class);
     }
 
     // ----------------------------------------------------------- categories

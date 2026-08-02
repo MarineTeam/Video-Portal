@@ -125,8 +125,27 @@ function withJar(string $url, string $jar, ?string $body): array
     return [
         'status'  => $status,
         'body'    => substr($raw, $headerSize),
-        'headers' => [],
+        // Previously always empty, while the signature promised otherwise. Any
+        // check reading a redirect target through a signed-in session therefore
+        // compared against nothing and reported "landed on nowhere" — a failure
+        // that looks like the application's fault and is not.
+        'headers' => parseHeaders(substr($raw, 0, $headerSize)),
     ];
+}
+
+/** @return array<string, string> lower-cased names */
+function parseHeaders(string $raw): array
+{
+    $headers = [];
+
+    foreach (preg_split('/\R/', $raw) ?: [] as $line) {
+        $pos = strpos($line, ':');
+        if ($pos !== false) {
+            $headers[strtolower(trim(substr($line, 0, $pos)))] = trim(substr($line, $pos + 1));
+        }
+    }
+
+    return $headers;
 }
 
 /** Pull the CSRF token out of a rendered form. */
@@ -176,15 +195,11 @@ function get(string $url, bool $followRedirects = false): array
     $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
-    $headers = [];
-    foreach (preg_split('/\R/', substr($raw, 0, $headerSize)) ?: [] as $line) {
-        $pos = strpos($line, ':');
-        if ($pos !== false) {
-            $headers[strtolower(trim(substr($line, 0, $pos)))] = trim(substr($line, $pos + 1));
-        }
-    }
-
-    return ['status' => $status, 'body' => substr($raw, $headerSize), 'headers' => $headers];
+    return [
+        'status'  => $status,
+        'body'    => substr($raw, $headerSize),
+        'headers' => parseHeaders(substr($raw, 0, $headerSize)),
+    ];
 }
 
 // ---------------------------------------------------------------- guard rails
@@ -651,6 +666,87 @@ check(
     ) === 1,
     'the assignment did not stick'
 );
+
+echo "\nSeries and speakers\n";
+
+$seriesScreen = getWithJar($baseUrl . '/admin/series', $jar);
+check('Series screen renders', $seriesScreen['status'] === 200, "got {$seriesScreen['status']}");
+check('Series appears in the admin navigation', str_contains($adminHome['body'], '/admin/series'));
+
+/* Creating a series lands on its edit screen, where episodes are added. */
+$madeSeries = postWithJar($baseUrl . '/admin/series', [
+    '_token' => csrfFrom($seriesScreen['body']),
+    'action' => 'create',
+    'title'  => 'Smoke Series',
+], $jar);
+
+check('Creating a series succeeds', $madeSeries['status'] === 302, "got {$madeSeries['status']}");
+
+$seriesId = (int) $db->value('SELECT id FROM {series} WHERE title = ? LIMIT 1', ['Smoke Series']);
+check('The series row exists', $seriesId > 0, 'nothing was created');
+check(
+    'It redirects straight to the edit screen',
+    str_contains($madeSeries['headers']['location'] ?? '', '/admin/series/' . $seriesId),
+    'landed on ' . ($madeSeries['headers']['location'] ?? 'nowhere')
+);
+
+$seriesEdit = getWithJar($baseUrl . '/admin/series/' . $seriesId, $jar);
+check('Series edit screen renders', $seriesEdit['status'] === 200, "got {$seriesEdit['status']}");
+check('It offers an episode picker', str_contains($seriesEdit['body'], 'name="videos[]"'));
+
+/* Put the seeded video in it, then confirm the public page works. */
+$episodes = postWithJar($baseUrl . '/admin/series', [
+    '_token' => csrfFrom($seriesEdit['body']),
+    'action' => 'episodes',
+    'id'     => (string) $seriesId,
+    'videos' => [(string) $videoRow],
+], $jar);
+
+check('Adding an episode succeeds', $episodes['status'] === 302, "got {$episodes['status']}");
+check(
+    'The video is now in the series',
+    (int) $db->value('SELECT series_id FROM {videos} WHERE id = ?', [$videoRow]) === $seriesId,
+    'the assignment did not stick'
+);
+
+$seriesSlug = (string) $db->value('SELECT slug FROM {series} WHERE id = ?', [$seriesId]);
+$publicSeries = get($baseUrl . '/series/' . $seriesSlug);
+check('The public series page renders', $publicSeries['status'] === 200, "got {$publicSeries['status']}");
+check('It lists the episode', str_contains($publicSeries['body'], 'A Test Video'));
+
+/* Renaming keeps the old address alive. */
+postWithJar($baseUrl . '/admin/series', [
+    '_token'       => csrfFrom($seriesEdit['body']),
+    'action'       => 'update',
+    'id'           => (string) $seriesId,
+    'title'        => 'Smoke Series',
+    'slug'         => 'renamed-series',
+    'is_published' => '1',
+], $jar);
+
+$oldAddress = get($baseUrl . '/series/' . $seriesSlug);
+check(
+    'The old series address still resolves',
+    $oldAddress['status'] === 301,
+    "got {$oldAddress['status']} — a printed link would have broken"
+);
+
+$speakersScreen = getWithJar($baseUrl . '/admin/speakers', $jar);
+check('Speakers screen renders', $speakersScreen['status'] === 200, "got {$speakersScreen['status']}");
+
+$madeSpeaker = postWithJar($baseUrl . '/admin/speakers', [
+    '_token' => csrfFrom($speakersScreen['body']),
+    'action' => 'create',
+    'name'   => 'Smoke Speaker',
+], $jar);
+
+check('Adding a speaker succeeds', $madeSpeaker['status'] === 302, "got {$madeSpeaker['status']}");
+
+$speakerSlug = (string) $db->value('SELECT slug FROM {speakers} WHERE name = ?', ['Smoke Speaker']);
+check('It derived an address', $speakerSlug === 'smoke-speaker', "got '{$speakerSlug}'");
+
+$publicSpeaker = get($baseUrl . '/speaker/' . $speakerSlug);
+check('The public speaker page renders', $publicSpeaker['status'] === 200, "got {$publicSpeaker['status']}");
 
 echo "\nUploading\n";
 

@@ -60,7 +60,13 @@ echo $template->partial('header', get_defined_vars());
   if (!empty($video['series']['title'])) {
       $bits[] = '<a href="' . e($video['series']['url']) . '">' . e($video['series']['title']) . '</a>';
   }
-  if (!empty($video['speaker']))   { $bits[] = e($video['speaker']); }
+  if (!empty($video['speakerLink']['url'])) {
+      $bits[] = '<a href="' . e($video['speakerLink']['url']) . '">'
+              . e($video['speakerLink']['name']) . '</a>';
+  } elseif (!empty($video['speaker'])) {
+      // A speaker with no directory entry — the name still shows, just flat.
+      $bits[] = e($video['speaker']);
+  }
   if (!empty($video['recordedAt'])) { $bits[] = e($video['recordedAt']); }
   if (!empty($video['duration']))   { $bits[] = e(\Portal\Support\Str::duration((int) $video['duration'])); }
   echo implode(' &middot; ', $bits);
