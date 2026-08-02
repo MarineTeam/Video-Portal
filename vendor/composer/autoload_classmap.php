@@ -104,6 +104,7 @@ return array(
     'Portal\\Support\\Crypto' => $baseDir . '/core/Support/Crypto.php',
     'Portal\\Support\\Http' => $baseDir . '/core/Support/Http.php',
     'Portal\\Support\\HttpResponse' => $baseDir . '/core/Support/HttpResponse.php',
+    'Portal\\Support\\PackageInstaller' => $baseDir . '/core/Support/PackageInstaller.php',
     'Portal\\Support\\RateLimit' => $baseDir . '/core/Support/RateLimit.php',
     'Portal\\Support\\Str' => $baseDir . '/core/Support/Str.php',
     'Portal\\Themes\\TemplateLoader' => $baseDir . '/core/Themes/TemplateLoader.php',

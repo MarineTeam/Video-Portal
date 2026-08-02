@@ -40,6 +40,18 @@ final class ThemeManager
     // ------------------------------------------------------------- discovery
 
     /** @return array<string, ThemeManifest> */
+    /**
+     * Forget what is on disk, so the next discover() looks again.
+     *
+     * Needed immediately after installing a theme: the folder appeared during
+     * THIS request, and sync() would otherwise reconcile against a listing
+     * taken before the upload — reporting success and then not showing it.
+     */
+    public function forgetDiscovered(): void
+    {
+        $this->discovered = null;
+    }
+
     public function discover(): array
     {
         if ($this->discovered !== null) {

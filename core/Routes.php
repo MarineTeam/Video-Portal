@@ -89,6 +89,13 @@ final class Routes
         $router->get('/admin/settings', [AdminController::class, 'settings'], ['admin.area']);
         $router->post('/admin/settings', [AdminController::class, 'saveSettings'], ['admin.area']);
 
+        // ---------------------------------------------------- distribution
+
+        $router->post('/admin/plugins/install', [AdminController::class, 'installPlugin'], ['admin.area']);
+        $router->post('/admin/themes/install', [AdminController::class, 'installTheme'], ['admin.area']);
+        $router->get('/admin/settings/export', [AdminController::class, 'exportSettings'], ['admin.area']);
+        $router->post('/admin/settings/import', [AdminController::class, 'importSettings'], ['admin.area']);
+
         // ---------------------------------------------------------- upload
 
         // Signing happens server-side; the bytes never touch this server.

@@ -132,6 +132,7 @@ class ComposerStaticInitae9cdb4486d610beb9cff40d8f421199
         'Portal\\Support\\Crypto' => __DIR__ . '/../..' . '/core/Support/Crypto.php',
         'Portal\\Support\\Http' => __DIR__ . '/../..' . '/core/Support/Http.php',
         'Portal\\Support\\HttpResponse' => __DIR__ . '/../..' . '/core/Support/HttpResponse.php',
+        'Portal\\Support\\PackageInstaller' => __DIR__ . '/../..' . '/core/Support/PackageInstaller.php',
         'Portal\\Support\\RateLimit' => __DIR__ . '/../..' . '/core/Support/RateLimit.php',
         'Portal\\Support\\Str' => __DIR__ . '/../..' . '/core/Support/Str.php',
         'Portal\\Themes\\TemplateLoader' => __DIR__ . '/../..' . '/core/Themes/TemplateLoader.php',
