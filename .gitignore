@@ -19,6 +19,7 @@
 !/plugins/watermark/
 !/plugins/geo/
 !/plugins/comments/
+!/plugins/ratings/
 /themes/*
 !/themes/default/
 !/themes/.gitkeep

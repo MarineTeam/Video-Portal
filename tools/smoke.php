@@ -1246,7 +1246,7 @@ check('Country restrictions is listed', str_contains($pluginsPage['body'], 'Coun
 
 $pluginToken = csrfFrom($pluginsPage['body']);
 
-foreach (['watermark', 'geo', 'comments'] as $slug) {
+foreach (['watermark', 'geo', 'comments', 'ratings'] as $slug) {
     $activated = postWithJar($baseUrl . '/admin/plugins', [
         '_token' => $pluginToken,
         'slug'   => $slug,
@@ -1456,6 +1456,113 @@ check(
     'The same person cannot inflate the count',
     (int) $db->value('SELECT report_count FROM {comments} WHERE id = ?', [$commentId]) === 1,
     'one visitor could make an ordinary comment look like a crisis'
+);
+
+echo "\nRatings\n";
+
+/*
+ * Driven entirely through the rendered page and real POSTs, for the reason the
+ * comments section learned the hard way: a repository with full coverage looks
+ * identical whether or not anything on any page ever calls it.
+ */
+$ratingsAdmin = getWithJar($baseUrl . '/admin/ratings', $jar);
+check('Ratings screen renders', $ratingsAdmin['status'] === 200, "got {$ratingsAdmin['status']}");
+check('It offers the threshold setting', str_contains($ratingsAdmin['body'], 'name="minimum_votes"'));
+
+$watchForRating = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check('The widget renders under the video', str_contains($watchForRating['body'], 'id="ratings"'));
+check(
+    'A signed-in viewer gets rating buttons',
+    str_contains($watchForRating['body'], 'name="score"'),
+    'the widget rendered but offered no way to use it'
+);
+check(
+    'An unrated video says so rather than showing 0.0',
+    str_contains($watchForRating['body'], 'Not rated yet'),
+    'a zero average on an unrated video reads as a bad review'
+);
+
+$rated = postWithJar($baseUrl . '/ratings/' . $videoRow, [
+    '_token' => csrfFrom($watchForRating['body']),
+    'score'  => '4',
+], $jar);
+
+/* The target, not just the 302 — signed out this endpoint also answers 302. */
+check(
+    'Rating succeeds',
+    $rated['status'] === 302 && str_contains($rated['headers']['location'] ?? '', '/watch/'),
+    'got ' . $rated['status'] . ' to ' . ($rated['headers']['location'] ?? 'nowhere')
+);
+
+check(
+    'The rating was stored',
+    (int) $db->value('SELECT score FROM {ratings} WHERE video_id = ?', [$videoRow]) === 4,
+    'nothing was written'
+);
+check(
+    'The cached total was written with it',
+    (int) $db->value('SELECT vote_count FROM {rating_totals} WHERE video_id = ?', [$videoRow]) === 1,
+    'the widget would show an average nobody gave'
+);
+
+$afterRating = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'The average appears on the page',
+    str_contains($afterRating['body'], '4.0'),
+    'the rating was stored but never displayed'
+);
+check(
+    'The widget remembers what you gave',
+    str_contains($afterRating['body'], 'aria-pressed="true"'),
+    'somebody who already rated cannot tell that they did'
+);
+
+/* Changing a rating replaces it. The row count is the claim, not the average. */
+postWithJar($baseUrl . '/ratings/' . $videoRow, [
+    '_token' => csrfFrom($afterRating['body']),
+    'score'  => '2',
+], $jar);
+
+check(
+    'Rating again replaces rather than adds',
+    (int) $db->value('SELECT COUNT(*) FROM {ratings} WHERE video_id = ?', [$videoRow]) === 1
+        && (int) $db->value('SELECT score FROM {ratings} WHERE video_id = ?', [$videoRow]) === 2,
+    'one person voted twice'
+);
+
+/*
+ * A tampered score is refused outright. Clamping it to 5 would record a
+ * five-star rating nobody gave, and the page would look perfectly normal.
+ */
+postWithJar($baseUrl . '/ratings/' . $videoRow, [
+    '_token' => csrfFrom($afterRating['body']),
+    'score'  => '9',
+], $jar);
+
+check(
+    'An out-of-range score is refused, not clamped',
+    (int) $db->value('SELECT score FROM {ratings} WHERE video_id = ?', [$videoRow]) === 2,
+    'a tampered form rewrote the rating'
+);
+
+$noCsrfRating = postWithJar($baseUrl . '/ratings/' . $videoRow, ['score' => '5'], $jar);
+check('Rating without a CSRF token is refused', $noCsrfRating['status'] === 419, "got {$noCsrfRating['status']}");
+
+/* Withdrawing takes the totals row with it, rather than leaving a zeroed one. */
+postWithJar($baseUrl . '/ratings/' . $videoRow, [
+    '_token' => csrfFrom($afterRating['body']),
+    'action' => 'remove',
+], $jar);
+
+check(
+    'Withdrawing a rating removes it',
+    (int) $db->value('SELECT COUNT(*) FROM {ratings} WHERE video_id = ?', [$videoRow]) === 0,
+    'the rating survived its own removal'
+);
+check(
+    'And leaves no stale total behind',
+    (int) $db->value('SELECT COUNT(*) FROM {rating_totals} WHERE video_id = ?', [$videoRow]) === 0,
+    'the video would still show an average with no ratings behind it'
 );
 
 echo "\nRouting\n";
