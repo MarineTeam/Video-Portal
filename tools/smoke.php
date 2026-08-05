@@ -1875,6 +1875,176 @@ check(
     'the query is not echoed back, so the page cannot be shared or reloaded'
 );
 
+echo "\nScheduling and premieres\n";
+
+/*
+ * The published_at column and the listing filter both shipped in Phase 1. What
+ * did not was any form that could set a future date — so this is driven
+ * entirely through the edit screen, which is the half that was missing.
+ */
+$scheduleEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The edit screen offers a publication date', str_contains($scheduleEdit['body'], 'name="published_at"'));
+check('It offers an end date', str_contains($scheduleEdit['body'], 'name="unpublish_at"'));
+check('It offers the premiere switch', str_contains($scheduleEdit['body'], 'name="premiere"'));
+
+$future = date('Y-m-d\TH:i', time() + 86400 * 3);
+$past = date('Y-m-d\TH:i', time() - 3600);
+
+$scheduleFields = [
+    '_token'         => csrfFrom($scheduleEdit['body']),
+    'id'             => (string) $videoRow,
+    'action'         => 'save',
+    'title'          => 'A Test Video',
+    'categories'     => [(string) $categoryRow],
+    'thumbnail_mode' => 'default',
+    'watermark_mode' => 'default',
+    '_whole_form'    => '1',
+];
+
+/* Scheduled, not a premiere: invisible until its date. */
+$scheduled = postWithJar($baseUrl . '/admin/videos', $scheduleFields + ['published_at' => $future], $jar);
+check('Scheduling succeeds', $scheduled['status'] === 302, "got {$scheduled['status']}");
+check(
+    'The date was stored',
+    (string) $db->value('SELECT published_at FROM {videos} WHERE id = ?', [$videoRow]) !== '',
+    'the field was accepted and dropped'
+);
+
+$libraryScheduled = get($baseUrl . '/');
+check(
+    'A scheduled video is not listed',
+    !str_contains($libraryScheduled['body'], 'A Test Video'),
+    'it went live early'
+);
+
+$watchScheduled = get($baseUrl . '/watch/' . $videoSlug);
+check(
+    'Its page is not reachable either',
+    $watchScheduled['status'] === 404 || $watchScheduled['status'] === 302,
+    "got {$watchScheduled['status']}"
+);
+
+/* Same date, marked as a premiere: listed, dated, and still not playable. */
+postWithJar($baseUrl . '/admin/videos', $scheduleFields + [
+    'published_at' => $future,
+    'premiere'     => '1',
+], $jar);
+
+$libraryPremiere = get($baseUrl . '/');
+check(
+    'A premiere is listed before its date',
+    str_contains($libraryPremiere['body'], 'A Test Video'),
+    'the announcement never appeared'
+);
+check(
+    'The card says when',
+    str_contains($libraryPremiere['body'], 'Premieres'),
+    'a badge with no date invites a click on something that will not play'
+);
+
+$watchPremiere = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check('A premiere page opens', $watchPremiere['status'] === 200, "got {$watchPremiere['status']}");
+
+/*
+ * The claim worth proving: the embed URL is never minted for a premiere, so
+ * there is nothing to find with developer tools.
+ *
+ * It has to be checked from an ordinary approved viewer's seat. Signed out,
+ * /watch redirects to sign-in and the page never renders — a check there would
+ * pass against any implementation at all. As an administrator the player is
+ * shown DELIBERATELY, so they can review something before it goes live. The
+ * person the rule is about is the one in between, so this creates one.
+ */
+$viewerJar = sys_get_temp_dir() . '/portal-smoke-viewer-' . getmypid() . '.txt';
+@unlink($viewerJar);
+
+$db->execute(
+    'INSERT INTO {users} (email, name, password_hash, authorized, role_id, created_at, updated_at)
+     VALUES (?, ?, ?, 1, (SELECT id FROM {roles} WHERE slug = ?), NOW(), NOW())',
+    ['viewer@smoke.test', 'A Viewer', password_hash('smoke-viewer-password-1234', PASSWORD_DEFAULT), 'viewer']
+);
+
+$viewerLogin = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'viewer@smoke.test',
+    'password' => 'smoke-viewer-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $viewerJar)['body']),
+], $viewerJar);
+
+check('An ordinary viewer can sign in', $viewerLogin['status'] === 302, "got {$viewerLogin['status']}");
+
+$viewerPremiere = getWithJar($baseUrl . '/watch/' . $videoSlug, $viewerJar);
+check(
+    'A viewer can open a premiere page',
+    $viewerPremiere['status'] === 200,
+    "got {$viewerPremiere['status']} — the check below would prove nothing"
+);
+check(
+    'A premiere does not carry a player for a viewer',
+    !str_contains($viewerPremiere['body'], '<iframe'),
+    'THE PLAYER WAS RENDERED FOR A VIDEO THAT HAS NOT BEEN RELEASED'
+);
+check(
+    'It says when it premieres instead',
+    str_contains($viewerPremiere['body'], 'Premieres'),
+    'the page renders but explains nothing'
+);
+
+/* And an administrator still gets the player, which is the point of the split. */
+check(
+    'Someone who manages videos can still review it',
+    str_contains($watchPremiere['body'], '<iframe'),
+    'an editor cannot check a video before it goes live'
+);
+
+@unlink($viewerJar);
+
+/* Feeds must not carry it: an episode announced before it can be downloaded. */
+$feedPremiere = get($baseUrl . '/feed');
+check(
+    'A premiere is not in the podcast or RSS feed',
+    !str_contains($feedPremiere['body'], 'A Test Video'),
+    'every client would report a broken episode'
+);
+
+/* An end date in the past removes it for everybody. */
+postWithJar($baseUrl . '/admin/videos', $scheduleFields + [
+    'published_at' => date('Y-m-d\TH:i', time() - 86400 * 2),
+    'unpublish_at' => $past,
+], $jar);
+
+$libraryExpired = get($baseUrl . '/');
+check(
+    'An expired video disappears',
+    !str_contains($libraryExpired['body'], 'A Test Video'),
+    'the end date did nothing'
+);
+
+/* A window that never opens is refused rather than silently accepted. */
+$backwards = postWithJar($baseUrl . '/admin/videos', $scheduleFields + [
+    'published_at' => date('Y-m-d\TH:i', time() + 86400 * 5),
+    'unpublish_at' => date('Y-m-d\TH:i', time() + 86400),
+], $jar);
+
+check('A backwards window is refused', $backwards['status'] === 302, "got {$backwards['status']}");
+check(
+    'and the old dates are left alone',
+    (string) $db->value('SELECT unpublish_at FROM {videos} WHERE id = ?', [$videoRow])
+        !== date('Y-m-d H:i:00', time() + 86400),
+    'an impossible schedule was stored'
+);
+
+/* Put it back, so everything after this runs against an ordinary video. */
+postWithJar($baseUrl . '/admin/videos', $scheduleFields + [
+    'published_at' => '',
+    'unpublish_at' => '',
+], $jar);
+
+check(
+    'Clearing the dates brings it back',
+    str_contains(get($baseUrl . '/')['body'], 'A Test Video'),
+    'the video is still hidden'
+);
+
 echo "\nFeeds and the sitemap\n";
 
 /*

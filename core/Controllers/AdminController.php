@@ -143,6 +143,38 @@ final class AdminController extends Controller
 
         $action = $request->input('action') ?? 'save';
 
+        /*
+         * A rejected value comes back as a message on the form, not as a 400.
+         *
+         * Every other admin screen here already did this; the video save did
+         * not, so a mistyped date or a backwards schedule threw the editor onto
+         * an error page with their other changes lost. The repository is still
+         * the thing that refuses — this only decides how the refusal is shown.
+         */
+        try {
+            return $this->saveVideo($request, $videos, $video, $id, $action);
+        } catch (HttpException $e) {
+            /*
+             * Only a bad value. A 403 has to stay a 403 — turning "you may not
+             * publish" into a flash message would make a refused action look
+             * like a failed one, and the capability checks in this switch are
+             * the point of them being there.
+             */
+            if ($e->status !== 400) {
+                throw $e;
+            }
+
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    private function saveVideo(
+        Request $request,
+        VideoRepository $videos,
+        \Portal\Content\Video $video,
+        int $id,
+        string $action
+    ): Response {
         switch ($action) {
             case 'delete':
                 $videos->softDelete($id);
@@ -192,6 +224,12 @@ final class AdminController extends Controller
                     // Zero means "none", which has to be expressible — so an
                     // empty selection becomes null rather than 0, which no
                     // series or speaker will ever have as an id.
+                    'published_at'   => $request->input('published_at') === null
+                        ? $video->publishedAt
+                        : $request->input('published_at'),
+                    'unpublish_at'   => $request->input('unpublish_at') === null
+                        ? $video->unpublishAt
+                        : $request->input('unpublish_at'),
                     'series_id'      => $seriesRaw === null
                         ? $video->seriesId
                         : (($s = (int) $seriesRaw) > 0 ? $s : null),
@@ -213,6 +251,7 @@ final class AdminController extends Controller
                      */
                     'member_only'    => $whole ? $request->input('member_only') !== null : $video->memberOnly,
                     'hidden'         => $whole ? $request->input('hidden') !== null : $video->hidden,
+                    'premiere'       => $whole ? $request->input('premiere') !== null : $video->premiere,
                 ]);
 
                 if ($whole) {

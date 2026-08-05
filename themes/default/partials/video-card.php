@@ -50,7 +50,24 @@ $membersOnly = !empty($video['membersOnly']);
         <div class="thumb-fallback"><?= e($video['title']) ?></div>
       <?php endif ?>
 
-      <?php if ($status === 'processing'): ?>
+      <?php
+      /*
+       * A premiere is listed before it plays, so the card says when. A badge
+       * reading "Premiering" with no date is an invitation to click something
+       * that will not start.
+       */
+      ?>
+      <?php if (!empty($video['premiereAt'])): ?>
+        <span class="badge premiere">
+          Premieres <?php
+            try {
+                echo e((new DateTimeImmutable((string) $video['premiereAt']))->format('j M'));
+            } catch (Throwable) {
+                echo 'soon';
+            }
+          ?>
+        </span>
+      <?php elseif ($status === 'processing'): ?>
         <span class="badge processing">
           Processing<?= !empty($video['encodeProgress']) ? ' ' . (int) $video['encodeProgress'] . '%' : '' ?>
         </span>

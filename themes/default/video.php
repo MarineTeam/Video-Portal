@@ -28,6 +28,19 @@ echo $template->partial('header', get_defined_vars());
   <a href="<?= e($backUrl) ?>" class="card-meta">&larr; Back</a>
 </p>
 
+<?php if (!empty($video['premiering'])): ?>
+  <?php
+  /*
+   * A premiere. Announced, dated, and deliberately not playable — the embed URL
+   * was never minted, so there is nothing here to reach for with developer
+   * tools.
+   */
+  ?>
+  <div class="premiere">
+    <p class="premiere-label">Premieres</p>
+    <p class="premiere-date"><?= e((string) ($video['premiereAt'] ?? 'soon')) ?></p>
+  </div>
+<?php else: ?>
 <div class="player">
   <?php
   /*
@@ -51,6 +64,7 @@ echo $template->partial('header', get_defined_vars());
   do_action('player_overlay', $video);
   ?>
 </div>
+<?php endif ?>
 
 <h1 class="page-title" style="margin-top:1.5rem"><?= e($video['title']) ?></h1>
 

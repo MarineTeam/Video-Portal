@@ -211,6 +211,31 @@ main { padding: 2.5rem 0 4rem; }
 }
 .badge.processing { background: color-mix(in srgb, #f59e0b 85%, black); }
 .badge.failed     { background: color-mix(in srgb, #ef4444 85%, black); }
+.badge.premiere   { background: color-mix(in srgb, #8b5cf6 85%, black); }
+
+/*
+ * The premiere panel, standing where the player would be. Same aspect ratio, so
+ * the page does not reflow when the video goes live.
+ */
+.premiere {
+  aspect-ratio: 16 / 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  border-radius: var(--card-radius);
+  border: 1px dashed var(--border);
+  background: rgb(139 92 246 / .07);
+}
+.premiere-label {
+  margin: 0;
+  font-size: .8125rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.premiere-date { margin: 0; font-size: 1.5rem; font-weight: 600; }
 
 .card-body { padding: .875rem 1rem 1.125rem; }
 .card-title {

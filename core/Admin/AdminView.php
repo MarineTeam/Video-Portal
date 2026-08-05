@@ -436,9 +436,49 @@ final class AdminView
 
         $memberOnly = $video->memberOnly ? ' checked' : '';
         $hidden = $video->hidden ? ' checked' : '';
-        $published = $video->isPublished
-            ? '<span class="pill ok">Published</span>'
-            : '<span class="pill">Draft</span>';
+        $premiere = $video->premiere ? ' checked' : '';
+
+        /*
+         * datetime-local wants "Y-m-dTH:i" and rejects anything else silently,
+         * rendering an empty box that looks like no date is set — so a stored
+         * value is reformatted rather than printed.
+         */
+        $forInput = static function (?string $value): string {
+            if ($value === null || $value === '') {
+                return '';
+            }
+            try {
+                return (new \DateTimeImmutable($value))->format('Y-m-d\TH:i');
+            } catch (\Throwable) {
+                return '';
+            }
+        };
+
+        $publishedAt = $this->attr($forInput($video->publishedAt));
+        $unpublishAt = $this->attr($forInput($video->unpublishAt));
+
+        /*
+         * Say what the dates currently mean, in words. A schedule is the kind
+         * of setting people get wrong by one field and cannot tell from looking
+         * at two boxes.
+         */
+        $scheduleNote = '';
+        if ($video->hasExpired()) {
+            $scheduleNote = '<p class="pill bad">Its end date has passed, so nobody can see it.</p>';
+        } elseif ($video->isPremiering()) {
+            $scheduleNote = '<p class="pill">Listed now, playable from '
+                . e((string) $video->publishedAt) . '.</p>';
+        } elseif ($video->isScheduled()) {
+            $scheduleNote = '<p class="pill">Hidden until ' . e((string) $video->publishedAt) . '.</p>';
+        }
+
+        $published = match (true) {
+            !$video->isPublished    => '<span class="pill">Draft</span>',
+            $video->hasExpired()    => '<span class="pill bad">Ended</span>',
+            $video->isPremiering()  => '<span class="pill">Premiering</span>',
+            $video->isScheduled()   => '<span class="pill">Scheduled</span>',
+            default                 => '<span class="pill ok">Published</span>',
+        };
 
         return <<<HTML
         <p class="muted small"><a href="/admin/videos">&larr; All videos</a></p>
@@ -497,6 +537,34 @@ final class AdminView
                 </label>
                 <p class="muted small">Not listed anywhere, but still reachable by direct link. Useful
                    for something you want to share without publishing.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>When it appears</legend>
+
+                <label>Publish at
+                  <input type="datetime-local" name="published_at" value="{$publishedAt}">
+                </label>
+                <p class="muted small">Leave blank to publish as soon as it is saved. A future date
+                   keeps it out of every listing until then — no scheduled job has to run for that to
+                   happen, so it is on time even on a site nobody visited that day.</p>
+
+                <label>Stop showing it at
+                  <input type="datetime-local" name="unpublish_at" value="{$unpublishAt}">
+                </label>
+                <p class="muted small">Leave blank to keep it up. After this it disappears from
+                   listings and its page, for everybody.</p>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="premiere" value="1"{$premiere}>
+                  Announce it before it plays
+                </label>
+                <p class="muted small">Lists it early, showing the date, with the player refusing to
+                   start until then. Without this a scheduled video is simply invisible until its
+                   date — which is the right default, but not what you want for something you are
+                   building up to.</p>
+
+                {$scheduleNote}
               </fieldset>
 
               <fieldset>

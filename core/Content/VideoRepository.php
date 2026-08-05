@@ -120,7 +120,24 @@ final class VideoRepository
         }
         if (empty($filters['includeUnpublished'])) {
             $conditions[] = 'v.is_published = 1';
-            $conditions[] = '(v.published_at IS NULL OR v.published_at <= NOW())';
+
+            /*
+             * The schedule window, evaluated here rather than by a job that
+             * flips a flag. Cron is optional on the hosts this ships to and the
+             * built-in pseudo-cron only fires on traffic, so a scheduled video
+             * on a quiet site would appear late or not at all. A comparison
+             * cannot be late.
+             *
+             * A premiere is the exception at the near end: it is listed before
+             * its date so people know it is coming, and the watch page refuses
+             * to play it. The far end has no exception — an expired video is
+             * gone for everybody.
+             */
+            $conditions[] = empty($filters['includePremieres'])
+                ? '(v.published_at IS NULL OR v.published_at <= NOW())'
+                : '(v.published_at IS NULL OR v.published_at <= NOW() OR v.premiere = 1)';
+
+            $conditions[] = '(v.unpublish_at IS NULL OR v.unpublish_at > NOW())';
         }
         if (empty($filters['includeHidden'])) {
             $conditions[] = 'v.hidden = 0';
@@ -483,10 +500,35 @@ final class VideoRepository
             }
         }
 
-        foreach (['description', 'recorded_at', 'published_at'] as $key) {
+        if (array_key_exists('description', $attributes)) {
+            $fields['description'] = $attributes['description'];
+        }
+
+        /*
+         * Dates are normalised on the way in, and an unusable one is refused
+         * rather than stored.
+         *
+         * These decide when content appears and disappears, so a value the
+         * comparison cannot read is not a cosmetic problem: it either publishes
+         * something early or hides it forever, and both look like a bug in the
+         * schedule rather than a typo in a field.
+         */
+        foreach (['recorded_at', 'published_at', 'unpublish_at'] as $key) {
             if (array_key_exists($key, $attributes)) {
-                $fields[$key] = $attributes[$key];
+                $fields[$key] = $this->normalizeDate($attributes[$key], $key);
             }
+        }
+
+        /*
+         * An end date before the start date is a window that never opens. It is
+         * always a mistake, and silently accepting it produces a video that
+         * simply never appears with nothing on screen to explain why.
+         */
+        $start = $fields['published_at'] ?? $video->publishedAt;
+        $end = $fields['unpublish_at'] ?? $video->unpublishAt;
+
+        if ($start !== null && $end !== null && $end <= $start) {
+            throw HttpException::badRequest('The end date has to be after the publication date.');
         }
 
         foreach (['speaker_id', 'series_id', 'series_position', 'position'] as $key) {
@@ -495,7 +537,7 @@ final class VideoRepository
             }
         }
 
-        foreach (['is_published', 'member_only', 'hidden', 'featured', 'pinned'] as $key) {
+        foreach (['is_published', 'member_only', 'hidden', 'featured', 'pinned', 'premiere'] as $key) {
             if (array_key_exists($key, $attributes)) {
                 $fields[$key] = (int) (bool) $attributes[$key];
             }
@@ -717,6 +759,34 @@ final class VideoRepository
     }
 
     // ------------------------------------------------------------- internals
+
+    /**
+     * A date the schedule can actually compare, or null.
+     *
+     * Accepts what a browser's datetime-local input sends ("2026-03-04T09:05")
+     * as well as ordinary SQL datetimes, and stores one canonical form. An
+     * empty string means "clear it" — a person emptying the field is saying
+     * there is no date, not asking for the epoch.
+     */
+    private function normalizeDate(mixed $value, string $field): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return null;
+        }
+
+        try {
+            return (new \DateTimeImmutable($raw))->format('Y-m-d H:i:s');
+        } catch (\Throwable) {
+            throw HttpException::badRequest(
+                sprintf('"%s" is not a date this can use.', $raw)
+            );
+        }
+    }
 
     public function uniqueSlug(string $desired, ?int $ignoreId = null): string
     {

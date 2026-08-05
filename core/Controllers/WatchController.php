@@ -42,22 +42,35 @@ final class WatchController extends Controller
             throw HttpException::notFound('There is no video at that address.');
         }
 
-        if (!$video->isVisible() && !$this->guard()->can(\Portal\Auth\Capability::MANAGE_VIDEOS)) {
+        $canManage = $this->guard()->can(\Portal\Auth\Capability::MANAGE_VIDEOS);
+
+        /*
+         * A premiere is the one thing that is visible and not playable, so it
+         * is checked before the generic visibility rule — which would 404 it,
+         * that being what "scheduled" means for everything else.
+         */
+        $premiering = $video->isPremiering();
+
+        if (!$premiering && !$video->isVisible() && !$canManage) {
             // Deliberately a 404 rather than a 403: telling an unauthorised
             // visitor that a video exists but is hidden is itself a leak.
             throw HttpException::notFound('There is no video at that address.');
         }
 
-        $provider = $this->container->get(VideoProvider::class);
+        $embedUrl = '';
 
-        try {
-            $embedUrl = $provider->embedUrl($video->providerId, self::EMBED_TTL);
-        } catch (Throwable $e) {
-            throw HttpException::upstream('The video service is not responding: ' . $e->getMessage());
+        if (!$premiering || $canManage) {
+            $provider = $this->container->get(VideoProvider::class);
+
+            try {
+                $embedUrl = $provider->embedUrl($video->providerId, self::EMBED_TTL);
+            } catch (Throwable $e) {
+                throw HttpException::upstream('The video service is not responding: ' . $e->getMessage());
+            }
+
+            /** @var string $embedUrl */
+            $embedUrl = apply_filters('player_embed_url', $embedUrl, $video);
         }
-
-        /** @var string $embedUrl */
-        $embedUrl = apply_filters('player_embed_url', $embedUrl, $video);
 
         return $this->view(
             $this->themeManager()->loader()->hierarchy('video', ['slug' => $video->slug]),
@@ -74,6 +87,15 @@ final class WatchController extends Controller
                     'series'      => $this->seriesLink($video),
                     'recordedAt'  => $this->formatDate($video->recordedAt),
                     'resumeAt'    => $this->resumePosition($video->id),
+                    /*
+                     * The embed URL is empty for a premiere, so a theme that
+                     * ignores this flag renders an iframe with no source rather
+                     * than a playable video. The failure is visible and inert,
+                     * which is the right way round for something whose whole
+                     * job is to not play yet.
+                     */
+                    'premiering'  => $premiering && !$canManage,
+                    'premiereAt'  => $premiering ? $this->formatDate($video->publishedAt) : null,
                 ],
                 // Which of this viewer's lists the video is already on, so the
                 // buttons can say "Saved" rather than offering to save

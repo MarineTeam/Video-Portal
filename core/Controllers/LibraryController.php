@@ -468,6 +468,18 @@ final class LibraryController extends Controller
     {
         $user = $this->user();
 
+        /*
+         * Premieres appear in listings before their date, which is the whole
+         * point of marking one. Ordinary scheduled videos still do not — being
+         * invisible until publication is what scheduling means, and a premiere
+         * is the deliberate exception an editor asked for.
+         *
+         * Not applied to feeds, which build their own filters: an episode
+         * announced in a podcast feed before it can be downloaded is an
+         * episode every client reports as broken.
+         */
+        $filters['includePremieres'] = true;
+
         if ($user !== null && ($user->isAdmin() || $user->authorized)) {
             $filters['includeMemberOnly'] = true;
         }
