@@ -37,6 +37,7 @@ final class AdminView
             'series-edit'   => $this->seriesEdit($data),
             'playlists'     => $this->playlists($data),
             'playlist-edit' => $this->playlistEdit($data),
+            'home-rows'     => $this->homeRows($data),
             'speakers'      => $this->speakers($data),
             'users'       => $this->users($data),
             'permissions' => $this->permissions($data),
@@ -437,6 +438,8 @@ final class AdminView
         $memberOnly = $video->memberOnly ? ' checked' : '';
         $hidden = $video->hidden ? ' checked' : '';
         $premiere = $video->premiere ? ' checked' : '';
+        $featured = $video->featured ? ' checked' : '';
+        $pinned = $video->pinned ? ' checked' : '';
 
         /*
          * datetime-local wants "Y-m-dTH:i" and rejects anything else silently,
@@ -537,6 +540,25 @@ final class AdminView
                 </label>
                 <p class="muted small">Not listed anywhere, but still reachable by direct link. Useful
                    for something you want to share without publishing.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Where it appears</legend>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="featured" value="1"{$featured}>
+                  Featured
+                </label>
+                <p class="muted small">Puts it in a "Featured" homepage row, if you have one. Both this
+                   flag and the row are optional — the flag on its own does nothing visible.</p>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="pinned" value="1"{$pinned}>
+                  Pin to the top of listings
+                </label>
+                <p class="muted small">Sorts above everything else while browsing. Search deliberately
+                   ignores it: somebody who typed an exact title is not asking what you would rather
+                   they watched.</p>
               </fieldset>
 
               <fieldset>
@@ -1223,6 +1245,219 @@ final class AdminView
             </form>
           </div>
         </div>
+        HTML;
+    }
+
+    // -------------------------------------------------------------- homepage
+
+    /** @param array<string, mixed> $data */
+    private function homeRows(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        /** @var list<\Portal\Content\HomeRow> $rows */
+        $rows = (array) ($data['rows'] ?? []);
+
+        // Held for the duration of this render so each row form can rebuild its
+        // own pickers with its own selection. Sharing one rendered block would
+        // show every row the first one's choice.
+        $this->targetItems = [
+            \Portal\Content\HomeRow::CATEGORY => (array) ($data['categories'] ?? []),
+            \Portal\Content\HomeRow::SERIES   => (array) ($data['series'] ?? []),
+            \Portal\Content\HomeRow::PLAYLIST => (array) ($data['playlists'] ?? []),
+        ];
+
+        $targets = [
+            \Portal\Content\HomeRow::CATEGORY => $this->targetOptions($this->targetItems['category'], 'name'),
+            \Portal\Content\HomeRow::SERIES   => $this->targetOptions($this->targetItems['series'], 'title'),
+            \Portal\Content\HomeRow::PLAYLIST => $this->targetOptions($this->targetItems['playlist'], 'title'),
+        ];
+
+        $body = '';
+        $position = 1;
+
+        foreach ($rows as $row) {
+            $body .= $this->homeRowForm($row, $token, $targets, $position === 1, $position === count($rows));
+            $position++;
+        }
+
+        if ($body === '') {
+            $body = '<p class="muted">No rows yet. The homepage is showing its default: continue
+                     watching, then everything, newest first.</p>';
+        }
+
+        $sourceOptions = '';
+        foreach (\Portal\Content\HomeRow::sources() as $value => $label) {
+            $sourceOptions .= sprintf('<option value="%s">%s</option>', e($value), e($label));
+        }
+
+        $newTargets = '';
+        foreach ($targets as $kind => $options) {
+            $newTargets .= sprintf(
+                '<label class="home-target" data-for="%s">%s <select name="source_%s">%s</select></label>',
+                e($kind),
+                e(ucfirst($kind)),
+                e($kind),
+                $options
+            );
+        }
+
+        $script = $this->homeRowScript();
+
+        return <<<HTML
+        <h1>Homepage</h1>
+
+        <p class="muted">Rows are shown top to bottom. Each one points at content rather than holding
+           its own, so curating a playlist curates the homepage — there is one place to edit, not two
+           that drift apart. A row whose target has been deleted, or that has nothing to show, is left
+           out rather than rendered as an empty heading.</p>
+
+        <p class="muted small">With no rows at all the homepage keeps its default arrangement, so this
+           screen is safe to leave empty.</p>
+
+        {$body}
+
+        <h2>Add a row</h2>
+        <form method="post" class="home-row-form">
+          <input type="hidden" name="_token" value="{$token}">
+          <label>Heading <input type="text" name="title" placeholder="Leave blank to use the source's own name"></label>
+          <label>Show <select name="source_type" class="home-source">{$sourceOptions}</select></label>
+          {$newTargets}
+          <label>How many <input type="number" name="max_items" value="12" min="1" max="50"></label>
+          <button class="btn" name="action" value="create">Add row</button>
+        </form>
+
+        {$script}
+        HTML;
+    }
+
+    /**
+     * @param list<object>                $items
+     * @return string
+     */
+    private function targetOptions(array $items, string $labelProperty, ?int $selected = null): string
+    {
+        $options = '';
+        foreach ($items as $item) {
+            $options .= sprintf(
+                '<option value="%d"%s>%s</option>',
+                (int) $item->id,
+                (int) $item->id === $selected ? ' selected' : '',
+                e((string) $item->{$labelProperty})
+            );
+        }
+
+        return $options === '' ? '<option value="">— none available —</option>' : $options;
+    }
+
+    /** @param array<string, string> $targets */
+    private function homeRowForm(
+        \Portal\Content\HomeRow $row,
+        string $token,
+        array $targets,
+        bool $isFirst,
+        bool $isLast
+    ): string {
+        $sourceOptions = '';
+        foreach (\Portal\Content\HomeRow::sources() as $value => $label) {
+            $sourceOptions .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($value),
+                $value === $row->sourceType ? ' selected' : '',
+                e($label)
+            );
+        }
+
+        $targetFields = '';
+        foreach ($targets as $kind => $_) {
+            // Rebuilt per row so the stored target is selected. Sharing one
+            // rendered block between rows would show every row the first one's
+            // selection.
+            $options = $this->targetOptions(
+                $this->targetItemsFor($kind),
+                $kind === \Portal\Content\HomeRow::CATEGORY ? 'name' : 'title',
+                $row->sourceType === $kind ? $row->sourceId : null
+            );
+
+            $targetFields .= sprintf(
+                '<label class="home-target" data-for="%s">%s <select name="source_%s">%s</select></label>',
+                e($kind),
+                e(ucfirst($kind)),
+                e($kind),
+                $options
+            );
+        }
+
+        $title = $this->attr($row->title);
+        $active = $row->isActive ? ' checked' : '';
+
+        return <<<HTML
+        <form method="post" class="home-row-form">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$row->id}">
+
+          <label>Heading <input type="text" name="title" value="{$title}"
+                                placeholder="Leave blank to use the source's own name"></label>
+          <label>Show <select name="source_type" class="home-source">{$sourceOptions}</select></label>
+          {$targetFields}
+          <label>How many <input type="number" name="max_items" value="{$row->maxItems}" min="1" max="50"></label>
+          <label class="checkbox"><input type="checkbox" name="is_active" value="1"{$active}> Shown</label>
+
+          <button class="btn tiny" name="action" value="update">Save</button>
+          <button class="btn tiny secondary" name="action" value="up" aria-label="Move up"
+                  {$this->disabledIf($isFirst)}>&uarr;</button>
+          <button class="btn tiny secondary" name="action" value="down" aria-label="Move down"
+                  {$this->disabledIf($isLast)}>&darr;</button>
+          <button class="btn tiny danger" name="action" value="delete"
+                  onclick="return confirm('Remove this row? The content stays where it is.')">Remove</button>
+        </form>
+        HTML;
+    }
+
+    private function disabledIf(bool $condition): string
+    {
+        return $condition ? 'disabled' : '';
+    }
+
+    /**
+     * The pickers a row form needs, held for the duration of one render.
+     *
+     * @var array<string, list<object>>
+     */
+    private array $targetItems = [];
+
+    /** @return list<object> */
+    private function targetItemsFor(string $kind): array
+    {
+        return $this->targetItems[$kind] ?? [];
+    }
+
+    /**
+     * Show only the picker that matches the chosen source.
+     *
+     * Progressive enhancement: with scripting off every picker is visible and
+     * the form still works, because the handler reads only the one named by
+     * source_type. The script hides the irrelevant ones rather than being what
+     * makes the form correct.
+     */
+    private function homeRowScript(): string
+    {
+        return <<<'HTML'
+        <script>
+        (function () {
+          'use strict';
+          function sync(form) {
+            var chosen = form.querySelector('.home-source').value;
+            form.querySelectorAll('.home-target').forEach(function (field) {
+              field.hidden = field.getAttribute('data-for') !== chosen;
+            });
+          }
+          document.querySelectorAll('.home-row-form').forEach(function (form) {
+            sync(form);
+            form.querySelector('.home-source').addEventListener('change', function () { sync(form); });
+          });
+        })();
+        </script>
         HTML;
     }
 

@@ -1875,6 +1875,171 @@ check(
     'the query is not echoed back, so the page cannot be shared or reloaded'
 );
 
+echo "\nHomepage rows\n";
+
+/*
+ * The default first: an install that has never touched this screen must keep
+ * the homepage it already had. That is what every existing site looks like, and
+ * turning the front page blank because a new table is empty would be the worst
+ * possible upgrade.
+ */
+$homeBefore = get($baseUrl . '/');
+check(
+    'With no rows the library is unchanged',
+    str_contains($homeBefore['body'], 'A Test Video'),
+    'an empty table blanked the homepage'
+);
+
+$homeScreen = getWithJar($baseUrl . '/admin/homepage', $jar);
+check('Homepage screen renders', $homeScreen['status'] === 200, "got {$homeScreen['status']}");
+check('Homepage appears in the admin navigation', str_contains($adminHome['body'], '/admin/homepage'));
+check('It offers the sources', str_contains($homeScreen['body'], 'name="source_type"'));
+check(
+    'It says an empty screen is safe',
+    str_contains($homeScreen['body'], 'default'),
+    'an editor cannot tell whether leaving it blank breaks the site'
+);
+
+/* A playlist row, pointing at the playlist made earlier. */
+$addRow = postWithJar($baseUrl . '/admin/homepage', [
+    '_token'          => csrfFrom($homeScreen['body']),
+    'action'          => 'create',
+    'title'           => 'Smoke Row',
+    'source_type'     => 'playlist',
+    'source_playlist' => (string) $playlistId,
+    'max_items'       => '6',
+], $jar);
+
+check('Adding a row succeeds', $addRow['status'] === 302, "got {$addRow['status']}");
+check(
+    'The row was stored',
+    (int) $db->value('SELECT COUNT(*) FROM {home_rows}') === 1,
+    'nothing was written'
+);
+
+$homeAfter = get($baseUrl . '/');
+check(
+    'The curated row appears on the homepage',
+    str_contains($homeAfter['body'], 'Smoke Row'),
+    'the row exists and nothing renders it'
+);
+check('It shows the playlist contents', str_contains($homeAfter['body'], 'A Test Video'));
+check(
+    'It links to the full playlist',
+    str_contains($homeAfter['body'], '/playlist/renamed-playlist'),
+    'a row with no way through to the rest of it'
+);
+
+/*
+ * A row is a pointer, not a copy. This is the claim that makes the whole design
+ * worth having: curating the playlist curates the homepage.
+ */
+/*
+ * A purpose-made video rather than whichever row happens to be second. By this
+ * point the library also holds the upload section's placeholder, which is still
+ * encoding — correctly excluded from every listing, so a check using it would
+ * fail for a reason that has nothing to do with what is being tested.
+ */
+$secondVideo = $db->insert('videos', [
+    'provider'     => 'bunny',
+    'provider_id'  => 'smoke-home-row',
+    'slug'         => 'a-second-video',
+    'title'        => 'A Second Video',
+    'status'       => 'ready',
+    'is_published' => 1,
+    'created_at'   => date('Y-m-d H:i:s'),
+    'updated_at'   => date('Y-m-d H:i:s'),
+]);
+
+postWithJar($baseUrl . '/admin/playlists', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/playlists/' . $playlistId, $jar)['body']),
+    'action' => 'items',
+    'id'     => (string) $playlistId,
+    'videos' => [(string) $secondVideo],
+], $jar);
+
+check(
+    'Editing the playlist edits the homepage',
+    str_contains(get($baseUrl . '/')['body'], 'A Second Video'),
+    'the row held a copy rather than a pointer'
+);
+check(
+    'and the video it no longer holds is gone from the row',
+    !str_contains(get($baseUrl . '/')['body'], 'A Test Video'),
+    'removing something from the playlist left it on the homepage'
+);
+
+/* Put the original back and drop the extra video. */
+postWithJar($baseUrl . '/admin/playlists', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/playlists/' . $playlistId, $jar)['body']),
+    'action' => 'items',
+    'id'     => (string) $playlistId,
+    'videos' => [(string) $videoRow],
+], $jar);
+
+$db->execute('DELETE FROM {videos} WHERE id = ?', [$secondVideo]);
+
+/* A row pointing at nothing is refused rather than saved as an empty heading. */
+$badRow = postWithJar($baseUrl . '/admin/homepage', [
+    '_token'      => csrfFrom($homeScreen['body']),
+    'action'      => 'create',
+    'source_type' => 'category',
+], $jar);
+
+check('A row with no target is refused', $badRow['status'] === 302, "got {$badRow['status']}");
+check(
+    'and was not stored',
+    (int) $db->value('SELECT COUNT(*) FROM {home_rows}') === 1,
+    'an empty heading was saved'
+);
+
+/* Switching a row off takes it out without deleting it. */
+$rowId = (int) $db->value('SELECT id FROM {home_rows} LIMIT 1');
+
+postWithJar($baseUrl . '/admin/homepage', [
+    '_token'          => csrfFrom($homeScreen['body']),
+    'action'          => 'update',
+    'id'              => (string) $rowId,
+    'title'           => 'Smoke Row',
+    'source_type'     => 'playlist',
+    'source_playlist' => (string) $playlistId,
+    'max_items'       => '6',
+], $jar);
+
+check(
+    'Unticking "shown" hides the row',
+    !str_contains(get($baseUrl . '/')['body'], 'Smoke Row'),
+    'the row is still on the front page'
+);
+check(
+    'and the row still exists',
+    (int) $db->value('SELECT COUNT(*) FROM {home_rows}') === 1,
+    'switching a row off deleted it'
+);
+check(
+    'With every row off the library comes back',
+    str_contains(get($baseUrl . '/')['body'], 'A Test Video'),
+    'the homepage is now blank'
+);
+
+/* Remove it, so everything after this runs against the default homepage. */
+postWithJar($baseUrl . '/admin/homepage', [
+    '_token' => csrfFrom($homeScreen['body']),
+    'action' => 'delete',
+    'id'     => (string) $rowId,
+], $jar);
+
+check(
+    'Removing a row leaves the playlist alone',
+    (int) $db->value('SELECT COUNT(*) FROM {playlists} WHERE id = ?', [$playlistId]) === 1,
+    'deleting a homepage row deleted content'
+);
+
+/* Featured is settable at last — it has been in the repository since Phase 1. */
+$featuredEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The edit screen offers the featured switch', str_contains($featuredEdit['body'], 'name="featured"'));
+check('and the pin switch', str_contains($featuredEdit['body'], 'name="pinned"'));
+
 echo "\nScheduling and premieres\n";
 
 /*

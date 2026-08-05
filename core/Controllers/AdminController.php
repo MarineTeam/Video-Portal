@@ -252,6 +252,8 @@ final class AdminController extends Controller
                     'member_only'    => $whole ? $request->input('member_only') !== null : $video->memberOnly,
                     'hidden'         => $whole ? $request->input('hidden') !== null : $video->hidden,
                     'premiere'       => $whole ? $request->input('premiere') !== null : $video->premiere,
+                    'featured'       => $whole ? $request->input('featured') !== null : $video->featured,
+                    'pinned'         => $whole ? $request->input('pinned') !== null : $video->pinned,
                 ]);
 
                 if ($whole) {
@@ -932,6 +934,87 @@ final class AdminController extends Controller
     private function playlistRepo(): \Portal\Content\PlaylistRepository
     {
         return $this->container->get(\Portal\Content\PlaylistRepository::class);
+    }
+
+    // ------------------------------------------------------------- homepage
+
+    public function homeRows(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        return $this->admin('home-rows', [
+            'rows'       => $this->homeRowRepo()->all(true),
+            'categories' => $this->container->get(CategoryRepository::class)->all(true),
+            'series'     => $this->seriesRepo()->all(true),
+            'playlists'  => $this->playlistRepo()->all(true),
+        ]);
+    }
+
+    public function saveHomeRow(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->homeRowRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'home_row.delete', 'home_row', (string) $id);
+                    return $this->back($request, 'Row removed.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'       => $request->input('title'),
+                        'source_type' => $request->input('source_type'),
+                        // The picker for the chosen source. One field per kind
+                        // rather than one shared one, because a single select
+                        // holding ids from three tables cannot say which table
+                        // a number came from.
+                        'source_id'   => $request->input('source_' . ($request->input('source_type') ?? '')),
+                        'max_items'   => $request->input('max_items'),
+                        'is_active'   => $request->input('is_active') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'home_row.update', 'home_row', (string) $id);
+                    return $this->back($request, 'Row saved.');
+
+                case 'up':
+                case 'down':
+                    $repo->move($id, $action === 'up' ? -1 : 1);
+                    return $this->back($request, '');
+
+                default:
+                    $source = (string) ($request->input('source_type') ?? '');
+                    $created = $repo->create([
+                        'title'       => $request->input('title'),
+                        'source_type' => $source,
+                        'source_id'   => $request->input('source_' . $source),
+                        'max_items'   => $request->input('max_items'),
+                    ]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'home_row.create',
+                        'home_row',
+                        (string) $created->id
+                    );
+                    return $this->back($request, 'Row added.');
+            }
+        } catch (HttpException $e) {
+            if ($e->status !== 400) {
+                throw $e;
+            }
+
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    private function homeRowRepo(): \Portal\Content\HomeRowRepository
+    {
+        return $this->container->get(\Portal\Content\HomeRowRepository::class);
     }
 
     // ------------------------------------------------------------- speakers

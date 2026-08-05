@@ -6,6 +6,7 @@ namespace Portal\Controllers;
 
 use Portal\Auth\Capability;
 use Portal\Content\CategoryRepository;
+use Portal\Content\HomeRowRepository;
 use Portal\Content\PlaylistRepository;
 use Portal\Content\SavedVideoRepository;
 use Portal\Content\SeriesRepository;
@@ -32,6 +33,14 @@ final class LibraryController extends Controller
 
         $result = $this->videos()->query($this->visibilityFilters(['search' => $search]), $page, $this->perPage());
 
+        /*
+         * Curated rows replace the plain listing, but only on the first page
+         * and only when nobody is searching. Both of those are requests for a
+         * specific list, and answering them with somebody's arrangement of the
+         * front page would ignore what was asked.
+         */
+        $rows = ($search === '' && $page === 1) ? $this->homeRows() : [];
+
         return $this->view(['index'], [
             'title'               => $search !== '' ? "Search: {$search}" : 'Library',
             'videos'              => $this->present($result['items']),
@@ -40,10 +49,75 @@ final class LibraryController extends Controller
             'searchTerm'          => $search,
             'activeCategory'      => '',
             'playlists'           => $this->playlistChips(),
+            'homeRows'            => $rows,
             'thumbnailsAvailable' => $this->thumbnailsAvailable(),
             'pagination'          => $this->paginate($result['total'], $page, $request),
             'flash'               => $this->flash(),
         ]);
+    }
+
+    /**
+     * The curated homepage, or an empty list when nobody has curated one.
+     *
+     * Empty is the important case: it is what every existing install looks
+     * like, and it has to keep the arrangement those sites already have rather
+     * than turning the front page blank because a new table is empty.
+     *
+     * @return list<array{title: string, url: ?string, videos: list<array<string, mixed>>}>
+     */
+    private function homeRows(): array
+    {
+        try {
+            /** @var HomeRowRepository $repo */
+            $repo = $this->container->get(HomeRowRepository::class);
+
+            if (!$repo->isConfigured()) {
+                return [];
+            }
+
+            $filters = $this->visibilityFilters([]);
+            $out = [];
+
+            foreach ($repo->all() as $row) {
+                /*
+                 * Continue-watching is the one row the repository cannot fill:
+                 * only the controller knows who is asking. It is also the one
+                 * row that is empty for a stranger, and dropping it then is
+                 * correct — a heading over nothing is worse than one row less.
+                 */
+                if ($row->isPersonal()) {
+                    $watching = $this->continueWatching();
+                    if ($watching !== []) {
+                        $out[] = [
+                            'title'  => $row->title !== '' ? $row->title : 'Continue watching',
+                            'url'    => null,
+                            'videos' => $watching,
+                        ];
+                    }
+                    continue;
+                }
+
+                $resolved = $repo->resolve($row, $filters);
+                if ($resolved === null) {
+                    continue;
+                }
+
+                $out[] = [
+                    'title'  => $resolved['title'],
+                    'url'    => $resolved['url'],
+                    'videos' => $this->present($resolved['videos']),
+                ];
+            }
+
+            return $out;
+        } catch (Throwable $e) {
+            // Before migration 0005 has run — on the one request that applies
+            // it — the table may not exist. The library matters more than the
+            // arrangement.
+            error_log('Could not build the homepage rows: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /** @param array<string, string> $params */

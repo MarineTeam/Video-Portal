@@ -165,6 +165,12 @@ final class VideoRepository
             $params[] = (int) $filters['seriesId'];
         }
 
+        // The featured flag has existed on videos since Phase 1 and nothing
+        // ever filtered on it. A homepage row is its first consumer.
+        if (!empty($filters['featured'])) {
+            $conditions[] = 'v.featured = 1';
+        }
+
         if (!empty($filters['speakerId'])) {
             $conditions[] = 'v.speaker_id = ?';
             $params[] = (int) $filters['speakerId'];
