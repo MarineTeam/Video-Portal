@@ -179,7 +179,8 @@ final class TemplateLoader
         // affect the pages it claimed to cover.
         $candidates = [...$candidates, ...match ($type) {
             'video'                                        => ['single', 'index'],
-            'category', 'series', 'speaker', 'tag', 'search' => ['archive', 'index'],
+            'category', 'series', 'speaker', 'tag', 'search',
+            'playlist', 'saved'                            => ['archive', 'index'],
             default                                        => ['index'],
         }];
 

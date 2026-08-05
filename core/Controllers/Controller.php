@@ -130,10 +130,25 @@ abstract class Controller
      */
     protected function defaultNav(): array
     {
-        /** @var list<array{label: string, href: string}> */
-        return apply_filters('default_nav', [
+        $items = [
             ['label' => 'Library', 'href' => '/'],
-        ]);
+            ['label' => 'Search',  'href' => '/search'],
+        ];
+
+        /*
+         * Saved is offered only to somebody who could actually open it. The
+         * route is behind auth.authorized, so linking it unconditionally would
+         * put a permanent trip to the sign-in page in the navigation for every
+         * visitor — and, worse, in front of accounts that are signed in but not
+         * yet approved, for whom it would bounce with no explanation.
+         */
+        $user = $this->user();
+        if ($user !== null && ($user->isAdmin() || $user->authorized)) {
+            $items[] = ['label' => 'Saved', 'href' => '/saved'];
+        }
+
+        /** @var list<array{label: string, href: string}> */
+        return apply_filters('default_nav', $items);
     }
 
     /**
@@ -175,6 +190,7 @@ abstract class Controller
             ['label' => 'Videos',     'path' => '/admin/videos',        'key' => 'videos',        'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
             ['label' => 'Categories', 'path' => '/admin/categories',    'key' => 'categories',    'cap' => \Portal\Auth\Capability::MANAGE_CATEGORIES],
             ['label' => 'Series',     'path' => '/admin/series',        'key' => 'series',        'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
+            ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
             ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => \Portal\Auth\Capability::MANAGE_SPEAKERS],
             ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],
             ['label' => 'Groups',     'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => \Portal\Auth\Capability::MANAGE_VIEWERS],

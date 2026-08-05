@@ -788,6 +788,113 @@ final class AdminController extends Controller
         }
     }
 
+    // ------------------------------------------------------------ playlists
+
+    public function playlists(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        return $this->admin('playlists', [
+            'playlists' => $this->playlistRepo()->all(true),
+        ]);
+    }
+
+    /** @param array<string, string> $params */
+    public function editPlaylist(Request $request, array $params): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        $playlist = $this->playlistRepo()->find((int) ($params['id'] ?? 0));
+        if ($playlist === null) {
+            throw HttpException::notFound('That playlist does not exist.');
+        }
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        /*
+         * Unlike a series, a playlist does not own its videos, so there is no
+         * "unassigned" pool to offer — every video in the library is a
+         * candidate, including ones already on other playlists. The chosen ones
+         * are listed separately and in order, because that order is the whole
+         * point of the screen.
+         */
+        $chosen = $this->playlistRepo()->orderedVideoIds($playlist->id);
+
+        return $this->admin('playlist-edit', [
+            'playlist'  => $playlist,
+            'items'     => $this->playlistRepo()->videos($playlist->id, true, true),
+            'chosenIds' => $chosen,
+            'available' => $videos->query(['includeUnpublished' => true, 'includeHidden' => true,
+                                           'includeMemberOnly' => true], 1, 100)['items'],
+        ]);
+    }
+
+    public function savePlaylist(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SERIES);
+
+        $repo = $this->playlistRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'playlist.delete', 'playlist', (string) $id);
+                    return $this->back($request, 'Playlist deleted. Its videos were kept.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'        => $request->input('title'),
+                        'slug'         => $request->input('slug'),
+                        'description'  => $request->input('description'),
+                        // Absent means unchecked; see updateVideo().
+                        'is_published' => $request->input('is_published') !== null,
+                        'member_only'  => $request->input('member_only') !== null,
+                        'hidden'       => $request->input('hidden') !== null,
+                        'featured'     => $request->input('featured') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'playlist.update', 'playlist', (string) $id);
+                    return $this->back($request, 'Playlist saved.');
+
+                case 'items':
+                    $repo->setVideos($id, array_map('intval', $request->inputArray('videos')));
+                    Audit::log($this->db(), $this->user()?->email, 'playlist.items', 'playlist', (string) $id);
+                    return $this->back($request, 'Playlist updated.');
+
+                case 'up':
+                case 'down':
+                    // The playlist id travels with the move. Without it the
+                    // neighbour lookup would find whichever row in any playlist
+                    // held the adjacent position.
+                    $repo->move($id, (int) ($request->input('video') ?? 0), $action === 'up' ? -1 : 1);
+                    return $this->back($request, '');
+
+                default:
+                    $created = $repo->create(['title' => $request->input('title')]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'playlist.create',
+                        'playlist',
+                        (string) $created->id,
+                        $created->title
+                    );
+                    return $this->redirect('/admin/playlists/' . $created->id);
+            }
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    private function playlistRepo(): \Portal\Content\PlaylistRepository
+    {
+        return $this->container->get(\Portal\Content\PlaylistRepository::class);
+    }
+
     // ------------------------------------------------------------- speakers
 
     public function speakers(Request $request): Response

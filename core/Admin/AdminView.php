@@ -35,6 +35,8 @@ final class AdminView
             'category-edit' => $this->categoryEdit($data),
             'series'        => $this->series($data),
             'series-edit'   => $this->seriesEdit($data),
+            'playlists'     => $this->playlists($data),
+            'playlist-edit' => $this->playlistEdit($data),
             'speakers'      => $this->speakers($data),
             'users'       => $this->users($data),
             'permissions' => $this->permissions($data),
@@ -946,6 +948,209 @@ final class AdminView
                    would quietly take it out of that one.</p>
                 {$picker}
                 <button class="btn" name="action" value="episodes">Update episodes</button>
+              </fieldset>
+            </form>
+          </div>
+        </div>
+        HTML;
+    }
+
+    // ------------------------------------------------------------ playlists
+
+    /** @param array<string, mixed> $data */
+    private function playlists(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $rows = '';
+        foreach ((array) ($data['playlists'] ?? []) as $item) {
+            $state = $item->isPublished
+                ? '<span class="pill ok">Published</span>'
+                : '<span class="pill">Draft</span>';
+
+            $count = $item->videoCount === 1 ? '1 video' : $item->videoCount . ' videos';
+
+            $rows .= sprintf(
+                '<tr>
+                   <td><a href="/admin/playlists/%d"><strong>%s</strong></a> %s<br>
+                       <span class="muted">/playlist/%s — %s</span></td>
+                   <td class="right">
+                     <a class="btn tiny secondary" href="/admin/playlists/%d">Edit</a>
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="delete" class="btn tiny danger"
+                               onclick="return confirm(\'Delete this playlist? Its videos are kept.\')">Delete</button>
+                     </form>
+                   </td>
+                 </tr>',
+                $item->id,
+                e($item->title),
+                $state,
+                e($item->slug),
+                e($count),
+                $item->id,
+                $token,
+                $item->id
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">No playlists yet.</td></tr>';
+        }
+
+        return <<<HTML
+        <h1>Playlists</h1>
+
+        <p class="muted">A playlist is a <strong>selection</strong> — whatever you want to put
+           together, in whatever order. Unlike a series, a video can be on any number of playlists
+           at once, so adding one here never takes it off anything else.</p>
+
+        <div class="cols">
+          <div>
+            <table>
+              <thead><tr><th>Title</th><th></th></tr></thead>
+              <tbody>{$rows}</tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Add a playlist</h2>
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <label>Title <input type="text" name="title" required></label>
+              <button class="btn" name="action" value="create">Create</button>
+            </form>
+            <p class="muted small">You will land on its edit screen, where you can add videos.</p>
+          </div>
+        </div>
+        HTML;
+    }
+
+    /** @param array<string, mixed> $data */
+    private function playlistEdit(array $data): string
+    {
+        /** @var \Portal\Content\Playlist $playlist */
+        $playlist = $data['playlist'];
+        $token = e((string) $data['token']);
+
+        /** @var list<Video> $items */
+        $items = (array) ($data['items'] ?? []);
+
+        $running = '';
+        $position = 1;
+        foreach ($items as $video) {
+            $running .= sprintf(
+                '<tr>
+                   <td class="muted">%d</td>
+                   <td><a href="/admin/videos/%d">%s</a></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <input type="hidden" name="video" value="%d">
+                       <button name="action" value="up" class="btn tiny secondary"
+                               aria-label="Move up"%s>&uarr;</button>
+                       <button name="action" value="down" class="btn tiny secondary"
+                               aria-label="Move down"%s>&darr;</button>
+                     </form>
+                   </td>
+                 </tr>',
+                $position,
+                $video->id,
+                e($video->title),
+                $token,
+                $playlist->id,
+                $video->id,
+                $position === 1 ? ' disabled' : '',
+                $position === count($items) ? ' disabled' : ''
+            );
+            $position++;
+        }
+
+        if ($running === '') {
+            $running = '<tr><td colspan="3" class="muted">Nothing on this playlist yet.</td></tr>';
+        }
+
+        /*
+         * The picker is seeded from the stored order rather than from what the
+         * running-order table shows. Those differ: the table lists what a
+         * viewer would see, and an unpublished video the editor deliberately
+         * queued is not in it. Building the checkboxes from the table would
+         * drop that video the next time anybody pressed Save.
+         */
+        $chosen = array_map('intval', (array) ($data['chosenIds'] ?? []));
+
+        $picker = '';
+        foreach ((array) ($data['available'] ?? []) as $video) {
+            $picker .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="videos[]" value="%d"%s>%s</label>',
+                $video->id,
+                in_array($video->id, $chosen, true) ? ' checked' : '',
+                e($video->title)
+            );
+        }
+
+        if ($picker === '') {
+            $picker = '<p class="muted small">No videos available to add.</p>';
+        }
+
+        $title = e($playlist->title);
+        $slug = e($playlist->slug);
+        $description = e((string) ($playlist->description ?? ''));
+
+        $publishedAttr = $playlist->isPublished ? ' checked' : '';
+        $memberAttr = $playlist->memberOnly ? ' checked' : '';
+        $hiddenAttr = $playlist->hidden ? ' checked' : '';
+        $featuredAttr = $playlist->featured ? ' checked' : '';
+
+        return <<<HTML
+        <p class="muted small"><a href="/admin/playlists">&larr; All playlists</a></p>
+        <h1>{$title}</h1>
+
+        <div class="cols">
+          <div>
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <input type="hidden" name="id" value="{$playlist->id}">
+              <fieldset>
+                <legend>Details</legend>
+                <label>Title <input type="text" name="title" value="{$title}" required></label>
+                <label>Address <input type="text" name="slug" value="{$slug}"></label>
+                <p class="muted small">Changing this keeps the old address working.</p>
+                <label>Description <textarea name="description" rows="4">{$description}</textarea></label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Visibility</legend>
+                <label class="checkbox"><input type="checkbox" name="is_published" value="1"{$publishedAttr}> Published</label>
+                <label class="checkbox"><input type="checkbox" name="member_only" value="1"{$memberAttr}> Members only</label>
+                <label class="checkbox"><input type="checkbox" name="hidden" value="1"{$hiddenAttr}> Hidden</label>
+                <label class="checkbox"><input type="checkbox" name="featured" value="1"{$featuredAttr}> Featured</label>
+              </fieldset>
+
+              <button class="btn" name="action" value="update">Save</button>
+            </form>
+          </div>
+
+          <div>
+            <fieldset>
+              <legend>Order</legend>
+              <p class="muted small">This lists what a viewer would see. Anything unpublished stays on
+                 the playlist and simply does not appear here.</p>
+              <table>
+                <tbody>{$running}</tbody>
+              </table>
+            </fieldset>
+
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <input type="hidden" name="id" value="{$playlist->id}">
+              <fieldset>
+                <legend>Videos</legend>
+                <p class="muted small">Ticking adds a video; unticking removes it. A video can be on
+                   several playlists at once, so nothing here affects any other list.</p>
+                {$picker}
+                <button class="btn" name="action" value="items">Update playlist</button>
               </fieldset>
             </form>
           </div>

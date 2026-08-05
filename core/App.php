@@ -160,6 +160,10 @@ final class App
             => new SeriesRepository($c->get(Db::class)));
         $c->singleton(SpeakerRepository::class, static fn (Container $c): SpeakerRepository
             => new SpeakerRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\PlaylistRepository::class, static fn (Container $c): \Portal\Content\PlaylistRepository
+            => new \Portal\Content\PlaylistRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\SavedVideoRepository::class, static fn (Container $c): \Portal\Content\SavedVideoRepository
+            => new \Portal\Content\SavedVideoRepository($c->get(Db::class)));
         $c->singleton(VideoRepository::class, static fn (Container $c): VideoRepository => new VideoRepository(
             $c->get(Db::class),
             $c->get(CategoryRepository::class),

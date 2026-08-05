@@ -1591,6 +1591,170 @@ check(
     'the video would still show an average with no ratings behind it'
 );
 
+echo "\nPlaylists and saved videos\n";
+
+/*
+ * Driven through the admin the way an owner would, then read back as a
+ * visitor. The repository tests already pin the ordering rules; what only this
+ * can tell you is whether a person can reach any of it.
+ */
+$playlistScreen = getWithJar($baseUrl . '/admin/playlists', $jar);
+check('Playlists screen renders', $playlistScreen['status'] === 200, "got {$playlistScreen['status']}");
+check('Playlists appears in the admin navigation', str_contains($adminHome['body'], '/admin/playlists'));
+
+$madePlaylist = postWithJar($baseUrl . '/admin/playlists', [
+    '_token' => csrfFrom($playlistScreen['body']),
+    'action' => 'create',
+    'title'  => 'Smoke Playlist',
+], $jar);
+
+check('Creating a playlist succeeds', $madePlaylist['status'] === 302, "got {$madePlaylist['status']}");
+
+$playlistId = (int) $db->value('SELECT id FROM {playlists} WHERE title = ? LIMIT 1', ['Smoke Playlist']);
+check('The playlist row exists', $playlistId > 0, 'nothing was created');
+check(
+    'It redirects straight to the edit screen',
+    str_contains($madePlaylist['headers']['location'] ?? '', '/admin/playlists/' . $playlistId),
+    'landed on ' . ($madePlaylist['headers']['location'] ?? 'nowhere')
+);
+
+$playlistEdit = getWithJar($baseUrl . '/admin/playlists/' . $playlistId, $jar);
+check('Playlist edit screen renders', $playlistEdit['status'] === 200, "got {$playlistEdit['status']}");
+check('It offers a video picker', str_contains($playlistEdit['body'], 'name="videos[]"'));
+
+$addedToPlaylist = postWithJar($baseUrl . '/admin/playlists', [
+    '_token' => csrfFrom($playlistEdit['body']),
+    'action' => 'items',
+    'id'     => (string) $playlistId,
+    'videos' => [(string) $videoRow],
+], $jar);
+
+check('Adding a video succeeds', $addedToPlaylist['status'] === 302, "got {$addedToPlaylist['status']}");
+check(
+    'The video is now on the playlist',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {playlist_items} WHERE playlist_id = ? AND video_id = ?',
+        [$playlistId, $videoRow]
+    ) === 1,
+    'the assignment did not stick'
+);
+
+/*
+ * The difference from a series, proved rather than asserted in a comment: the
+ * video is still in its series afterwards.
+ */
+check(
+    'Adding to a playlist does not take it out of its series',
+    (int) $db->value('SELECT series_id FROM {videos} WHERE id = ?', [$videoRow]) === $seriesId,
+    'a playlist behaved like a series and stole the video'
+);
+
+$playlistSlug = (string) $db->value('SELECT slug FROM {playlists} WHERE id = ?', [$playlistId]);
+
+$publicPlaylist = get($baseUrl . '/playlist/' . $playlistSlug);
+check('The public playlist page renders', $publicPlaylist['status'] === 200, "got {$publicPlaylist['status']}");
+check('It lists the video', str_contains($publicPlaylist['body'], 'A Test Video'));
+
+$libraryWithPlaylists = get($baseUrl . '/');
+check(
+    'The library links to the playlist',
+    str_contains($libraryWithPlaylists['body'], '/playlist/' . $playlistSlug),
+    'the playlist exists but nothing on the site leads to it'
+);
+
+/* Renaming keeps the old address alive, as it does everywhere else. */
+postWithJar($baseUrl . '/admin/playlists', [
+    '_token'       => csrfFrom($playlistEdit['body']),
+    'action'       => 'update',
+    'id'           => (string) $playlistId,
+    'title'        => 'Smoke Playlist',
+    'slug'         => 'renamed-playlist',
+    'is_published' => '1',
+], $jar);
+
+$oldPlaylistAddress = get($baseUrl . '/playlist/' . $playlistSlug);
+check(
+    'The old playlist address still resolves',
+    $oldPlaylistAddress['status'] === 301,
+    "got {$oldPlaylistAddress['status']} — a printed link would have broken"
+);
+
+/* Saved videos, from the page a viewer actually uses. */
+$watchForSaving = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'The watch page offers save buttons',
+    str_contains($watchForSaving['body'], 'name="list"') && str_contains($watchForSaving['body'], 'watch_later'),
+    'there is no way for a viewer to save anything'
+);
+
+$savedIt = postWithJar($baseUrl . '/saved', [
+    '_token' => csrfFrom($watchForSaving['body']),
+    'video'  => (string) $videoRow,
+    'list'   => 'favorite',
+], $jar);
+
+check('Saving succeeds', $savedIt['status'] === 302, "got {$savedIt['status']}");
+check(
+    'The video was saved',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {saved_videos} WHERE video_id = ? AND list = ?',
+        [$videoRow, 'favorite']
+    ) === 1,
+    'nothing was written'
+);
+
+$savedPage = getWithJar($baseUrl . '/saved', $jar);
+check('The saved page renders', $savedPage['status'] === 200, "got {$savedPage['status']}");
+check('It lists the saved video', str_contains($savedPage['body'], 'A Test Video'));
+check('It links from the site navigation', str_contains($savedPage['body'], 'href="/saved"'));
+
+$watchAfterSaving = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'The button shows it is already saved',
+    str_contains($watchAfterSaving['body'], 'aria-pressed="true"'),
+    'a viewer cannot tell whether they already saved it'
+);
+
+/* The same button unsaves — one control, both directions. */
+postWithJar($baseUrl . '/saved', [
+    '_token' => csrfFrom($watchAfterSaving['body']),
+    'video'  => (string) $videoRow,
+    'list'   => 'favorite',
+], $jar);
+
+check(
+    'Pressing it again unsaves',
+    (int) $db->value('SELECT COUNT(*) FROM {saved_videos} WHERE video_id = ?', [$videoRow]) === 0,
+    'the toggle only goes one way'
+);
+
+/* An unknown list must write nothing rather than defaulting to a real one. */
+postWithJar($baseUrl . '/saved', [
+    '_token' => csrfFrom($watchAfterSaving['body']),
+    'video'  => (string) $videoRow,
+    'list'   => 'bookmarks',
+], $jar);
+
+check(
+    'An unknown list is refused',
+    (int) $db->value('SELECT COUNT(*) FROM {saved_videos}') === 0,
+    'a tampered form put a video on a list nobody asked for'
+);
+
+$noCsrfSave = postWithJar($baseUrl . '/saved', [
+    'video' => (string) $videoRow,
+    'list'  => 'favorite',
+], $jar);
+check('Saving without a CSRF token is refused', $noCsrfSave['status'] === 419, "got {$noCsrfSave['status']}");
+
+/* Signed out, the saved page is not a way to read somebody else's bookmarks. */
+$anonymousSaved = get($baseUrl . '/saved');
+check(
+    'A signed-out visitor cannot open the saved page',
+    $anonymousSaved['status'] === 302 || $anonymousSaved['status'] === 403,
+    "got {$anonymousSaved['status']}"
+);
+
 echo "\nSearch\n";
 
 /*

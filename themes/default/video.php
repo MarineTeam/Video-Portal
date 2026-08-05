@@ -87,6 +87,38 @@ echo $template->partial('header', get_defined_vars());
   </div>
 <?php endif ?>
 
+<?php
+/*
+ * Save buttons.
+ *
+ * Plain form posts, one per list, so this works with scripting off and needs no
+ * JavaScript to keep two buttons in sync with the server. Each is a toggle: the
+ * label states what the video IS, and pressing it changes that.
+ */
+$savedLists ??= [];
+$saveAction ??= '/saved';
+$csrfField ??= '';
+?>
+<?php if ($saveAction !== '' && ($currentUser ?? null) !== null): ?>
+  <p class="save-actions">
+    <?php foreach ([
+        'favorite'    => ['Favourite', 'Favourited'],
+        'watch_later' => ['Watch later', 'Saved for later'],
+    ] as $list => [$off, $on]):
+        $isSaved = in_array($list, $savedLists, true); ?>
+      <form method="post" action="<?= e($saveAction) ?>" class="inline">
+        <?= $csrfField ?>
+        <input type="hidden" name="video" value="<?= (int) $video['id'] ?>">
+        <input type="hidden" name="list" value="<?= e($list) ?>">
+        <button type="submit" class="btn secondary tiny<?= $isSaved ? ' on' : '' ?>"
+                aria-pressed="<?= $isSaved ? 'true' : 'false' ?>">
+          <?= e($isSaved ? $on : $off) ?>
+        </button>
+      </form>
+    <?php endforeach ?>
+  </p>
+<?php endif ?>
+
 <?php do_action('after_video', $video) ?>
 
 <?php if ($related !== []): ?>

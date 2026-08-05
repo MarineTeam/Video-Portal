@@ -6,6 +6,8 @@ namespace Portal\Controllers;
 
 use Portal\Auth\Capability;
 use Portal\Content\CategoryRepository;
+use Portal\Content\PlaylistRepository;
+use Portal\Content\SavedVideoRepository;
 use Portal\Content\SeriesRepository;
 use Portal\Content\SpeakerRepository;
 use Portal\Content\Video;
@@ -37,6 +39,7 @@ final class LibraryController extends Controller
             'categories'          => $this->categoryChips(),
             'searchTerm'          => $search,
             'activeCategory'      => '',
+            'playlists'           => $this->playlistChips(),
             'thumbnailsAvailable' => $this->thumbnailsAvailable(),
             'pagination'          => $this->paginate($result['total'], $page, $request),
             'flash'               => $this->flash(),
@@ -189,6 +192,142 @@ final class LibraryController extends Controller
                 'thumbnailsAvailable' => $this->thumbnailsAvailable(),
                 'pagination'          => $this->paginate($result['total'], $page, $request),
             ]
+        );
+    }
+
+    /**
+     * A playlist, in the order somebody arranged it.
+     *
+     * @param array<string, string> $params
+     */
+    public function playlist(Request $request, array $params): Response
+    {
+        /** @var PlaylistRepository $repo */
+        $repo = $this->container->get(PlaylistRepository::class);
+
+        $slug = $params['slug'] ?? '';
+        $playlist = $repo->findBySlug($slug);
+
+        if ($playlist === null) {
+            // Honour an address from before a rename.
+            $aliased = $repo->findByAlias($slug);
+            if ($aliased !== null) {
+                return Response::redirect($this->config()->url($aliased->url()), 301);
+            }
+            throw HttpException::notFound('There is no playlist at that address.');
+        }
+
+        if (!$this->canSee($playlist->isPublished, $playlist->memberOnly, $playlist->hidden)) {
+            throw HttpException::notFound('There is no playlist at that address.');
+        }
+
+        $videos = $repo->videos(
+            $playlist->id,
+            $this->guard()->can(Capability::MANAGE_VIDEOS),
+            $this->canWatch()
+        );
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('playlist', ['slug' => $playlist->slug]),
+            [
+                'title'               => $playlist->title,
+                'heading'             => $playlist->title,
+                'description'         => $playlist->description,
+                'videos'              => $this->present($videos),
+                'children'            => [],
+                'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+                'pagination'          => ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null],
+            ]
+        );
+    }
+
+    /**
+     * Everything this viewer has saved.
+     *
+     * Behind auth.authorized rather than merely auth: the page lists videos,
+     * and somebody whose account has not been approved cannot see the library
+     * either. Two lists on one page rather than two pages, because "did I
+     * favourite this or save it for later" is a question nobody should have to
+     * answer by visiting two addresses.
+     */
+    public function saved(Request $request): Response
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return Response::redirect($this->config()->url('/auth/login'));
+        }
+
+        /** @var SavedVideoRepository $saved */
+        $saved = $this->container->get(SavedVideoRepository::class);
+
+        $canWatch = $this->canWatch();
+
+        return $this->view(['saved', 'archive', 'index'], [
+            'title'               => 'Saved',
+            'heading'             => 'Saved',
+            'description'         => null,
+            'favorites'           => $this->present(
+                $saved->videos($user->id, SavedVideoRepository::FAVORITE, $canWatch)
+            ),
+            'watchLater'          => $this->present(
+                $saved->videos($user->id, SavedVideoRepository::WATCH_LATER, $canWatch)
+            ),
+            // archive.php renders $videos; the saved template renders the two
+            // lists above. Both are supplied so a theme without a saved.php
+            // still shows something rather than an empty page.
+            'videos'              => $this->present(
+                $saved->videos($user->id, SavedVideoRepository::FAVORITE, $canWatch)
+            ),
+            'children'            => [],
+            'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+            'pagination'          => ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null],
+            'flash'               => $this->flash(),
+        ]);
+    }
+
+    /**
+     * Save or unsave a video.
+     *
+     * One route and one button for both directions. A separate "unsave" URL
+     * would double the surface for no gain, and the toggle is resolved in the
+     * database so two tabs cannot leave it in a state neither person asked for.
+     */
+    public function toggleSaved(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+
+        $user = $this->user();
+        if ($user === null) {
+            return Response::redirect($this->config()->url('/auth/login'));
+        }
+
+        $list = SavedVideoRepository::sanitizeList($request->input('list'));
+        $videoId = (int) ($request->input('video') ?? 0);
+
+        // Looked up rather than taken from the form: a redirect target a
+        // visitor controls is an open redirect waiting to happen.
+        $video = $videoId > 0 ? $this->videos()->find($videoId) : null;
+
+        if ($list === null || $video === null) {
+            return Response::redirect($this->config()->url('/'));
+        }
+
+        /** @var SavedVideoRepository $saved */
+        $saved = $this->container->get(SavedVideoRepository::class);
+        $nowSaved = $saved->toggle($user->id, $video->id, $list);
+
+        $label = $list === SavedVideoRepository::FAVORITE ? 'favourites' : 'watch later';
+
+        /*
+         * back() returns them to the page they came from, so saving from a
+         * listing does not throw away where they were reading. It sanitises the
+         * referer through the same helper the auth flow uses rather than
+         * trusting a form field, which is how a "return to" parameter becomes
+         * an open redirect.
+         */
+        return $this->back(
+            $request,
+            $nowSaved ? "Added to your {$label}." : "Removed from your {$label}."
         );
     }
 
@@ -475,6 +614,48 @@ final class LibraryController extends Controller
         }
 
         return $chips;
+    }
+
+    /**
+     * Published playlists, for the library page.
+     *
+     * Without this there is no way to reach a playlist except by knowing its
+     * address — the exact "built but unreachable" shape this project has hit
+     * five times already. Members-only ones are left out for visitors who could
+     * not open them, because a link that 404s is worse than no link.
+     *
+     * @return list<array{title: string, url: string, count: int}>
+     */
+    private function playlistChips(): array
+    {
+        try {
+            /** @var PlaylistRepository $repo */
+            $repo = $this->container->get(PlaylistRepository::class);
+
+            $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+            $canWatch = $this->canWatch();
+
+            $chips = [];
+            foreach ($repo->all($canManage) as $playlist) {
+                if ($playlist->memberOnly && !$canWatch) {
+                    continue;
+                }
+                $chips[] = [
+                    'title' => $playlist->title,
+                    'url'   => $playlist->url(),
+                    'count' => $playlist->videoCount,
+                ];
+            }
+
+            return $chips;
+        } catch (Throwable $e) {
+            // Before migration 0003 has run — during an upgrade, on the one
+            // request that applies it — the table may not exist yet. The
+            // library is more important than the row of chips.
+            error_log('Could not load playlists: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     private function videoProvider(): ?VideoProvider

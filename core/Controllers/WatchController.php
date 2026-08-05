@@ -75,10 +75,41 @@ final class WatchController extends Controller
                     'recordedAt'  => $this->formatDate($video->recordedAt),
                     'resumeAt'    => $this->resumePosition($video->id),
                 ],
+                // Which of this viewer's lists the video is already on, so the
+                // buttons can say "Saved" rather than offering to save
+                // something that is already there.
+                'savedLists' => $this->savedLists($video->id),
+                'saveAction' => '/saved',
+                'csrfField'  => '<input type="hidden" name="_token" value="'
+                    . e($this->csrfToken()) . '">',
                 'related' => [],
                 'backUrl' => '/',
             ]
         );
+    }
+
+    /**
+     * @return list<string> the saved lists this video is on for this viewer
+     */
+    private function savedLists(int $videoId): array
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return [];
+        }
+
+        try {
+            return $this->container
+                ->get(\Portal\Content\SavedVideoRepository::class)
+                ->listsFor($user->id, $videoId);
+        } catch (Throwable $e) {
+            // A failure here must not take the player with it: not knowing
+            // whether something is saved is an inconvenience, not being able to
+            // watch it is the feature breaking.
+            error_log('Could not read saved lists: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /**

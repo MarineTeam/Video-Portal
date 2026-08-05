@@ -76,6 +76,29 @@ echo $template->partial('header', get_defined_vars());
   <noscript><button class="btn secondary" type="submit">Search</button></noscript>
 </form>
 
+<?php
+/*
+ * Playlists. Only shown when there are some, so a site that does not use them
+ * never sees an empty heading.
+ */
+$playlists ??= [];
+?>
+<?php if ($playlists !== []): ?>
+  <section aria-labelledby="playlists-heading" style="margin-bottom:2.5rem">
+    <h2 class="section-title" id="playlists-heading">Playlists</h2>
+    <div class="chips">
+      <?php foreach ($playlists as $playlist): ?>
+        <a class="chip" href="<?= e($playlist['url']) ?>">
+          <?= e($playlist['title']) ?>
+          <?php if (!empty($playlist['count'])): ?>
+            <span style="opacity:.6"> · <?= (int) $playlist['count'] ?></span>
+          <?php endif ?>
+        </a>
+      <?php endforeach ?>
+    </div>
+  </section>
+<?php endif ?>
+
 <?php do_action('before_video_list') ?>
 
 <?php if ($videos === []): ?>

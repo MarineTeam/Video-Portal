@@ -33,6 +33,7 @@ final class Routes
         $router->get('/category/{slug}', [LibraryController::class, 'category']);
         $router->get('/series/{slug}', [LibraryController::class, 'series']);
         $router->get('/speaker/{slug}', [LibraryController::class, 'speaker']);
+        $router->get('/playlist/{slug}', [LibraryController::class, 'playlist']);
         $router->get('/search', [LibraryController::class, 'search']);
 
         // Theme and plugin assets. Served by PHP because they live outside the
@@ -56,6 +57,11 @@ final class Routes
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
 
+        // Saved videos. Approved-only for the same reason /watch is: the pages
+        // list content, and an unapproved account cannot see the library either.
+        $router->get('/saved', [LibraryController::class, 'saved'], ['auth.authorized']);
+        $router->post('/saved', [LibraryController::class, 'toggleSaved'], ['auth.authorized']);
+
         // ----------------------------------------------------------- admin
 
         // Every admin route additionally checks its own capability inside the
@@ -74,6 +80,9 @@ final class Routes
         $router->get('/admin/series', [AdminController::class, 'series'], ['admin.area']);
         $router->post('/admin/series', [AdminController::class, 'saveSeries'], ['admin.area']);
         $router->get('/admin/series/{id}', [AdminController::class, 'editSeries'], ['admin.area']);
+        $router->get('/admin/playlists', [AdminController::class, 'playlists'], ['admin.area']);
+        $router->post('/admin/playlists', [AdminController::class, 'savePlaylist'], ['admin.area']);
+        $router->get('/admin/playlists/{id}', [AdminController::class, 'editPlaylist'], ['admin.area']);
         $router->get('/admin/speakers', [AdminController::class, 'speakers'], ['admin.area']);
         $router->post('/admin/speakers', [AdminController::class, 'saveSpeaker'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
