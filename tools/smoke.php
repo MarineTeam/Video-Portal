@@ -1875,6 +1875,140 @@ check(
     'the query is not echoed back, so the page cannot be shared or reloaded'
 );
 
+echo "\nNotices\n";
+
+$noticeScreen = getWithJar($baseUrl . '/admin/announcements', $jar);
+check('Notices screen renders', $noticeScreen['status'] === 200, "got {$noticeScreen['status']}");
+check('Notices appears in the admin navigation', str_contains($adminHome['body'], '/admin/announcements'));
+check(
+    'It says the audience is not a security boundary',
+    str_contains($noticeScreen['body'], 'Not a private channel'),
+    'somebody will put a secret in a banner'
+);
+
+$publicNotice = postWithJar($baseUrl . '/admin/announcements', [
+    '_token'      => csrfFrom($noticeScreen['body']),
+    'action'      => 'create',
+    'title'       => 'Heads up',
+    'body'        => 'The smoke test is running.',
+    'level'       => 'info',
+    'audience'    => 'everyone',
+    'dismissible' => '1',
+], $jar);
+
+check('Adding a notice succeeds', $publicNotice['status'] === 302, "got {$publicNotice['status']}");
+
+$homeWithNotice = get($baseUrl . '/');
+check(
+    'The banner shows to a signed-out visitor',
+    str_contains($homeWithNotice['body'], 'The smoke test is running'),
+    'the notice exists and nothing renders it'
+);
+check('It offers a dismiss button', str_contains($homeWithNotice['body'], 'announcement-dismiss'));
+
+/*
+ * The check that matters. An admin-only notice reaching a stranger would be a
+ * disclosure, and the screen invites administrators to write things like
+ * "migration tonight, credentials rotating".
+ */
+$adminNotice = postWithJar($baseUrl . '/admin/announcements', [
+    '_token'   => csrfFrom($noticeScreen['body']),
+    'action'   => 'create',
+    'body'     => 'Migration tonight at eleven.',
+    'level'    => 'warning',
+    'audience' => 'admins',
+], $jar);
+
+check('Adding an admin-only notice succeeds', $adminNotice['status'] === 302, "got {$adminNotice['status']}");
+
+$anonHome = get($baseUrl . '/');
+check(
+    'An admin-only notice does not reach a stranger',
+    !str_contains($anonHome['body'], 'Migration tonight'),
+    'AN ADMIN-ONLY NOTICE WAS SHOWN TO AN ANONYMOUS VISITOR'
+);
+
+$adminHomePage = getWithJar($baseUrl . '/', $jar);
+check(
+    'and does reach an administrator',
+    str_contains($adminHomePage['body'], 'Migration tonight'),
+    'the notice is invisible to the person who wrote it'
+);
+
+/* A notice whose window has closed takes itself down, with nothing running. */
+$expiredNotice = postWithJar($baseUrl . '/admin/announcements', [
+    '_token'    => csrfFrom($noticeScreen['body']),
+    'action'    => 'create',
+    'body'      => 'This one has finished.',
+    'audience'  => 'everyone',
+    'starts_at' => date('Y-m-d\TH:i', time() - 7200),
+    'ends_at'   => date('Y-m-d\TH:i', time() - 3600),
+], $jar);
+
+check('Adding a finished notice succeeds', $expiredNotice['status'] === 302, "got {$expiredNotice['status']}");
+check(
+    'A notice past its end date is not shown',
+    !str_contains(get($baseUrl . '/')['body'], 'This one has finished'),
+    'the end date did nothing'
+);
+
+/* A backwards window is refused rather than saved as a banner nobody sees. */
+$noticeCountBefore = (int) $db->value('SELECT COUNT(*) FROM {announcements}');
+
+postWithJar($baseUrl . '/admin/announcements', [
+    '_token'    => csrfFrom($noticeScreen['body']),
+    'action'    => 'create',
+    'body'      => 'Impossible.',
+    'starts_at' => date('Y-m-d\TH:i', time() + 86400 * 2),
+    'ends_at'   => date('Y-m-d\TH:i', time() + 3600),
+], $jar);
+
+check(
+    'A backwards window is refused',
+    (int) $db->value('SELECT COUNT(*) FROM {announcements}') === $noticeCountBefore,
+    'a banner nobody will ever see was stored'
+);
+
+/* Dismissal, through the rendered form, with a cookie jar of its own. */
+$dismissJar = sys_get_temp_dir() . '/portal-smoke-dismiss-' . getmypid() . '.txt';
+@unlink($dismissJar);
+
+$noticeId = (int) $db->value('SELECT id FROM {announcements} WHERE audience = ? LIMIT 1', ['everyone']);
+
+$dismissed = postWithJar($baseUrl . '/announcements/dismiss', ['id' => (string) $noticeId], $dismissJar);
+check('Dismissing succeeds', $dismissed['status'] === 302, "got {$dismissed['status']}");
+
+$afterDismiss = getWithJar($baseUrl . '/', $dismissJar);
+check(
+    'A dismissed notice stays dismissed',
+    !str_contains($afterDismiss['body'], 'The smoke test is running'),
+    'the banner came back'
+);
+
+$stillThere = get($baseUrl . '/');
+check(
+    'and is still shown to everybody else',
+    str_contains($stillThere['body'], 'The smoke test is running'),
+    'one visitor dismissing it took it down for the whole site'
+);
+
+@unlink($dismissJar);
+
+/* Clean up, so what follows runs against a site with no banners. */
+foreach ($db->all('SELECT id FROM {announcements}') as $row) {
+    postWithJar($baseUrl . '/admin/announcements', [
+        '_token' => csrfFrom($noticeScreen['body']),
+        'action' => 'delete',
+        'id'     => (string) $row['id'],
+    ], $jar);
+}
+
+check(
+    'Removing every notice clears the banners',
+    !str_contains(get($baseUrl . '/')['body'], 'announcement'),
+    'a banner survived its own deletion'
+);
+
 echo "\nHomepage rows\n";
 
 /*

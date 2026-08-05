@@ -37,6 +37,10 @@ final class Routes
         $router->get('/playlist/{slug}', [LibraryController::class, 'playlist']);
         $router->get('/search', [LibraryController::class, 'search']);
 
+        // No token: see the note on the handler. This is the only POST here
+        // that does not verify one, and the reason is written down.
+        $router->post('/announcements/dismiss', [LibraryController::class, 'dismissAnnouncement']);
+
         /*
          * Feeds, the sitemap, and the media redirect.
          *
@@ -105,6 +109,8 @@ final class Routes
         $router->get('/admin/playlists/{id}', [AdminController::class, 'editPlaylist'], ['admin.area']);
         $router->get('/admin/homepage', [AdminController::class, 'homeRows'], ['admin.area']);
         $router->post('/admin/homepage', [AdminController::class, 'saveHomeRow'], ['admin.area']);
+        $router->get('/admin/announcements', [AdminController::class, 'announcementsScreen'], ['admin.area']);
+        $router->post('/admin/announcements', [AdminController::class, 'saveAnnouncement'], ['admin.area']);
         $router->get('/admin/speakers', [AdminController::class, 'speakers'], ['admin.area']);
         $router->post('/admin/speakers', [AdminController::class, 'saveSpeaker'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);

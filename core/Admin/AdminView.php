@@ -38,6 +38,7 @@ final class AdminView
             'playlists'     => $this->playlists($data),
             'playlist-edit' => $this->playlistEdit($data),
             'home-rows'     => $this->homeRows($data),
+            'announcements' => $this->announcements($data),
             'speakers'      => $this->speakers($data),
             'users'       => $this->users($data),
             'permissions' => $this->permissions($data),
@@ -1458,6 +1459,125 @@ final class AdminView
           });
         })();
         </script>
+        HTML;
+    }
+
+    // --------------------------------------------------------- announcements
+
+    /** @param array<string, mixed> $data */
+    private function announcements(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $forInput = static function (?string $value): string {
+            if ($value === null || $value === '') {
+                return '';
+            }
+            try {
+                return (new \DateTimeImmutable($value))->format('Y-m-d\TH:i');
+            } catch (\Throwable) {
+                return '';
+            }
+        };
+
+        $body = '';
+        foreach ((array) ($data['announcements'] ?? []) as $announcement) {
+            $body .= $this->announcementForm($announcement, $token, $forInput);
+        }
+
+        if ($body === '') {
+            $body = '<p class="muted">Nothing is showing.</p>';
+        }
+
+        $levels = '';
+        foreach (\Portal\Content\Announcement::levels() as $value => $label) {
+            $levels .= sprintf('<option value="%s">%s</option>', e($value), e($label));
+        }
+
+        $audiences = '';
+        foreach (\Portal\Content\Announcement::audiences() as $value => $label) {
+            $audiences .= sprintf('<option value="%s">%s</option>', e($value), e($label));
+        }
+
+        return <<<HTML
+        <h1>Notices</h1>
+
+        <p class="muted">A banner across the top of the site. Give it an end date and it takes itself
+           down — nothing has to run for that to happen, so it is on time even on a day nobody
+           visited.</p>
+
+        <p class="muted small"><strong>Not a private channel.</strong> "Approved accounts only" decides
+           who is bothered by a message, not who is able to read one. Do not put anything here that
+           would be damaging to see.</p>
+
+        {$body}
+
+        <h2>Add a notice</h2>
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+          <label>Heading <input type="text" name="title"></label>
+          <label>Message <textarea name="body" rows="3" required></textarea></label>
+          <label>Tone <select name="level">{$levels}</select></label>
+          <label>Show it to <select name="audience">{$audiences}</select></label>
+          <label>From <input type="datetime-local" name="starts_at"></label>
+          <label>Until <input type="datetime-local" name="ends_at"></label>
+          <label class="checkbox"><input type="checkbox" name="dismissible" value="1" checked>
+            Let people dismiss it</label>
+          <button class="btn" name="action" value="create">Add</button>
+        </form>
+        HTML;
+    }
+
+    private function announcementForm(
+        \Portal\Content\Announcement $announcement,
+        string $token,
+        callable $forInput
+    ): string {
+        $levels = '';
+        foreach (\Portal\Content\Announcement::levels() as $value => $label) {
+            $levels .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($value),
+                $value === $announcement->level ? ' selected' : '',
+                e($label)
+            );
+        }
+
+        $audiences = '';
+        foreach (\Portal\Content\Announcement::audiences() as $value => $label) {
+            $audiences .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($value),
+                $value === $announcement->audience ? ' selected' : '',
+                e($label)
+            );
+        }
+
+        $title = $this->attr($announcement->title);
+        $message = e($announcement->body);
+        $starts = $this->attr($forInput($announcement->startsAt));
+        $ends = $this->attr($forInput($announcement->endsAt));
+        $dismissible = $announcement->dismissible ? ' checked' : '';
+        $active = $announcement->isActive ? ' checked' : '';
+
+        return <<<HTML
+        <form method="post" class="home-row-form">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$announcement->id}">
+          <label>Heading <input type="text" name="title" value="{$title}"></label>
+          <label>Message <textarea name="body" rows="2" required>{$message}</textarea></label>
+          <label>Tone <select name="level">{$levels}</select></label>
+          <label>Show it to <select name="audience">{$audiences}</select></label>
+          <label>From <input type="datetime-local" name="starts_at" value="{$starts}"></label>
+          <label>Until <input type="datetime-local" name="ends_at" value="{$ends}"></label>
+          <label class="checkbox"><input type="checkbox" name="dismissible" value="1"{$dismissible}>
+            Dismissible</label>
+          <label class="checkbox"><input type="checkbox" name="is_active" value="1"{$active}>
+            Shown</label>
+          <button class="btn tiny" name="action" value="update">Save</button>
+          <button class="btn tiny danger" name="action" value="delete"
+                  onclick="return confirm('Remove this notice?')">Remove</button>
+        </form>
         HTML;
     }
 

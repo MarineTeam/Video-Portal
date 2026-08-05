@@ -270,6 +270,56 @@ final class LibraryController extends Controller
     }
 
     /**
+     * Hide one announcement for this browser.
+     *
+     * Deliberately without a CSRF token, which is a decision rather than an
+     * omission. The state this changes is a cookie that hides a public notice;
+     * an attacker who forges this has caused a victim to stop seeing a banner
+     * they could restore by clearing their cookies. Requiring a token would
+     * mean every anonymous page had to carry a session-bound one purely so a
+     * notice could be dismissed, which buys nothing.
+     *
+     * Nothing else on this site accepts a POST without a token.
+     */
+    public function dismissAnnouncement(Request $request): Response
+    {
+        $id = (int) ($request->input('id') ?? 0);
+
+        if ($id > 0) {
+            $existing = [];
+            $raw = $_COOKIE['portal_dismissed'] ?? '';
+
+            if (is_string($raw) && $raw !== '') {
+                foreach (explode(',', $raw) as $part) {
+                    $value = (int) trim($part);
+                    if ($value > 0) {
+                        $existing[] = $value;
+                    }
+                }
+            }
+
+            $existing[] = $id;
+
+            /*
+             * Capped, and the newest kept. Without a limit this cookie grows
+             * with every announcement the site ever makes and is sent on every
+             * request forever — including to the CDN.
+             */
+            $existing = array_slice(array_values(array_unique($existing)), -50);
+
+            setcookie('portal_dismissed', implode(',', $existing), [
+                'expires'  => time() + 86400 * 180,
+                'path'     => '/',
+                'httponly' => true,
+                'samesite' => 'Lax',
+                'secure'   => $request->isSecure(),
+            ]);
+        }
+
+        return $this->back($request);
+    }
+
+    /**
      * A playlist, in the order somebody arranged it.
      *
      * @param array<string, string> $params

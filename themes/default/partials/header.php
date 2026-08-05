@@ -95,5 +95,45 @@ do_action('head');
   </div>
 </header>
 
+<?php
+/*
+ * Announcements.
+ *
+ * Above the content and inside <main>'s wrap, so they line up with the page
+ * rather than spanning the window. Dismissal is a form post — no JavaScript —
+ * so it works everywhere and the server is what remembers, via a cookie.
+ */
+$announcements ??= [];
+?>
+<?php if ($announcements !== []): ?>
+  <div class="wrap">
+    <?php foreach ($announcements as $announcement): ?>
+      <div class="announcement is-<?= e($announcement['level']) ?>" role="status">
+        <div>
+          <?php if ($announcement['title'] !== ''): ?>
+            <strong><?= e($announcement['title']) ?></strong>
+          <?php endif ?>
+          <?php
+          /*
+           * nl2br(e()) rather than raw HTML. An announcement is written by an
+           * administrator, but an administrator account is exactly what an
+           * attacker would want in order to get stored markup onto every
+           * viewer's page — including the sign-in page.
+           */
+          ?>
+          <span><?= nl2br(e($announcement['body'])) ?></span>
+        </div>
+
+        <?php if (!empty($announcement['dismissible'])): ?>
+          <form method="post" action="/announcements/dismiss" class="announcement-dismiss">
+            <input type="hidden" name="id" value="<?= (int) $announcement['id'] ?>">
+            <button type="submit" aria-label="Dismiss this message">&times;</button>
+          </form>
+        <?php endif ?>
+      </div>
+    <?php endforeach ?>
+  </div>
+<?php endif ?>
+
 <main>
   <div class="wrap">

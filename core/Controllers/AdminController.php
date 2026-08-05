@@ -1017,6 +1017,81 @@ final class AdminController extends Controller
         return $this->container->get(\Portal\Content\HomeRowRepository::class);
     }
 
+    // --------------------------------------------------------- announcements
+
+    public function announcementsScreen(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        return $this->admin('announcements', [
+            'announcements' => $this->announcementRepo()->all(),
+        ]);
+    }
+
+    public function saveAnnouncement(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->announcementRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'announcement.delete', 'announcement', (string) $id);
+                    return $this->back($request, 'Announcement removed.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'       => $request->input('title'),
+                        'body'        => $request->input('body'),
+                        'level'       => $request->input('level'),
+                        'audience'    => $request->input('audience'),
+                        'starts_at'   => $request->input('starts_at'),
+                        'ends_at'     => $request->input('ends_at'),
+                        // Absent means unchecked; the form is always complete.
+                        'dismissible' => $request->input('dismissible') !== null,
+                        'is_active'   => $request->input('is_active') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'announcement.update', 'announcement', (string) $id);
+                    return $this->back($request, 'Announcement saved.');
+
+                default:
+                    $created = $repo->create([
+                        'title'       => $request->input('title'),
+                        'body'        => $request->input('body'),
+                        'level'       => $request->input('level'),
+                        'audience'    => $request->input('audience'),
+                        'starts_at'   => $request->input('starts_at'),
+                        'ends_at'     => $request->input('ends_at'),
+                        'dismissible' => $request->input('dismissible') !== null,
+                    ]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'announcement.create',
+                        'announcement',
+                        (string) $created->id
+                    );
+                    return $this->back($request, 'Announcement added.');
+            }
+        } catch (HttpException $e) {
+            if ($e->status !== 400) {
+                throw $e;
+            }
+
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    private function announcementRepo(): \Portal\Content\AnnouncementRepository
+    {
+        return $this->container->get(\Portal\Content\AnnouncementRepository::class);
+    }
+
     // ------------------------------------------------------------- speakers
 
     public function speakers(Request $request): Response

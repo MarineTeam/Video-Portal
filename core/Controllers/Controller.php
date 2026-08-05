@@ -119,6 +119,7 @@ abstract class Controller
              * something that happens because a sitemap route shipped.
              */
             'allowIndexing' => $this->config()->settingBool('allow_indexing', false),
+            'announcements' => $this->announcements(),
         ];
 
         $html = $themes->loader()->render($candidates, $data + $shared);
@@ -137,6 +138,85 @@ abstract class Controller
      * navigation led to a 404. Add entries here when the route lands, not
      * when it is planned.
      */
+    /**
+     * The banners this visitor should see, minus the ones they have dismissed.
+     *
+     * Dismissal lives in a cookie, not the database. A row per viewer per
+     * banner would be a write on a GET — from anonymous visitors, on a shared
+     * host — to remember something that stops mattering when the announcement
+     * ends. The cost is that dismissing does not follow somebody to another
+     * browser, which is the right trade for a notice measured in days.
+     *
+     * @return list<array{id: int, title: string, body: string, level: string, dismissible: bool}>
+     */
+    protected function announcements(): array
+    {
+        try {
+            /** @var \Portal\Content\AnnouncementRepository $repo */
+            $repo = $this->container->get(\Portal\Content\AnnouncementRepository::class);
+
+            $user = $this->user();
+            $showing = $repo->showing(
+                $user !== null && ($user->isAdmin() || $user->authorized),
+                $user !== null && $this->container->get(\Portal\Auth\Capabilities::class)->canSeeAdmin($user),
+            );
+
+            $dismissed = $this->dismissedAnnouncements();
+
+            $out = [];
+            foreach ($showing as $announcement) {
+                if ($announcement->dismissible && in_array($announcement->id, $dismissed, true)) {
+                    continue;
+                }
+
+                $out[] = [
+                    'id'          => $announcement->id,
+                    'title'       => $announcement->title,
+                    'body'        => $announcement->body,
+                    'level'       => $announcement->level,
+                    'dismissible' => $announcement->dismissible,
+                ];
+            }
+
+            return $out;
+        } catch (\Throwable $e) {
+            // Before migration 0006 has run, or if anything else goes wrong: a
+            // banner is never worth failing a page over.
+            error_log('Could not load announcements: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
+     * The ids in the dismissal cookie.
+     *
+     * Read defensively — it is a value a visitor controls, so it is capped and
+     * anything unrecognised is ignored rather than trusted.
+     *
+     * @return list<int>
+     */
+    private function dismissedAnnouncements(): array
+    {
+        $raw = $_COOKIE['portal_dismissed'] ?? '';
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $ids = [];
+        foreach (explode(',', $raw) as $part) {
+            $id = (int) trim($part);
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+            if (count($ids) >= 50) {
+                break;
+            }
+        }
+
+        return $ids;
+    }
+
     protected function defaultNav(): array
     {
         $items = [
@@ -201,6 +281,7 @@ abstract class Controller
             ['label' => 'Series',     'path' => '/admin/series',        'key' => 'series',        'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
             ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
             ['label' => 'Homepage',   'path' => '/admin/homepage',      'key' => 'home-rows',     'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
+            ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
             ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => \Portal\Auth\Capability::MANAGE_SPEAKERS],
             ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],
             ['label' => 'Groups',     'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => \Portal\Auth\Capability::MANAGE_VIEWERS],
