@@ -253,9 +253,9 @@ final class RatingsTest extends DatabaseTestCase
 
         $this->ratings->rate($rated, 'a@example.com', 5);
 
-        $before = count($this->db()->log());
+        $before = $this->db()->queryCount();
         $totals = $this->ratings->forVideos([$rated, $unrated]);
-        $after = count($this->db()->log());
+        $after = $this->db()->queryCount();
 
         self::assertSame(1, $after - $before, 'Totals for a listing must not be a query per card.');
 
@@ -267,9 +267,9 @@ final class RatingsTest extends DatabaseTestCase
 
     public function testNoVideosCostsNoQueries(): void
     {
-        $before = count($this->db()->log());
+        $before = $this->db()->queryCount();
         self::assertSame([], $this->ratings->forVideos([]));
-        self::assertSame($before, count($this->db()->log()));
+        self::assertSame($before, $this->db()->queryCount());
     }
 
     // ------------------------------------------------------------ ranking

@@ -1968,11 +1968,15 @@ final class AdminView
             ? '<span class="muted">not set</span>'
             : e(implode(', ', $list));
 
-        $membersDefault = in_array(
-            (string) ($settings['members_thumbnail_default'] ?? '0'),
+        $checked = static fn (string $key): string => in_array(
+            (string) ($settings[$key] ?? '0'),
             ['1', 'true', 'on', 'yes'],
             true
         ) ? ' checked' : '';
+
+        $membersDefault = $checked('members_thumbnail_default');
+        $allowIndexing = $checked('allow_indexing');
+        $podcastExplicit = $checked('podcast_explicit');
 
         return <<<HTML
         <h1>Settings</h1>
@@ -1989,6 +1993,55 @@ final class AdminView
           <p class="muted small">The starting point for every video and category. Anyone signed out or
              not yet approved sees a "Members only" placeholder instead of the artwork — the image URL
              is never sent to them. Individual categories and videos can override this either way.</p>
+
+          <fieldset>
+            <legend>Search engines</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="allow_indexing" value="1"{$allowIndexing}>
+              Let search engines index this site
+            </label>
+            <p class="muted small">Off by default. While it is off every page sends
+               <code>noindex</code>, <code>robots.txt</code> refuses everything, and
+               <code>/sitemap.xml</code> is not served — so the three can never disagree. Turning it on
+               lists only content that is already public; drafts, hidden videos, members-only content,
+               and share links are never included either way.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Podcast feed</legend>
+            <p class="muted small">Your feed is at <code>/podcast</code>, and there is one per category,
+               series, and playlist — for example <code>/podcast/series/advent</code>. Only public
+               content appears in them. Episodes link back here rather than straight to the video file,
+               so the download is signed fresh each time and unpublishing something actually withdraws
+               it.</p>
+
+            <label>Author shown in podcast apps
+              <input type="text" name="podcast_author" value="{$this->attr($settings['podcast_author'] ?? '')}">
+            </label>
+            <label>Owner name
+              <input type="text" name="podcast_owner_name" value="{$this->attr($settings['podcast_owner_name'] ?? '')}">
+            </label>
+            <label>Owner email
+              <input type="email" name="podcast_owner_email" value="{$this->attr($settings['podcast_owner_email'] ?? '')}">
+            </label>
+            <p class="muted small">Apple requires an owner name and address before it will accept a
+               submission. Neither is shown to listeners.</p>
+
+            <label>Artwork URL
+              <input type="url" name="podcast_image_url" value="{$this->attr($settings['podcast_image_url'] ?? '')}">
+            </label>
+            <p class="muted small">A square image, at least 1400×1400. Directories reject a feed without
+               one.</p>
+
+            <label>Category
+              <input type="text" name="podcast_category" value="{$this->attr($settings['podcast_category'] ?? '')}">
+            </label>
+
+            <label class="checkbox">
+              <input type="checkbox" name="podcast_explicit" value="1"{$podcastExplicit}>
+              Mark this podcast as explicit
+            </label>
+          </fieldset>
 
           <button class="btn">Save</button>
         </form>

@@ -9,6 +9,7 @@ use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
+use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\ShareController;
 use Portal\Controllers\UploadController;
@@ -35,6 +36,25 @@ final class Routes
         $router->get('/speaker/{slug}', [LibraryController::class, 'speaker']);
         $router->get('/playlist/{slug}', [LibraryController::class, 'playlist']);
         $router->get('/search', [LibraryController::class, 'search']);
+
+        /*
+         * Feeds, the sitemap, and the media redirect.
+         *
+         * No middleware, deliberately: these are fetched by podcast clients and
+         * crawlers that have no session and never will. Every one of them
+         * serves public content only, decided inside the controller rather than
+         * from who is asking — see the note on FeedController.
+         *
+         * The scoped patterns constrain {type}, so /feed/nonsense/x is a 404
+         * rather than reaching the controller to be rejected there.
+         */
+        $router->get('/feed', [FeedController::class, 'rss']);
+        $router->get('/feed/{type:category|series|playlist}/{slug}', [FeedController::class, 'rss']);
+        $router->get('/podcast', [FeedController::class, 'podcast']);
+        $router->get('/podcast/{type:category|series|playlist}/{slug}', [FeedController::class, 'podcast']);
+        $router->get('/media/{slug}.mp4', [FeedController::class, 'media']);
+        $router->get('/sitemap.xml', [FeedController::class, 'sitemap']);
+        $router->get('/robots.txt', [FeedController::class, 'robots']);
 
         // Theme and plugin assets. Served by PHP because they live outside the
         // document root, which is what stops anyone fetching a theme's

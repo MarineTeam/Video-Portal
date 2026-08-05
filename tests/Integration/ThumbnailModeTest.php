@@ -133,9 +133,9 @@ final class ThumbnailModeTest extends DatabaseTestCase
         /** @var list<Video> $videos */
         $videos = array_values(array_filter($videos));
 
-        $before = count($this->db()->log());
+        $before = $this->db()->queryCount();
         $modes = $this->videos->thumbnailModes($videos, false);
-        $after = count($this->db()->log());
+        $after = $this->db()->queryCount();
 
         self::assertCount(25, $modes);
         self::assertLessThanOrEqual(
@@ -151,9 +151,9 @@ final class ThumbnailModeTest extends DatabaseTestCase
 
     public function testNoVideosCostsNoQueries(): void
     {
-        $before = count($this->db()->log());
+        $before = $this->db()->queryCount();
         self::assertSame([], $this->videos->thumbnailModes([], true));
-        self::assertSame($before, count($this->db()->log()));
+        self::assertSame($before, $this->db()->queryCount());
     }
 
     // ------------------------------------------------------------ persistence

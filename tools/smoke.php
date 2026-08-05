@@ -1875,6 +1875,183 @@ check(
     'the query is not echoed back, so the page cannot be shared or reloaded'
 );
 
+echo "\nFeeds and the sitemap\n";
+
+/*
+ * Fetched signed OUT throughout, because that is what a podcast client is. The
+ * one failure that matters here is a feed becoming the path that ignores the
+ * visibility rules — it is cached by aggregators and re-served to strangers, so
+ * a leak here does not stay in one browser.
+ */
+$feed = get($baseUrl . '/feed');
+check('The RSS feed renders', $feed['status'] === 200, "got {$feed['status']}");
+check(
+    'It is served as RSS',
+    str_contains(strtolower($feed['headers']['content-type'] ?? ''), 'application/rss+xml'),
+    'got "' . ($feed['headers']['content-type'] ?? 'nothing') . '" — a feed served as HTML is one no client will subscribe to'
+);
+
+$parsed = @simplexml_load_string($feed['body']);
+check('The feed is well-formed XML', $parsed !== false, 'no client could parse it');
+check('It lists the video', str_contains($feed['body'], 'A Test Video'));
+check(
+    'It declares its own address',
+    str_contains($feed['body'], 'rel="self"'),
+    'directories reject a feed without it'
+);
+
+$podcast = get($baseUrl . '/podcast');
+check('The podcast feed renders', $podcast['status'] === 200, "got {$podcast['status']}");
+check('The podcast feed is well-formed XML', @simplexml_load_string($podcast['body']) !== false);
+check(
+    'Episodes carry an enclosure',
+    str_contains($podcast['body'], '<enclosure'),
+    'a podcast feed without enclosures has no episodes'
+);
+check(
+    'The enclosure points back at this site, not at the CDN',
+    str_contains($podcast['body'], '/media/' . $videoSlug . '.mp4')
+        && !str_contains($podcast['body'], 'b-cdn.net'),
+    'a signed CDN URL in a feed is a broken episode by the time anybody downloads it'
+);
+
+/* The scoped feeds. */
+$seriesFeed = get($baseUrl . '/feed/series/renamed-series');
+check('A series feed renders', $seriesFeed['status'] === 200, "got {$seriesFeed['status']}");
+check('It lists the episode', str_contains($seriesFeed['body'], 'A Test Video'));
+
+$playlistFeed = get($baseUrl . '/feed/playlist/renamed-playlist');
+check('A playlist feed renders', $playlistFeed['status'] === 200, "got {$playlistFeed['status']}");
+
+$nonsenseFeed = get($baseUrl . '/feed/nonsense/x');
+check('An unknown feed scope is a 404', $nonsenseFeed['status'] === 404, "got {$nonsenseFeed['status']}");
+
+$missingFeed = get($baseUrl . '/feed/series/no-such-series');
+check('A feed for something that does not exist is a 404', $missingFeed['status'] === 404, "got {$missingFeed['status']}");
+
+/* The media redirect: signed on demand, and it re-checks visibility. */
+$media = get($baseUrl . '/media/' . $videoSlug . '.mp4');
+check('The media route redirects', $media['status'] === 302, "got {$media['status']}");
+check(
+    'It redirects to a signed URL',
+    str_contains($media['headers']['location'] ?? '', 'token='),
+    'went to ' . ($media['headers']['location'] ?? 'nowhere')
+);
+check(
+    'The redirect is not cacheable',
+    str_contains(strtolower($media['headers']['cache-control'] ?? ''), 'no-store'),
+    'a cached redirect brings back the expiry problem this route exists to avoid'
+);
+
+/*
+ * The claim the whole design rests on: unpublishing withdraws the download.
+ * A signed URL already handed out cannot be recalled — a redirect can refuse.
+ */
+$db->execute('UPDATE {videos} SET is_published = 0 WHERE id = ?', [$videoRow]);
+$mediaGone = get($baseUrl . '/media/' . $videoSlug . '.mp4');
+$feedGone = get($baseUrl . '/feed');
+$db->execute('UPDATE {videos} SET is_published = 1 WHERE id = ?', [$videoRow]);
+
+check(
+    'Unpublishing withdraws the download',
+    $mediaGone['status'] === 404,
+    "got {$mediaGone['status']} — a withdrawn video was still downloadable"
+);
+check(
+    'Unpublishing takes it out of the feed',
+    !str_contains($feedGone['body'], 'A Test Video'),
+    'AN UNPUBLISHED VIDEO WAS IN A PUBLIC FEED'
+);
+
+/* Members-only content must never reach a feed, whoever is asking. */
+$db->execute('UPDATE {videos} SET member_only = 1 WHERE id = ?', [$videoRow]);
+$feedMembers = get($baseUrl . '/feed');
+$feedAsAdmin = getWithJar($baseUrl . '/feed', $jar);
+$mediaMembers = get($baseUrl . '/media/' . $videoSlug . '.mp4');
+$db->execute('UPDATE {videos} SET member_only = 0 WHERE id = ?', [$videoRow]);
+
+check(
+    'A members-only video is not in the feed',
+    !str_contains($feedMembers['body'], 'A Test Video'),
+    'A MEMBERS-ONLY VIDEO WAS IN A PUBLIC FEED'
+);
+check(
+    'And is still absent when an administrator fetches it',
+    !str_contains($feedAsAdmin['body'], 'A Test Video'),
+    'the feed varies by viewer, so an admin could warm a shared cache with private titles'
+);
+check(
+    'A members-only video cannot be downloaded',
+    $mediaMembers['status'] === 404,
+    "got {$mediaMembers['status']}"
+);
+
+/*
+ * Indexing is off until somebody says otherwise, and all three signals have to
+ * agree — a sitemap inviting crawlers while every page says noindex is the kind
+ * of contradiction nobody notices until the wrong page is in a search result.
+ */
+$sitemapOff = get($baseUrl . '/sitemap.xml');
+check('The sitemap is absent while indexing is off', $sitemapOff['status'] === 404, "got {$sitemapOff['status']}");
+
+$robotsOff = get($baseUrl . '/robots.txt');
+check('robots.txt refuses everything while indexing is off', str_contains($robotsOff['body'], 'Disallow: /'));
+
+$publicHome = get($baseUrl . '/');
+check('Pages send noindex while indexing is off', str_contains($publicHome['body'], 'noindex'));
+check('Feeds are still advertised', str_contains($publicHome['body'], 'application/rss+xml'));
+
+/* Turn it on through the settings form, the way an owner would. */
+$settingsScreen = getWithJar($baseUrl . '/admin/settings', $jar);
+check('Settings offers the indexing switch', str_contains($settingsScreen['body'], 'name="allow_indexing"'));
+check('Settings offers the podcast fields', str_contains($settingsScreen['body'], 'name="podcast_owner_email"'));
+
+postWithJar($baseUrl . '/admin/settings', [
+    '_token'              => csrfFrom($settingsScreen['body']),
+    'site_name'           => 'Smoke Portal',
+    'timezone'            => 'UTC',
+    'allow_indexing'      => '1',
+    'podcast_owner_name'  => 'Smoke Owner',
+    'podcast_owner_email' => 'owner@smoke.test',
+], $jar);
+
+$sitemapOn = get($baseUrl . '/sitemap.xml');
+check('The sitemap appears once indexing is on', $sitemapOn['status'] === 200, "got {$sitemapOn['status']}");
+check('The sitemap is well-formed XML', @simplexml_load_string($sitemapOn['body']) !== false);
+check('It lists the video', str_contains($sitemapOn['body'], '/watch/' . $videoSlug));
+
+$robotsOn = get($baseUrl . '/robots.txt');
+check('robots.txt now names the sitemap', str_contains($robotsOn['body'], '/sitemap.xml'));
+check(
+    'and still keeps crawlers away from share links',
+    str_contains($robotsOn['body'], 'Disallow: /s/'),
+    'a crawler that finds a share link would put a private page in a search index'
+);
+
+$publicHomeOn = get($baseUrl . '/');
+check('Pages now allow indexing', str_contains($publicHomeOn['body'], 'index, follow'));
+
+/* The owner details reach the feed a directory validates. */
+$podcastOn = get($baseUrl . '/podcast');
+check(
+    'The podcast feed carries the owner Apple requires',
+    str_contains($podcastOn['body'], 'owner@smoke.test'),
+    'a submission would be rejected'
+);
+
+/* Put it back, so anything after this runs against a private site. */
+postWithJar($baseUrl . '/admin/settings', [
+    '_token'    => csrfFrom($settingsScreen['body']),
+    'site_name' => 'Smoke Portal',
+    'timezone'  => 'UTC',
+], $jar);
+
+check(
+    'Turning indexing back off removes the sitemap again',
+    get($baseUrl . '/sitemap.xml')['status'] === 404,
+    'the switch only goes one way'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

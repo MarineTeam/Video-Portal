@@ -110,6 +110,15 @@ abstract class Controller
                 'isAdmin' => $this->container->get(\Portal\Auth\Capabilities::class)->canSeeAdmin($user),
             ],
             'nav' => apply_filters('site_nav', $this->defaultNav()),
+            /*
+             * Whether search engines may index the public pages.
+             *
+             * Off by default, which is what the theme has always hardcoded.
+             * This is a portal with private sharing built into it, so turning
+             * a site public is a decision its owner makes deliberately — not
+             * something that happens because a sitemap route shipped.
+             */
+            'allowIndexing' => $this->config()->settingBool('allow_indexing', false),
         ];
 
         $html = $themes->loader()->render($candidates, $data + $shared);

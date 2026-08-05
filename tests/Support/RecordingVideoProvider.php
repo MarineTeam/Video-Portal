@@ -22,9 +22,11 @@ final class RecordingVideoProvider implements VideoProvider
 {
     public const THUMBNAIL = 'https://cdn.test/thumbnail.jpg?token=signed';
     public const EMBED = 'https://iframe.test/embed?token=signed';
+    public const DOWNLOAD = 'https://cdn.test/play_720p.mp4?token=signed';
 
     public int $thumbnailCalls = 0;
     public int $embedCalls = 0;
+    public int $downloadCalls = 0;
 
     // ------------------------------------------- the shared Provider contract
 
@@ -84,6 +86,13 @@ final class RecordingVideoProvider implements VideoProvider
         $this->thumbnailCalls++;
 
         return self::THUMBNAIL;
+    }
+
+    public function downloadUrl(string $providerId, int $ttlSeconds = 3600): ?string
+    {
+        $this->downloadCalls++;
+
+        return self::DOWNLOAD;
     }
 
     public function createUploadTicket(string $title, ?string $collectionId = null): UploadTicket

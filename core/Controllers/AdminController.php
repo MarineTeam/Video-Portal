@@ -1435,6 +1435,13 @@ final class AdminController extends Controller
                 'site_name' => $this->config()->setting('site_name', 'Video Portal'),
                 'timezone'  => $this->config()->setting('timezone', 'UTC'),
                 'members_thumbnail_default' => $this->config()->setting('members_thumbnail_default', '0'),
+                'allow_indexing'      => $this->config()->setting('allow_indexing', '0'),
+                'podcast_author'      => $this->config()->setting('podcast_author', ''),
+                'podcast_owner_name'  => $this->config()->setting('podcast_owner_name', ''),
+                'podcast_owner_email' => $this->config()->setting('podcast_owner_email', ''),
+                'podcast_image_url'   => $this->config()->setting('podcast_image_url', ''),
+                'podcast_category'    => $this->config()->setting('podcast_category', 'Religion & Spirituality'),
+                'podcast_explicit'    => $this->config()->setting('podcast_explicit', '0'),
             ],
             'cronJobs' => $cron->jobs(),
             'baseUrl'  => $this->config()->baseUrl(),
@@ -1470,6 +1477,14 @@ final class AdminController extends Controller
             // Absent means unchecked, so this cannot be read with ?? — that
             // would make the setting impossible to turn back off.
             'members_thumbnail_default' => $request->input('members_thumbnail_default') !== null ? '1' : '0',
+            'allow_indexing'   => $request->input('allow_indexing') !== null ? '1' : '0',
+            'podcast_explicit' => $request->input('podcast_explicit') !== null ? '1' : '0',
+
+            'podcast_author'      => trim($request->input('podcast_author') ?? ''),
+            'podcast_owner_name'  => trim($request->input('podcast_owner_name') ?? ''),
+            'podcast_owner_email' => trim($request->input('podcast_owner_email') ?? ''),
+            'podcast_image_url'   => trim($request->input('podcast_image_url') ?? ''),
+            'podcast_category'    => trim($request->input('podcast_category') ?? ''),
         ]);
         Audit::log($this->db(), $this->user()?->email, 'settings.update');
 

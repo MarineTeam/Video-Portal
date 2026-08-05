@@ -96,6 +96,12 @@ final class BunnyStreamProvider implements VideoProvider
                 'Pull Zone → Security → URL Token Authentication Key. A DIFFERENT key from the one above. Leave blank to reuse the Token Authentication Key, though that only works if both are genuinely the same.',
                 required: false
             ),
+            SettingField::text(
+                'download_height',
+                'Podcast download resolution',
+                'The MP4 height podcast feeds link to — 720 by default. Requires MP4 fallback to be enabled on the library, and the resolution must be one it actually encodes: asking for 1080 from a library that stops at 720 makes every episode a 404.',
+                required: false
+            ),
         ];
     }
 
@@ -293,6 +299,44 @@ final class BunnyStreamProvider implements VideoProvider
             $providerId,
             $thumbnailFile,
             time() + max(60, $ttlSeconds)
+        );
+    }
+
+    /**
+     * A signed link to the MP4 itself.
+     *
+     * bunny.net serves direct-play files from the same pull zone as thumbnails,
+     * at /{videoId}/play_{height}p.mp4, and they are signed with the same CDN
+     * token — so this needs no new credential and no new configuration beyond
+     * the resolution to offer.
+     *
+     * Two things it depends on, both stated on the podcast settings screen
+     * because neither can be detected from here without a request per video:
+     * MP4 fallback must be enabled on the bunny.net library, and the chosen
+     * resolution must be one the library actually encodes. Ask for 1080p from a
+     * library that stops at 720 and every enclosure is a 404 — which a podcast
+     * client reports as "episode unavailable" and nothing else notices.
+     */
+    public function downloadUrl(string $providerId, int $ttlSeconds = 3600): ?string
+    {
+        if (!$this->thumbnailsConfigured()) {
+            return null;
+        }
+
+        $height = (int) trim($this->credentials['download_height'] ?? '');
+        if ($height <= 0) {
+            $height = 720;
+        }
+
+        $path = '/' . trim($providerId) . '/play_' . $height . 'p.mp4';
+        $expires = time() + max(60, $ttlSeconds);
+
+        return sprintf(
+            'https://%s%s?token=%s&expires=%d',
+            trim($this->cdnHostname()),
+            $path,
+            BunnySigner::cdnToken($this->cdnTokenKey(), $path, $expires),
+            $expires
         );
     }
 

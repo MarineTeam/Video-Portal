@@ -30,10 +30,30 @@ $documentTitle = $title !== '' ? "{$title} — {$siteName}" : $siteName;
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><?= e($documentTitle) ?></title>
 
-<?php /* Private by default: nothing here should end up in a search index. */ ?>
-<meta name="robots" content="noindex, nofollow">
+<?php
+/*
+ * Private by default. Settings → "Let search engines index this site" is the
+ * one deliberate act that changes it, and it governs robots.txt and
+ * sitemap.xml at the same time so the three can never disagree.
+ */
+$allowIndexing ??= false;
+?>
+<meta name="robots" content="<?= $allowIndexing ? 'index, follow' : 'noindex, nofollow' ?>">
 
 <link rel="stylesheet" href="<?= e($assetsUrl) ?>/theme.css">
+
+<?php
+/*
+ * Feed discovery. Browsers and podcast apps look for these; they are how
+ * somebody subscribes without being told a URL. Both feeds carry public
+ * content only, whatever the indexing setting says — a person who pastes the
+ * address into a podcast app is not a crawler.
+ */
+?>
+<link rel="alternate" type="application/rss+xml"
+      title="<?= e($siteName) ?> — latest" href="/feed">
+<link rel="alternate" type="application/rss+xml"
+      title="<?= e($siteName) ?> — podcast" href="/podcast">
 
 <?php
 /*

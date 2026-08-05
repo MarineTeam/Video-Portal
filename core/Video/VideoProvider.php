@@ -46,6 +46,21 @@ interface VideoProvider extends Provider
     public function thumbnailUrl(string $providerId, ?string $thumbnailFile, int $ttlSeconds = 21600): ?string;
 
     /**
+     * A signed URL to the media file itself, for downloading rather than
+     * embedding — or null when the provider cannot offer one.
+     *
+     * Distinct from embedUrl(), which returns a player page. A podcast client
+     * needs the file.
+     *
+     * Callers must never put this in a feed. It expires, and a feed is fetched
+     * once and acted on hours later; the enclosure has to point at a route on
+     * this site that mints a fresh one per request. That indirection is also
+     * what makes unpublishing work — a URL already handed out cannot be
+     * withdrawn, but a redirect can start refusing.
+     */
+    public function downloadUrl(string $providerId, int $ttlSeconds = 3600): ?string;
+
+    /**
      * Create a video record and return everything the browser needs to upload
      * directly to the provider.
      */
