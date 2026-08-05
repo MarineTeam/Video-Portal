@@ -445,6 +445,14 @@ final class AdminView
         <form method="post" action="/admin/videos">
           <input type="hidden" name="_token" value="{$token}">
           <input type="hidden" name="id" value="{$video->id}">
+          <!--
+            This form carries every field, so unticking a checkbox or clearing
+            the category list really means "off" and "none". Without this
+            marker the handler cannot tell an unticked box from a POST that
+            simply did not include it, and would have to guess — see the
+            comment on the save branch in AdminController.
+          -->
+          <input type="hidden" name="_whole_form" value="1">
 
           <div class="cols">
             <div>

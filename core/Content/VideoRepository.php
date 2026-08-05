@@ -69,12 +69,30 @@ final class VideoRepository
         $perPage = max(1, min(100, $perPage));
         $offset = ($page - 1) * $perPage;
 
+        /*
+         * Two orderings, chosen by whether anybody searched.
+         *
+         * A browsing listing is curated — pinned first, then the order an
+         * editor arranged. A search result is not: putting a pinned video above
+         * an exact title match means the site argues with the person using it.
+         * Relevance leads, and the curated order survives underneath it as the
+         * tiebreak, so equally relevant results still come back in a sensible
+         * arrangement rather than by row id.
+         */
+        $order = $where['score'] === ''
+            ? 'v.pinned DESC, v.position ASC, COALESCE(v.published_at, v.created_at) DESC, v.id DESC'
+            : 'relevance DESC, v.pinned DESC, COALESCE(v.published_at, v.created_at) DESC, v.id DESC';
+
+        $select = $where['score'] === ''
+            ? 'v.*'
+            : "v.*, ({$where['score']}) AS relevance";
+
         $rows = $this->db->all(
-            "SELECT DISTINCT v.* FROM {videos} v {$where['join']}
+            "SELECT DISTINCT {$select} FROM {videos} v {$where['join']}
               WHERE {$where['sql']}
-              ORDER BY v.pinned DESC, v.position ASC, COALESCE(v.published_at, v.created_at) DESC, v.id DESC
+              ORDER BY {$order}
               LIMIT {$perPage} OFFSET {$offset}",
-            $params
+            [...$where['scoreParams'], ...$params]
         );
 
         return [
@@ -85,13 +103,15 @@ final class VideoRepository
 
     /**
      * @param array<string, mixed> $filters
-     * @return array{0: array{sql: string, join: string}, 1: list<mixed>}
+     * @return array{0: array{sql: string, join: string, score: string, scoreParams: list<mixed>}, 1: list<mixed>}
      */
     private function buildWhere(array $filters): array
     {
         $conditions = ['v.deleted_at IS NULL'];
         $params = [];
         $join = '';
+        $score = '';
+        $scoreParams = [];
 
         // Processing and failed videos are excluded by default: a player that
         // cannot start reads as a broken site, not as "not ready yet".
@@ -133,15 +153,105 @@ final class VideoRepository
             $params[] = (int) $filters['speakerId'];
         }
 
+        // Published between two dates. Compared against the effective date the
+        // listing sorts by, so a filter and the order it filters agree.
+        if (!empty($filters['from'])) {
+            $conditions[] = 'COALESCE(v.published_at, v.created_at) >= ?';
+            $params[] = (string) $filters['from'];
+        }
+        if (!empty($filters['to'])) {
+            $conditions[] = 'COALESCE(v.published_at, v.created_at) <= ?';
+            $params[] = (string) $filters['to'];
+        }
+
         if (!empty($filters['search'])) {
-            $term = '%' . $this->db->escapeLike(trim((string) $filters['search'])) . '%';
-            $conditions[] = '(v.title LIKE ? OR v.description LIKE ?)';
-            $params[] = $term;
-            $params[] = $term;
+            $terms = SearchQuery::terms((string) $filters['search']);
+
+            if ($terms === []) {
+                // Punctuation only, or quotes with nothing between them. The
+                // previous behaviour — a LIKE on the raw string — would have
+                // matched every video containing a double quote, which is not
+                // what anybody meant.
+                $conditions[] = '1 = 0';
+            } else {
+                /*
+                 * Speaker and series are joined rather than sub-queried because
+                 * both are at most one row per video, so nothing multiplies.
+                 * Categories are many, so they stay an EXISTS: an extra join
+                 * there would duplicate a video once per category and the
+                 * DISTINCT would then have to fight the score column.
+                 */
+                $join .= ' LEFT JOIN {speakers} sp ON sp.id = v.speaker_id'
+                       . ' LEFT JOIN {series} se ON se.id = v.series_id';
+
+                $categoryExists =
+                    'EXISTS (SELECT 1 FROM {video_categories} vcs
+                               JOIN {categories} cs ON cs.id = vcs.category_id
+                              WHERE vcs.video_id = v.id AND LOWER(cs.name) LIKE ?)';
+
+                $parts = [];
+
+                /*
+                 * The whole query as typed, matching the title exactly. Scored
+                 * once rather than per term, mirroring SearchQuery::score().
+                 */
+                $parts[] = '(CASE WHEN LOWER(v.title) = ? THEN ' . SearchQuery::WEIGHT_TITLE_EXACT . ' ELSE 0 END)';
+                $scoreParams[] = mb_strtolower(implode(' ', $terms));
+
+                foreach ($terms as $term) {
+                    $escaped = $this->db->escapeLike($term);
+                    $prefix = $escaped . '%';
+                    $contains = '%' . $escaped . '%';
+
+                    /*
+                     * Every term must match SOMETHING, but not the same
+                     * something. "grace romans" should find a video titled
+                     * "Romans 8" in a series called "Grace Abounding" — and a
+                     * single LIKE on the raw string, which is what this used to
+                     * be, finds nothing the moment anybody types two words.
+                     */
+                    $conditions[] = '(LOWER(v.title) LIKE ?
+                        OR LOWER(v.description) LIKE ?
+                        OR LOWER(sp.name) LIKE ?
+                        OR LOWER(se.title) LIKE ?
+                        OR ' . $categoryExists . ')';
+
+                    array_push($params, $contains, $contains, $contains, $contains, $contains);
+
+                    $parts[] = '(CASE
+                        WHEN LOWER(v.title) LIKE ? THEN ' . SearchQuery::WEIGHT_TITLE_PREFIX . '
+                        WHEN LOWER(v.title) LIKE ? THEN ' . SearchQuery::WEIGHT_TITLE . '
+                        ELSE 0 END)';
+                    array_push($scoreParams, $prefix, $contains);
+
+                    $parts[] = '(CASE WHEN LOWER(sp.name) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_SPEAKER . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN LOWER(se.title) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_SERIES . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN ' . $categoryExists . ' THEN '
+                        . SearchQuery::WEIGHT_CATEGORY . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN LOWER(v.description) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_DESCRIPTION . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+                }
+
+                $score = implode(' + ', $parts);
+            }
         }
 
         return [
-            ['sql' => implode(' AND ', $conditions), 'join' => $join],
+            [
+                'sql'         => implode(' AND ', $conditions),
+                'join'        => $join,
+                'score'       => $score,
+                'scoreParams' => $scoreParams,
+            ],
             $params,
         ];
     }

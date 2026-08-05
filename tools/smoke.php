@@ -783,6 +783,9 @@ $assigned = postWithJar($baseUrl . '/admin/videos', [
     'categories'     => [(string) $categoryRow],
     'thumbnail_mode' => 'default',
     'watermark_mode' => 'default',
+    // What the real form sends: this POST carries every field, so an absent
+    // checkbox means unticked rather than omitted.
+    '_whole_form'    => '1',
 ], $jar);
 
 check('Saving a video succeeds', $assigned['status'] === 302, "got {$assigned['status']}");
@@ -1211,6 +1214,29 @@ $forcePublic = postWithJar($baseUrl . '/admin/videos', [
 
 check('Overriding one video succeeds', $forcePublic['status'] === 302, "got {$forcePublic['status']}");
 
+/*
+ * That POST carried a subset of the form — no series, no speaker, no
+ * checkboxes — which is exactly the shape a plugin screen or a bulk action
+ * would send. It must change what it named and nothing else.
+ *
+ * This is not hypothetical. Before the fix it silently detached the video from
+ * its series and its speaker, and the only reason anybody noticed was that a
+ * search filter written weeks later stopped finding it.
+ */
+check(
+    'A partial save leaves the series alone',
+    (int) $db->value('SELECT series_id FROM {videos} WHERE id = ?', [$videoRow]) === $seriesId,
+    'saving one field wiped the series assignment'
+);
+check(
+    'A partial save leaves the categories alone',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {video_categories} WHERE video_id = ? AND category_id = ?',
+        [$videoRow, $categoryRow]
+    ) === 1,
+    'saving one field emptied the category list'
+);
+
 $publicOverride = get($baseUrl . '/');
 check(
     'A video set to public overrides its locked category',
@@ -1563,6 +1589,126 @@ check(
     'And leaves no stale total behind',
     (int) $db->value('SELECT COUNT(*) FROM {rating_totals} WHERE video_id = ?', [$videoRow]) === 0,
     'the video would still show an average with no ratings behind it'
+);
+
+echo "\nSearch\n";
+
+/*
+ * Driven signed out, because that is the visitor who uses search most and the
+ * one whose visibility rules matter. By now the seeded video is called
+ * "A Test Video" and sits in "Smoke Series"; the speaker is attached here so
+ * the directory match has something to find.
+ */
+$db->execute('UPDATE {videos} SET speaker_id = (SELECT id FROM {speakers} WHERE name = ?) WHERE id = ?', [
+    'Smoke Speaker',
+    $videoRow,
+]);
+
+$searchPage = get($baseUrl . '/search');
+check('Search page renders', $searchPage['status'] === 200, "got {$searchPage['status']}");
+check('It offers the series filter', str_contains($searchPage['body'], 'name="series"'));
+check('It offers the speaker filter', str_contains($searchPage['body'], 'name="speaker"'));
+check('It offers the year filter', str_contains($searchPage['body'], 'name="year"'));
+
+$home = get($baseUrl . '/');
+check(
+    'The library search box points at the search page',
+    str_contains($home['body'], 'action="/search"'),
+    'searching from the home page would skip the filters entirely'
+);
+
+$byTitle = get($baseUrl . '/search?q=test');
+check('A title word finds the video', str_contains($byTitle['body'], 'A Test Video'));
+
+/*
+ * The headline fix, end to end.
+ *
+ * "smoke" is in the SERIES title and "test" is in the VIDEO title, so nothing
+ * contains the phrase "smoke test". The implementation this replaced put the
+ * whole query into one LIKE and returned nothing here.
+ */
+$twoWords = get($baseUrl . '/search?q=smoke+test');
+check(
+    'Two words matching different fields still find it',
+    str_contains($twoWords['body'], 'A Test Video'),
+    'a multi-word search found nothing — the old single-LIKE behaviour is back'
+);
+
+$bySpeaker = get($baseUrl . '/search?q=smoke+speaker');
+check('A speaker name finds their video', str_contains($bySpeaker['body'], 'A Test Video'));
+
+$noMatch = get($baseUrl . '/search?q=leviticus');
+check(
+    'A word that is nowhere finds nothing',
+    !str_contains($noMatch['body'], 'A Test Video') && str_contains($noMatch['body'], 'Nothing matched'),
+    'the filter was ignored'
+);
+
+/* A wildcard typed by a visitor is text, not syntax. */
+$wildcard = get($baseUrl . '/search?q=%25');
+check(
+    'A per-cent sign does not match everything',
+    !str_contains($wildcard['body'], 'A Test Video'),
+    'LIKE wildcards are reaching the query unescaped'
+);
+
+/*
+ * The series and the speaker are offered as destinations, not just as hits.
+ *
+ * Searched by their own name rather than by the two-word query above: the
+ * series match requires every term to appear in the SERIES, and "test" is in
+ * the video's title, not the series'. That is the AND rule working, not a bug.
+ */
+$bySeries = get($baseUrl . '/search?q=smoke+series');
+check(
+    'A matching series is offered to jump to',
+    str_contains($bySeries['body'], 'search-jump') && str_contains($bySeries['body'], 'Smoke Series'),
+    'somebody searching a series name has to reassemble it from episodes'
+);
+check(
+    'A matching speaker is offered to jump to',
+    str_contains($bySpeaker['body'], '/speaker/smoke-speaker'),
+    'searching a name should reach the person, not only what they said'
+);
+
+/* Filters narrow, and narrow to nothing when they should. */
+$realSeriesId = (int) $db->value('SELECT id FROM {series} WHERE title = ? LIMIT 1', ['Smoke Series']);
+$filtered = get($baseUrl . '/search?q=test&series=' . $realSeriesId);
+check('Filtering by the right series keeps the result', str_contains($filtered['body'], 'A Test Video'));
+
+$filteredOut = get($baseUrl . '/search?q=test&series=' . ($realSeriesId + 999));
+check(
+    'Filtering by another series excludes it',
+    !str_contains($filteredOut['body'], 'A Test Video'),
+    'the filter did nothing'
+);
+
+$wrongYear = get($baseUrl . '/search?q=test&year=1999');
+check(
+    'Filtering by a year with nothing in it excludes it',
+    !str_contains($wrongYear['body'], 'A Test Video'),
+    'the year filter did nothing'
+);
+
+/*
+ * The failure that would matter most: search becoming the one listing that
+ * forgets the rules.
+ */
+$db->execute('UPDATE {videos} SET is_published = 0 WHERE id = ?', [$videoRow]);
+$leak = get($baseUrl . '/search?q=test');
+$db->execute('UPDATE {videos} SET is_published = 1 WHERE id = ?', [$videoRow]);
+
+check(
+    'Search does not reveal an unpublished video',
+    !str_contains($leak['body'], 'A Test Video'),
+    'AN UNPUBLISHED VIDEO WAS VISIBLE IN SEARCH'
+);
+
+/* A bookmarked result stays a result. */
+check(
+    'A search is a linkable URL',
+    str_contains($byTitle['body'], 'value="test"'),
+    'the query is not echoed back, so the page cannot be shared or reloaded'
 );
 
 echo "\nRouting\n";

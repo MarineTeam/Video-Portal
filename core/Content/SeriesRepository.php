@@ -77,6 +77,45 @@ final class SeriesRepository
         return array_map(static fn (array $row): Series => Series::fromRow($row), $rows);
     }
 
+    /**
+     * Series whose title or description matches every term.
+     *
+     * Surfaced above the video results, because somebody typing a series name
+     * usually wants the series page — the list of its episodes in order — and
+     * not twelve of its episodes scattered through a relevance ranking.
+     *
+     * @return list<Series>
+     */
+    public function search(string $query, int $limit = 5, bool $includeUnpublished = false): array
+    {
+        $terms = SearchQuery::terms($query);
+        if ($terms === []) {
+            return [];
+        }
+
+        $conditions = $includeUnpublished ? [] : ['s.is_published = 1', 's.hidden = 0'];
+        $params = [];
+
+        foreach ($terms as $term) {
+            $like = '%' . $this->db->escapeLike($term) . '%';
+            $conditions[] = '(LOWER(s.title) LIKE ? OR LOWER(s.description) LIKE ?)';
+            array_push($params, $like, $like);
+        }
+
+        $rows = $this->db->all(
+            'SELECT s.*,
+                    (SELECT COUNT(*) FROM {videos} v
+                      WHERE v.series_id = s.id AND v.deleted_at IS NULL) AS video_count
+               FROM {series} s
+              WHERE ' . implode(' AND ', $conditions) . '
+              ORDER BY s.title
+              LIMIT ' . max(1, min(50, $limit)),
+            $params
+        );
+
+        return array_map(static fn (array $row): Series => Series::fromRow($row), $rows);
+    }
+
     // ----------------------------------------------------------------- writes
 
     /** @param array<string, mixed> $attributes */

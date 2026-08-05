@@ -268,6 +268,16 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   outline-offset: 2px;
 }
 
+/*
+ * The search toolbar.
+ *
+ * The query field keeps .field's flexible width; the three narrowing selects
+ * are given a fixed basis so they do not each grab a third of the row and push
+ * the thing people actually type into onto its own line.
+ */
+.search-toolbar .field:not(:first-child) { flex: 0 1 11rem; }
+.search-jump { margin-bottom: 2rem; }
+
 .chips { display: flex; gap: .5rem; flex-wrap: wrap; }
 .chip {
   padding: .375rem .875rem;

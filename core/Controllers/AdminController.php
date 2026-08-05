@@ -162,25 +162,63 @@ final class AdminController extends Controller
                 return $this->back($request, 'Video unpublished.');
 
             default:
+                /*
+                 * Absent and empty are different answers.
+                 *
+                 * A field the form did not send means "leave this alone"; a
+                 * field sent empty means "clear it". Collapsing the two —
+                 * which this did — makes any POST carrying a subset of the
+                 * form silently destroy everything it left out. A smoke check
+                 * that saved a thumbnail setting detached the video from its
+                 * series and its speaker, and nothing said so.
+                 *
+                 * The real edit form always submits every select, so this was
+                 * invisible from the browser. It is still wrong: a plugin
+                 * screen, a future partial form, or a bulk action would each
+                 * hit it, and the loss looks like the data was never there.
+                 */
+                $whole = $request->input('_whole_form') !== null;
+
+                $seriesRaw = $request->input('series_id');
+                $speakerRaw = $request->input('speaker_id');
+
                 $videos->update($id, [
                     'title'          => $request->input('title') ?? $video->title,
-                    'description'    => $request->input('description'),
+                    'description'    => $request->input('description') === null
+                        ? $video->description
+                        : $request->input('description'),
                     'watermark_mode' => $request->input('watermark_mode') ?? $video->watermarkMode,
                     'thumbnail_mode' => $request->input('thumbnail_mode') ?? $video->thumbnailMode,
-                    // Zero means "none", which has to be expressible — so these
-                    // are normalised to null rather than left as 0, which no
+                    // Zero means "none", which has to be expressible — so an
+                    // empty selection becomes null rather than 0, which no
                     // series or speaker will ever have as an id.
-                    'series_id'      => ($s = (int) ($request->input('series_id') ?? 0)) > 0 ? $s : null,
-                    'speaker_id'     => ($p = (int) ($request->input('speaker_id') ?? 0)) > 0 ? $p : null,
-                    // Unchecked checkboxes are simply absent from a POST, so
-                    // presence is the value. Reading these with ?? would make
-                    // every flag impossible to turn back off.
-                    'member_only'    => $request->input('member_only') !== null,
-                    'hidden'         => $request->input('hidden') !== null,
+                    'series_id'      => $seriesRaw === null
+                        ? $video->seriesId
+                        : (($s = (int) $seriesRaw) > 0 ? $s : null),
+                    'speaker_id'     => $speakerRaw === null
+                        ? $video->speakerId
+                        : (($p = (int) $speakerRaw) > 0 ? $p : null),
+                    /*
+                     * Checkboxes and multi-selects are the cases where absent
+                     * and empty genuinely cannot be told apart: a browser sends
+                     * nothing for an unchecked box and nothing for a category
+                     * list with none ticked.
+                     *
+                     * So the form declares itself complete with a hidden field.
+                     * Present, presence is the value and unticking really does
+                     * clear. Missing, these are left alone — which is what a
+                     * partial POST means everywhere else in this handler, and
+                     * the only reading under which "save the thumbnail mode"
+                     * cannot also mean "make this public and uncategorised".
+                     */
+                    'member_only'    => $whole ? $request->input('member_only') !== null : $video->memberOnly,
+                    'hidden'         => $whole ? $request->input('hidden') !== null : $video->hidden,
                 ]);
 
-                $categoryIds = array_map('intval', $request->inputArray('categories'));
-                $videos->setCategories($id, $categoryIds);
+                if ($whole) {
+                    $categoryIds = array_map('intval', $request->inputArray('categories'));
+                    $videos->setCategories($id, $categoryIds);
+                }
 
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video saved.');

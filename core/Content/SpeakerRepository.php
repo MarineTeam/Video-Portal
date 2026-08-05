@@ -64,6 +64,50 @@ final class SpeakerRepository
         return array_map(static fn (array $row): Speaker => Speaker::fromRow($row), $rows);
     }
 
+    /**
+     * Speakers whose name or biography matches every term.
+     *
+     * A media library where searching somebody's name returns nothing is
+     * broken, and the video results alone cannot fix it: they answer "what did
+     * they say" when the question was "who are they".
+     *
+     * Speakers with nothing published are left out. A directory entry created
+     * in advance of the first video is real to an editor and noise to a
+     * visitor.
+     *
+     * @return list<Speaker>
+     */
+    public function search(string $query, int $limit = 5): array
+    {
+        $terms = SearchQuery::terms($query);
+        if ($terms === []) {
+            return [];
+        }
+
+        $conditions = [];
+        $params = [];
+
+        foreach ($terms as $term) {
+            $like = '%' . $this->db->escapeLike($term) . '%';
+            $conditions[] = '(LOWER(s.name) LIKE ? OR LOWER(s.bio) LIKE ?)';
+            array_push($params, $like, $like);
+        }
+
+        $rows = $this->db->all(
+            'SELECT s.*,
+                    (SELECT COUNT(*) FROM {videos} v
+                      WHERE v.speaker_id = s.id AND v.deleted_at IS NULL) AS video_count
+               FROM {speakers} s
+              WHERE ' . implode(' AND ', $conditions) . '
+             HAVING video_count > 0
+              ORDER BY s.name
+              LIMIT ' . max(1, min(50, $limit)),
+            $params
+        );
+
+        return array_map(static fn (array $row): Speaker => Speaker::fromRow($row), $rows);
+    }
+
     // ----------------------------------------------------------------- writes
 
     /** @param array<string, mixed> $attributes */

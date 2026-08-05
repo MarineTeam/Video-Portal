@@ -192,9 +192,120 @@ final class LibraryController extends Controller
         );
     }
 
+    /**
+     * The search page.
+     *
+     * No longer index() under another name. Searching and browsing want
+     * different orderings, different filters, and — the part index() could
+     * never do — matching series and speakers surfaced above the videos,
+     * because somebody typing a series name wants the series page and not
+     * twelve of its episodes scattered through a ranking.
+     */
     public function search(Request $request): Response
     {
-        return $this->index($request);
+        $term = trim($request->query('q') ?? '');
+        $page = max(1, (int) ($request->query('page') ?? 1));
+
+        $filters = $this->searchFilters($request);
+
+        $result = $this->videos()->query(
+            $this->visibilityFilters(['search' => $term] + $filters),
+            $page,
+            $this->perPage()
+        );
+
+        /** @var SeriesRepository $series */
+        $series = $this->container->get(SeriesRepository::class);
+        /** @var SpeakerRepository $speakers */
+        $speakers = $this->container->get(SpeakerRepository::class);
+
+        $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+
+        return $this->view(['search', 'archive', 'index'], [
+            'title'               => $term === '' ? 'Search' : "Search: {$term}",
+            'videos'              => $this->present($result['items']),
+            'continueWatching'    => [],
+            'categories'          => $this->categoryChips(),
+            'searchTerm'          => $term,
+            'activeCategory'      => '',
+            'matchedSeries'       => $term === '' ? [] : array_map(
+                static fn ($item): array => [
+                    'title' => $item->title,
+                    'url'   => $item->url(),
+                    'count' => $item->videoCount,
+                ],
+                $series->search($term, 5, $canManage)
+            ),
+            'matchedSpeakers'     => $term === '' ? [] : array_map(
+                static fn ($item): array => [
+                    'name'  => $item->name,
+                    'url'   => $item->url(),
+                    'count' => $item->videoCount,
+                ],
+                $speakers->search($term, 5)
+            ),
+            'seriesOptions'       => $this->filterOptions($series->all($canManage), 'title'),
+            'speakerOptions'      => $this->filterOptions($speakers->all(), 'name'),
+            'activeFilters'       => $filters,
+            'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+            'pagination'          => $this->paginate($result['total'], $page, $request),
+            'total'               => $result['total'],
+            'flash'               => $this->flash(),
+        ]);
+    }
+
+    /**
+     * The narrowing controls, read from the query string.
+     *
+     * Each one is validated into the shape the repository expects rather than
+     * passed through: `from=drop table` reaching a date comparison would be
+     * bound safely and still produce a confusing empty page, and a year is the
+     * only granularity the form offers.
+     *
+     * @return array<string, mixed>
+     */
+    private function searchFilters(Request $request): array
+    {
+        $filters = [];
+
+        $seriesId = (int) ($request->query('series') ?? 0);
+        if ($seriesId > 0) {
+            $filters['seriesId'] = $seriesId;
+        }
+
+        $speakerId = (int) ($request->query('speaker') ?? 0);
+        if ($speakerId > 0) {
+            $filters['speakerId'] = $speakerId;
+        }
+
+        // Years, not dates. A date picker on a sermon archive is precision
+        // nobody wants to supply, and "2024" is how people actually remember
+        // when something was said.
+        $year = (int) ($request->query('year') ?? 0);
+        if ($year >= 1900 && $year <= (int) date('Y') + 1) {
+            $filters['from'] = sprintf('%04d-01-01 00:00:00', $year);
+            $filters['to'] = sprintf('%04d-12-31 23:59:59', $year);
+            $filters['year'] = $year;
+        }
+
+        return $filters;
+    }
+
+    /**
+     * @param  list<object> $items
+     * @return list<array{id: int, label: string}>
+     */
+    private function filterOptions(array $items, string $labelProperty): array
+    {
+        $out = [];
+        foreach ($items as $item) {
+            $out[] = [
+                'id'    => (int) $item->id,
+                'label' => (string) $item->{$labelProperty},
+            ];
+        }
+
+        return $out;
     }
 
     // -------------------------------------------------------------- helpers

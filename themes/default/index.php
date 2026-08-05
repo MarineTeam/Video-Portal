@@ -45,7 +45,15 @@ echo $template->partial('header', get_defined_vars());
   </section>
 <?php endif ?>
 
-<form class="toolbar" method="get" action="/" role="search">
+<?php
+/*
+ * Aimed at /search rather than back at this page. Searching from here used to
+ * reload the library with a filter applied, which meant the narrowing controls
+ * and the matching series and speakers were unreachable from the one place
+ * everybody starts.
+ */
+?>
+<form class="toolbar" method="get" action="/search" role="search">
   <div class="field">
     <label class="visually-hidden" for="q">Search videos</label>
     <input type="search" id="q" name="q" value="<?= e($searchTerm) ?>"
