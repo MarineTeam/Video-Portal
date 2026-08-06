@@ -172,6 +172,8 @@ final class App
             => new \Portal\Content\TranscriptRepository($c->get(Db::class)));
         $c->singleton(\Portal\Content\ChapterRepository::class, static fn (Container $c): \Portal\Content\ChapterRepository
             => new \Portal\Content\ChapterRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\ViewRepository::class, static fn (Container $c): \Portal\Content\ViewRepository
+            => new \Portal\Content\ViewRepository($c->get(Db::class)));
         $c->singleton(\Portal\Content\SubscriptionRepository::class, static fn (Container $c): \Portal\Content\SubscriptionRepository
             => new \Portal\Content\SubscriptionRepository(
                 $c->get(Db::class),

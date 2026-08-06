@@ -99,6 +99,43 @@ function postWithJar(string $url, array $fields, string $jar): array
 }
 
 /**
+ * A JSON POST that carries a session.
+ *
+ * The progress endpoint takes JSON and requires a signed-in viewer, so neither
+ * postJson() (no cookies) nor postWithJar() (urlencoded) can reach it. This is
+ * the shape the player actually sends.
+ *
+ * @param array<string, mixed> $payload
+ * @return array{status: int, body: string, headers: array<string, string>}
+ */
+function postJsonWithJar(string $url, array $payload, string $jar): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER         => true,
+        CURLOPT_COOKIEJAR      => $jar,
+        CURLOPT_COOKIEFILE     => $jar,
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => (string) json_encode($payload),
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+    ]);
+
+    $raw = (string) curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    return [
+        'status'  => $status,
+        'body'    => substr($raw, $headerSize),
+        'headers' => parseHeaders(substr($raw, 0, $headerSize)),
+    ];
+}
+
+/**
  * A real multipart file upload, cookies and all.
  *
  * CURLFile rather than a hand-built body: the point is to exercise the same
@@ -2189,6 +2226,143 @@ check(
     'Removing every notice clears the banners',
     !str_contains(get($baseUrl . '/')['body'], 'announcement'),
     'a banner survived its own deletion'
+);
+
+echo "\nAnalytics\n";
+
+$analytics = getWithJar($baseUrl . '/admin/analytics', $jar);
+check('Analytics screen renders', $analytics['status'] === 200, "got {$analytics['status']}");
+check('Analytics appears in the admin navigation', str_contains($adminHome['body'], '/admin/analytics'));
+check(
+    'It says what a view is',
+    str_contains($analytics['body'], 'counted once per session'),
+    'a number nobody can interpret is worse than no number'
+);
+check(
+    'and that there is no per-person history',
+    // Stops before the template's line wrap. "…who watched what" spans a break
+    // and never matches — the second time that has caught me out here.
+    str_contains($analytics['body'], 'no record here of who watched'),
+    'the privacy position is a decision, not an accident, and should be stated'
+);
+
+/*
+ * Views come from the progress endpoint the player already posts to, so this
+ * drives that rather than inventing a route. The once-per-session rule is the
+ * claim worth proving and the only way to prove it is a real session.
+ */
+$db->execute('DELETE FROM {video_views}');
+
+$progress = postJsonWithJar($baseUrl . '/api/progress', [
+    'videoId'  => $videoRow,
+    'position' => 30,
+    'duration' => 125,
+], $jar);
+
+check('Posting progress succeeds', $progress['status'] === 200, "got {$progress['status']}");
+check(
+    'and it counts as a view',
+    (int) $db->value('SELECT COALESCE(SUM(views), 0) FROM {video_views} WHERE video_id = ?', [$videoRow]) === 1,
+    'nothing was counted'
+);
+
+/* The player posts every ten seconds. Each one must not be a view. */
+for ($i = 0; $i < 3; $i++) {
+    postJsonWithJar($baseUrl . '/api/progress', [
+        'videoId'  => $videoRow,
+        'position' => 40 + ($i * 10),
+        'duration' => 125,
+    ], $jar);
+}
+
+check(
+    'Further progress in the same session does not count again',
+    (int) $db->value('SELECT COALESCE(SUM(views), 0) FROM {video_views} WHERE video_id = ?', [$videoRow]) === 1,
+    'an hour-long sermon would report hundreds of views'
+);
+
+/* Reaching the end adds a completion, and still not a second view. */
+postJsonWithJar($baseUrl . '/api/progress', [
+    'videoId'  => $videoRow,
+    'position' => 125,
+    'duration' => 125,
+], $jar);
+
+check(
+    'Finishing records a completion',
+    (int) $db->value('SELECT COALESCE(SUM(completions), 0) FROM {video_views} WHERE video_id = ?', [$videoRow]) === 1,
+    'nothing recorded that it was watched to the end'
+);
+check(
+    'and still not a second view',
+    (int) $db->value('SELECT COALESCE(SUM(views), 0) FROM {video_views} WHERE video_id = ?', [$videoRow]) === 1,
+    'finishing a video reported a second viewer'
+);
+
+/* Under ten seconds is somebody clicking away, not a view. */
+$db->execute('DELETE FROM {video_views}');
+$briefJar = sys_get_temp_dir() . '/portal-smoke-brief-' . getmypid() . '.txt';
+@unlink($briefJar);
+
+postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'admin@smoke.test',
+    'password' => 'smoke-test-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $briefJar)['body']),
+], $briefJar);
+
+postJsonWithJar($baseUrl . '/api/progress', [
+    'videoId'  => $videoRow,
+    'position' => 4,
+    'duration' => 125,
+], $briefJar);
+
+check(
+    'Four seconds in is not a view',
+    (int) $db->value('SELECT COALESCE(SUM(views), 0) FROM {video_views}') === 0,
+    'clicking away would be counted as watching'
+);
+
+@unlink($briefJar);
+
+/* A different session is a different view. */
+$secondJar = sys_get_temp_dir() . '/portal-smoke-second-' . getmypid() . '.txt';
+@unlink($secondJar);
+
+postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'admin@smoke.test',
+    'password' => 'smoke-test-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $secondJar)['body']),
+], $secondJar);
+
+postJsonWithJar($baseUrl . '/api/progress', [
+    'videoId'  => $videoRow,
+    'position' => 30,
+    'duration' => 125,
+], $secondJar);
+
+check(
+    'A separate session counts separately',
+    (int) $db->value('SELECT COALESCE(SUM(views), 0) FROM {video_views} WHERE video_id = ?', [$videoRow]) === 1,
+    'the marker leaked between sessions'
+);
+
+@unlink($secondJar);
+
+$analyticsAfter = getWithJar($baseUrl . '/admin/analytics', $jar);
+check(
+    'The video appears on the analytics screen',
+    str_contains($analyticsAfter['body'], 'A Test Video'),
+    'counted and never shown'
+);
+
+$narrowWindow = getWithJar($baseUrl . '/admin/analytics?days=7', $jar);
+check('The period can be narrowed', $narrowWindow['status'] === 200, "got {$narrowWindow['status']}");
+
+$absurdWindow = getWithJar($baseUrl . '/admin/analytics?days=999999', $jar);
+check(
+    'An unoffered period falls back rather than scanning everything',
+    $absurdWindow['status'] === 200 && str_contains($absurdWindow['body'], 'Last 30 days'),
+    "got {$absurdWindow['status']}"
 );
 
 echo "\nChapters\n";

@@ -1069,6 +1069,41 @@ final class AdminController extends Controller
         return $this->container->get(\Portal\Content\PlaylistRepository::class);
     }
 
+    // ------------------------------------------------------------ analytics
+
+    /**
+     * What got watched.
+     *
+     * Governed by VIEW_ANALYTICS, which has existed since Phase 1, is granted
+     * to editors, and until now decided nothing but whether somebody could see
+     * the ratings plugin's leaderboard.
+     */
+    public function analytics(Request $request): Response
+    {
+        $this->require(Capability::VIEW_ANALYTICS);
+
+        $days = \Portal\Content\ViewRepository::sanitizePeriod($request->query('days'));
+
+        try {
+            $views = $this->container->get(\Portal\Content\ViewRepository::class);
+
+            return $this->admin('analytics', [
+                'days'    => $days,
+                'summary' => $views->summary($days),
+                'top'     => $views->topVideos($days),
+            ]);
+        } catch (Throwable $e) {
+            // Before migration 0011 has run. An empty screen beats a 500.
+            error_log('Could not read view counts: ' . $e->getMessage());
+
+            return $this->admin('analytics', [
+                'days'    => $days,
+                'summary' => ['views' => 0, 'completions' => 0],
+                'top'     => [],
+            ]);
+        }
+    }
+
     // ------------------------------------------------------------- homepage
 
     public function homeRows(Request $request): Response

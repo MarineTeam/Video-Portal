@@ -262,7 +262,58 @@ final class WatchController extends Controller
             return $this->json(['saved' => false], 200);
         }
 
+        $this->countView($videoId, $completed);
+
         return $this->json(['saved' => true, 'completed' => $completed]);
+    }
+
+    /**
+     * Count this as a view, at most once per session per video.
+     *
+     * The player posts progress every ten seconds, so counting each one would
+     * report an hour-long sermon as three hundred and sixty views. The marker
+     * lives in the session rather than a table: it expires on its own, costs no
+     * schema, and "a session" is the closest thing to "a viewing" that anything
+     * here can actually observe.
+     *
+     * Deliberately after the progress write and wrapped separately. A failure
+     * here is a lost number on a statistics screen; failing the request over it
+     * would cost the viewer their resume position, which they would notice.
+     */
+    private function countView(int $videoId, bool $completed): void
+    {
+        try {
+            /** @var \Portal\Auth\Session $session */
+            $session = $this->container->get(\Portal\Auth\Session::class);
+
+            $views = $this->container->get(\Portal\Content\ViewRepository::class);
+
+            $seen = (array) ($session->get('viewed') ?? []);
+            $key = (string) $videoId;
+
+            if (!isset($seen[$key])) {
+                $views->record($videoId, $completed);
+                // 1 means counted, 2 means counted and finished, so the second
+                // half below can tell the difference without another field.
+                $seen[$key] = $completed ? 2 : 1;
+                $session->put('viewed', $seen);
+
+                return;
+            }
+
+            /*
+             * Started earlier in this session and has now reached the end.
+             * The view is already counted, so only the completion is added —
+             * counting a second view would report twice the audience.
+             */
+            if ($completed && $seen[$key] !== 2) {
+                $views->recordCompletion($videoId);
+                $seen[$key] = 2;
+                $session->put('viewed', $seen);
+            }
+        } catch (Throwable $e) {
+            error_log('Portal: could not count a view: ' . $e->getMessage());
+        }
     }
 
     public function getProgress(Request $request): Response

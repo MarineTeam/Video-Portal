@@ -38,6 +38,7 @@ final class AdminView
             'playlists'     => $this->playlists($data),
             'playlist-edit' => $this->playlistEdit($data),
             'home-rows'     => $this->homeRows($data),
+            'analytics'     => $this->analytics($data),
             'announcements' => $this->announcements($data),
             'speakers'      => $this->speakers($data),
             'users'       => $this->users($data),
@@ -1461,6 +1462,91 @@ final class AdminView
             </form>
           </div>
         </div>
+        HTML;
+    }
+
+    // ------------------------------------------------------------- analytics
+
+    /** @param array<string, mixed> $data */
+    private function analytics(array $data): string
+    {
+        $days = (int) ($data['days'] ?? 30);
+        $summary = (array) ($data['summary'] ?? []);
+
+        $views = (int) ($summary['views'] ?? 0);
+        $completions = (int) ($summary['completions'] ?? 0);
+
+        /*
+         * The ratio, and only when there is enough behind it to mean anything.
+         * "100% finished" from two views is a number people quote at each
+         * other, and it is noise.
+         */
+        $rate = $views >= 10
+            ? sprintf('%d%% watched to the end', (int) round(($completions / $views) * 100))
+            : 'not enough views yet to say how many finish';
+
+        $tabs = '';
+        foreach (\Portal\Content\ViewRepository::periods() as $value => $label) {
+            $tabs .= sprintf(
+                '<a class="pill%s" href="/admin/analytics?days=%d">%s</a> ',
+                $value === $days ? ' ok' : '',
+                $value,
+                e($label)
+            );
+        }
+
+        $rows = '';
+        foreach ((array) ($data['top'] ?? []) as $row) {
+            $rowViews = (int) $row['views'];
+            $rowDone = (int) $row['completions'];
+
+            $rows .= sprintf(
+                '<tr>
+                   <td><a href="/watch/%s">%s</a></td>
+                   <td class="right">%d</td>
+                   <td class="right">%d</td>
+                   <td class="right muted">%s</td>
+                 </tr>',
+                e((string) $row['slug']),
+                e((string) $row['title']),
+                $rowViews,
+                $rowDone,
+                $rowViews >= 10 ? (int) round(($rowDone / $rowViews) * 100) . '%' : '—'
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="4" class="muted">Nothing has been watched in this period.</td></tr>';
+        }
+
+        return <<<HTML
+        <h1>Analytics</h1>
+        <p class="toolbar">{$tabs}</p>
+
+        <p class="muted"><strong>{$views}</strong> view(s), <strong>{$completions}</strong> finished —
+           {$rate}.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Video</th>
+              <th class="right">Views</th>
+              <th class="right">Finished</th>
+              <th class="right">Rate</th>
+            </tr>
+          </thead>
+          <tbody>{$rows}</tbody>
+        </table>
+
+        <p class="muted small">A view is one signed-in viewer getting more than ten seconds into a
+           video, counted once per session however long they stay. Finished means the same 95% mark
+           the resume feature uses.</p>
+
+        <p class="muted small">Only daily totals are kept — there is no record here of who watched
+           what. That is deliberate: a library owner needs to know what is worth making more of, and
+           a per-person viewing history is a liability nobody asked for. Share links are tracked
+           separately on the <a href="/admin/shares">sharing</a> screen, where the question genuinely
+           is whether one recipient opened one link.</p>
         HTML;
     }
 
