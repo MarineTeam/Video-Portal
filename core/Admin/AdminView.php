@@ -461,6 +461,14 @@ final class AdminView
         $publishedAt = $this->attr($forInput($video->publishedAt));
         $unpublishAt = $this->attr($forInput($video->unpublishAt));
 
+        $history = $this->revisionHistory(
+            (array) ($data['revisions'] ?? []),
+            (array) ($data['revisionDifferences'] ?? []),
+            $token,
+            '/admin/videos',
+            $video->id
+        );
+
         /*
          * Say what the dates currently mean, in words. A schedule is the kind
          * of setting people get wrong by one field and cannot tell from looking
@@ -612,7 +620,97 @@ final class AdminView
             <a class="btn secondary" href="/admin/videos">Cancel</a>
           </div>
         </form>
+
+        {$history}
         HTML;
+    }
+
+    /**
+     * The revision list, with what each one would put back.
+     *
+     * The differences are against the CURRENT state, not against the revision
+     * before it: the question an editor is asking is "what do I get back", and
+     * answering a different one would be worse than answering none.
+     *
+     * @param list<array<string, mixed>>      $revisions
+     * @param array<int, array<string, array{from: string, to: string}>> $differences
+     */
+    private function revisionHistory(
+        array $revisions,
+        array $differences,
+        string $token,
+        string $action,
+        int $subjectId
+    ): string {
+        if ($revisions === []) {
+            return '<h2>History</h2>
+                    <p class="muted">Nothing yet. A version is kept every time you save a change,
+                       so you can put one back.</p>';
+        }
+
+        $rows = '';
+
+        foreach ($revisions as $revision) {
+            $id = (int) $revision['id'];
+            $changes = $differences[$id] ?? [];
+
+            $summary = '';
+            foreach ($changes as $field => $change) {
+                $summary .= sprintf(
+                    '<li><strong>%s</strong>: %s &rarr; %s</li>',
+                    e(str_replace('_', ' ', (string) $field)),
+                    e(\Portal\Support\Str::truncate($change['from'], 80)),
+                    e(\Portal\Support\Str::truncate($change['to'], 80))
+                );
+            }
+
+            $summary = $summary === ''
+                ? '<p class="muted small">Identical to the current version.</p>'
+                : '<ul class="revision-changes">' . $summary . '</ul>';
+
+            $who = (string) $revision['changedBy'];
+            $who = $who === '' ? 'somebody' : $who;
+
+            $rows .= sprintf(
+                '<tr>
+                   <td>
+                     <p class="muted small">Saved by %s on %s</p>
+                     %s
+                   </td>
+                   <td class="right">
+                     <form method="post" action="%s" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <input type="hidden" name="revision" value="%d">
+                       <button name="action" value="restore-revision" class="btn tiny secondary"
+                               onclick="return confirm(\'Put this version back? The current one is kept in the history.\')"%s>Restore</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($who),
+                e((string) $revision['createdAt']),
+                $summary,
+                e($action),
+                $token,
+                $subjectId,
+                $id,
+                $changes === [] ? ' disabled' : ''
+            );
+        }
+
+        return <<<HTML
+        <h2>History</h2>
+        <p class="muted small">The last {$this->keepLimit()} versions are kept. Restoring one records
+           the current version first, so an undo can itself be undone.</p>
+        <table>
+          <tbody>{$rows}</tbody>
+        </table>
+        HTML;
+    }
+
+    private function keepLimit(): int
+    {
+        return \Portal\Content\RevisionRepository::KEEP;
     }
 
     // ----------------------------------------------------------- categories

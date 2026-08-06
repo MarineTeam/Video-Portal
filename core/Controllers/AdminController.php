@@ -8,6 +8,7 @@ use Portal\Admin\AdminView;
 use Portal\Auth\Capability;
 use Portal\Auth\UserRepository;
 use Portal\Content\CategoryRepository;
+use Portal\Content\RevisionRepository;
 use Portal\Content\ThumbnailPolicy;
 use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
@@ -123,7 +124,39 @@ final class AdminController extends Controller
             'series'         => $this->seriesRepo()->all(true),
             'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
-        ]);
+        ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
+    }
+
+    /**
+     * The history panel's data for one subject.
+     *
+     * Wrapped because on the request that applies migration 0008 the table does
+     * not exist yet, and an edit screen that 500s because a history panel could
+     * not load is a worse outcome than one without the panel.
+     *
+     * @return array{revisions: list<array<string, mixed>>, revisionDifferences: array<int, mixed>}
+     */
+    private function revisionPanel(string $subjectType, int $subjectId): array
+    {
+        try {
+            $repo = $this->revisions();
+            $revisions = $repo->forSubject($subjectType, $subjectId);
+
+            $differences = [];
+            foreach ($revisions as $revision) {
+                $differences[(int) $revision['id']] = $repo->differences(
+                    $subjectType,
+                    $subjectId,
+                    (array) $revision['data']
+                );
+            }
+
+            return ['revisions' => $revisions, 'revisionDifferences' => $differences];
+        } catch (Throwable $e) {
+            error_log('Could not load the revision history: ' . $e->getMessage());
+
+            return ['revisions' => [], 'revisionDifferences' => []];
+        }
     }
 
     public function updateVideo(Request $request): Response
@@ -193,7 +226,21 @@ final class AdminController extends Controller
                 Audit::log($this->db(), $this->user()?->email, 'video.unpublish', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video unpublished.');
 
+            case 'restore-revision':
+                return $this->restoreRevision($request, RevisionRepository::VIDEO, $id);
+
             default:
+                /*
+                 * Snapshot before the write, so the newest revision is the
+                 * state you can go back TO rather than the one you are about
+                 * to be in. Recorded here rather than in the repository
+                 * because this is where a HUMAN edit happens — the provider
+                 * sync also calls update(), and burying one editorial change
+                 * under a hundred machine writes would make the history
+                 * useless for the thing it exists to do.
+                 */
+                $this->revisions()->record(RevisionRepository::VIDEO, $id, $this->user()?->email ?? '');
+
                 /*
                  * Absent and empty are different answers.
                  *
@@ -787,7 +834,11 @@ final class AdminController extends Controller
                     Audit::log($this->db(), $this->user()?->email, 'series.delete', 'series', (string) $id);
                     return $this->back($request, 'Series deleted. Its videos were kept.');
 
+                case 'restore-revision':
+                    return $this->restoreRevision($request, RevisionRepository::SERIES, $id);
+
                 case 'update':
+                    $this->revisions()->record(RevisionRepository::SERIES, $id, $this->user()?->email ?? '');
                     $repo->update($id, [
                         'title'        => $request->input('title'),
                         'slug'         => $request->input('slug'),
@@ -1028,6 +1079,59 @@ final class AdminController extends Controller
         }
     }
 
+    private function revisions(): RevisionRepository
+    {
+        return $this->container->get(RevisionRepository::class);
+    }
+
+    /**
+     * Put a previous version back.
+     *
+     * Applied through the ordinary update path, so every validation rule still
+     * runs — a revision from before a slug became unavailable is corrected
+     * rather than written blindly. And the restore is itself snapshotted
+     * first, so undoing an undo is possible.
+     */
+    private function restoreRevision(Request $request, string $subjectType, int $subjectId): Response
+    {
+        $revision = $this->revisions()->find((int) ($request->input('revision') ?? 0));
+
+        if ($revision === null
+            || $revision['subjectType'] !== $subjectType
+            || $revision['subjectId'] !== $subjectId) {
+            // A revision id that belongs to something else is a tampered form.
+            // Nothing useful to say to it.
+            return $this->back($request, 'That version is not available.', 'error');
+        }
+
+        $this->revisions()->record($subjectType, $subjectId, $this->user()?->email ?? '');
+
+        $repository = match ($subjectType) {
+            RevisionRepository::VIDEO    => $this->container->get(VideoRepository::class),
+            RevisionRepository::CATEGORY => $this->container->get(CategoryRepository::class),
+            RevisionRepository::SERIES   => $this->seriesRepo(),
+            RevisionRepository::PLAYLIST => $this->playlistRepo(),
+            default                      => null,
+        };
+
+        if ($repository === null) {
+            return $this->back($request, 'That version is not available.', 'error');
+        }
+
+        $repository->update($subjectId, $revision['data']);
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            $subjectType . '.restore',
+            $subjectType,
+            (string) $subjectId,
+            'revision ' . $revision['id']
+        );
+
+        return $this->back($request, 'Restored that version.');
+    }
+
     private function homeRowRepo(): \Portal\Content\HomeRowRepository
     {
         return $this->container->get(\Portal\Content\HomeRowRepository::class);
@@ -1263,7 +1367,11 @@ final class AdminController extends Controller
                     Audit::log($this->db(), $this->user()?->email, 'category.delete', 'category', (string) $id);
                     return $this->back($request, 'Category deleted. Its videos were not removed.');
 
+                case 'restore-revision':
+                    return $this->restoreRevision($request, RevisionRepository::CATEGORY, $id);
+
                 case 'update':
+                    $this->revisions()->record(RevisionRepository::CATEGORY, $id, $this->user()?->email ?? '');
                     $categories->update($id, [
                         'name'           => $request->input('name'),
                         'slug'           => $request->input('slug'),

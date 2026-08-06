@@ -2191,6 +2191,194 @@ check(
     'a banner survived its own deletion'
 );
 
+echo "\nRevision history\n";
+
+/*
+ * Driven through the edit form, because the snapshot is taken by the admin
+ * handler rather than by the repository — deliberately, so the provider sync
+ * does not bury one editorial change under a hundred machine writes. A test at
+ * the repository level would prove nothing about that split.
+ */
+/*
+ * Counted relative to a baseline rather than from zero. Earlier sections
+ * already edited this video several times, so an absolute count would be
+ * asserting the length of the whole script rather than anything about
+ * revisions — and would break every time a check was added above.
+ */
+$revisionsBefore = (int) $db->value(
+    'SELECT COUNT(*) FROM {revisions} WHERE subject_type = ? AND subject_id = ?',
+    ['video', $videoRow]
+);
+
+$historyBefore = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The edit screen has a history panel', str_contains($historyBefore['body'], 'History'));
+
+$revisionFields = [
+    '_token'         => csrfFrom($historyBefore['body']),
+    'id'             => (string) $videoRow,
+    'action'         => 'save',
+    'categories'     => [(string) $categoryRow],
+    'thumbnail_mode' => 'default',
+    'watermark_mode' => 'default',
+    '_whole_form'    => '1',
+];
+
+postWithJar($baseUrl . '/admin/videos', $revisionFields + ['title' => 'A Renamed Video'], $jar);
+
+check(
+    'Saving records the previous version',
+    (int) $db->value('SELECT COUNT(*) FROM {revisions} WHERE subject_type = ? AND subject_id = ?',
+        ['video', $videoRow]) === $revisionsBefore + 1,
+    'nothing was snapshotted'
+);
+check(
+    'and it holds the title as it was BEFORE the edit',
+    str_contains(
+        (string) $db->value(
+            'SELECT data FROM {revisions} WHERE subject_type = ? AND subject_id = ? ORDER BY id DESC LIMIT 1',
+            ['video', $videoRow]
+        ),
+        'A Test Video'
+    ),
+    'the snapshot was taken after the write, so restoring would change nothing'
+);
+
+/*
+ * Captured NOW, while it is unambiguous which version this is.
+ *
+ * By subject, because the newest row in the whole table belongs to whichever
+ * thing was edited last — a series, from a section far above. And before the
+ * idle saves below, because each of those adds a version too and the newest
+ * would then be the state we are already in, making Restore a no-op that reads
+ * as a broken button.
+ */
+$revisionId = (int) $db->value(
+    'SELECT id FROM {revisions} WHERE subject_type = ? AND subject_id = ? ORDER BY id DESC LIMIT 1',
+    ['video', $videoRow]
+);
+
+$historyAfter = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The panel lists the version', str_contains($historyAfter['body'], 'Saved by'));
+check(
+    'and says what restoring would change',
+    str_contains($historyAfter['body'], 'A Renamed Video') && str_contains($historyAfter['body'], 'A Test Video'),
+    'a version with no description of what it does is one nobody will press'
+);
+
+/*
+ * Two more saves that change nothing.
+ *
+ * The first still records, correctly: the newest stored version is the state
+ * from BEFORE the rename, so a snapshot of the current state is genuinely new.
+ * The second has nothing left to add, and that is where the guard bites —
+ * without it, an editor who opens a form and presses Save all afternoon would
+ * flush the real history out one row at a time.
+ */
+postWithJar($baseUrl . '/admin/videos', $revisionFields + ['title' => 'A Renamed Video'], $jar);
+$afterFirstIdleSave = (int) $db->value(
+    'SELECT COUNT(*) FROM {revisions} WHERE subject_type = ? AND subject_id = ?',
+    ['video', $videoRow]
+);
+
+postWithJar($baseUrl . '/admin/videos', $revisionFields + ['title' => 'A Renamed Video'], $jar);
+
+check(
+    'Repeated identical saves stop recording',
+    (int) $db->value('SELECT COUNT(*) FROM {revisions} WHERE subject_type = ? AND subject_id = ?',
+        ['video', $videoRow]) === $afterFirstIdleSave,
+    'an idle Save would eventually flush the real history out'
+);
+
+$restored = postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($historyAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'restore-revision',
+    'revision' => (string) $revisionId,
+], $jar);
+
+/*
+ * The status alone proves nothing: the refusal path also answers 302, because
+ * back() is how both outcomes return. So the assertion is on the data.
+ */
+check('Restoring answers with a redirect', $restored['status'] === 302, "got {$restored['status']}");
+check(
+    'and the old title is back',
+    (string) $db->value('SELECT title FROM {videos} WHERE id = ?', [$videoRow]) === 'A Test Video',
+    'the button did nothing'
+);
+/*
+ * The claim is that an undo can itself be undone — not that a row was added.
+ *
+ * Counting was the wrong way to check it: the state before this restore was
+ * already the newest stored version, so the dedup correctly declined to store
+ * a second copy. The version needed to go forward again is still there, which
+ * is the property that matters.
+ */
+check(
+    'The state before the restore is still recoverable',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {revisions}
+          WHERE subject_type = ? AND subject_id = ? AND data LIKE ?',
+        ['video', $videoRow, '%A Renamed Video%']
+    ) > 0,
+    'an undo that cannot be undone'
+);
+
+/* A revision id belonging to something else is a tampered form. */
+$otherCategoryRevision = $db->insert('revisions', [
+    'subject_type' => 'category',
+    'subject_id'   => $categoryRow,
+    'data'         => '{"name":"Hijacked"}',
+    'changed_by'   => 'smoke',
+    'created_at'   => date('Y-m-d H:i:s'),
+]);
+
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($historyAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'restore-revision',
+    'revision' => (string) $otherCategoryRevision,
+], $jar);
+
+check(
+    'A revision belonging to something else is refused',
+    (string) $db->value('SELECT title FROM {videos} WHERE id = ?', [$videoRow]) === 'A Test Video',
+    'a tampered form restored one thing onto another'
+);
+
+$db->execute('DELETE FROM {revisions} WHERE id = ?', [$otherCategoryRevision]);
+
+/* Categories keep history too. */
+$categoryEditForHistory = getWithJar($baseUrl . '/admin/categories/' . $categoryRow, $jar);
+
+postWithJar($baseUrl . '/admin/categories', [
+    '_token'         => csrfFrom($categoryEditForHistory['body']),
+    'id'             => (string) $categoryRow,
+    'action'         => 'update',
+    'name'           => 'Renamed Sermons',
+    'is_published'   => '1',
+    'thumbnail_mode' => 'default',
+], $jar);
+
+check(
+    'Categories are versioned too',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {revisions} WHERE subject_type = ? AND subject_id = ?',
+        ['category', $categoryRow]
+    ) > 0,
+    'only videos have history'
+);
+
+/* Put the name back, so later checks see the category they expect. */
+postWithJar($baseUrl . '/admin/categories', [
+    '_token'         => csrfFrom($categoryEditForHistory['body']),
+    'id'             => (string) $categoryRow,
+    'action'         => 'update',
+    'name'           => 'Sermons',
+    'is_published'   => '1',
+    'thumbnail_mode' => 'default',
+], $jar);
+
 echo "\nHomepage rows\n";
 
 /*
