@@ -53,6 +53,18 @@ final class SearchQuery
     public const WEIGHT_DESCRIPTION  = 3;
 
     /**
+     * Below description, on purpose.
+     *
+     * A transcript is tens of thousands of words, so almost every common word
+     * appears in almost every one. Weighting it near a title would make the
+     * ranking meaningless — every search would return the whole library in
+     * arbitrary order. Low weight means transcripts BREAK TIES and surface
+     * videos nothing else matched, which is what they are for: finding the
+     * sermon where somebody said a particular phrase.
+     */
+    public const WEIGHT_TRANSCRIPT   = 2;
+
+    /**
      * Split a raw query into terms.
      *
      * A double-quoted run is kept whole, so `"sermon on the mount"` is one term
@@ -136,6 +148,7 @@ final class SearchQuery
         $speaker = mb_strtolower((string) ($fields['speaker'] ?? ''));
         $series = mb_strtolower((string) ($fields['series'] ?? ''));
         $categories = mb_strtolower((string) ($fields['categories'] ?? ''));
+        $transcript = mb_strtolower((string) ($fields['transcript'] ?? ''));
 
         $score = 0;
 
@@ -171,6 +184,9 @@ final class SearchQuery
             if (str_contains($description, $term)) {
                 $score += self::WEIGHT_DESCRIPTION;
             }
+            if ($transcript !== '' && str_contains($transcript, $term)) {
+                $score += self::WEIGHT_TRANSCRIPT;
+            }
         }
 
         return $score;
@@ -199,6 +215,7 @@ final class SearchQuery
             (string) ($fields['speaker'] ?? ''),
             (string) ($fields['series'] ?? ''),
             (string) ($fields['categories'] ?? ''),
+            (string) ($fields['transcript'] ?? ''),
         ]));
 
         foreach ($terms as $term) {

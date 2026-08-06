@@ -2191,6 +2191,124 @@ check(
     'a banner survived its own deletion'
 );
 
+echo "\nTranscripts\n";
+
+$transcriptEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The edit screen offers a transcript import', str_contains($transcriptEdit['body'], 'name="transcript"'));
+check('It accepts a file as well as a paste', str_contains($transcriptEdit['body'], 'name="transcript_file"'));
+check(
+    'It says why a transcript is weighted low in search',
+    str_contains($transcriptEdit['body'], 'weighted well below a title'),
+    'an editor cannot tell whether importing one will wreck their search results'
+);
+
+$vtt = "WEBVTT\n\n"
+     . "00:00:01.000 --> 00:00:04.000\nWelcome to the recording.\n\n"
+     . "00:00:04.000 --> 00:00:09.000\nToday we are talking about perseverance.\n\n"
+     . "00:00:09.000 --> 00:00:14.000\nA word that appears nowhere else on this site.\n";
+
+$imported = postWithJar($baseUrl . '/admin/videos', [
+    '_token'            => csrfFrom($transcriptEdit['body']),
+    'id'                => (string) $videoRow,
+    'action'            => 'transcript',
+    'transcript'        => $vtt,
+    'transcript_source' => 'the smoke test',
+], $jar);
+
+check('Importing succeeds', $imported['status'] === 302, "got {$imported['status']}");
+check(
+    'Three lines were stored',
+    (int) $db->value('SELECT cue_count FROM {transcripts} WHERE video_id = ?', [$videoRow]) === 3,
+    'the parse produced a different number of cues than the file contains'
+);
+check(
+    'and the cues went in too',
+    (int) $db->value('SELECT COUNT(*) FROM {transcript_cues} WHERE video_id = ?', [$videoRow]) === 3,
+    'the summary row and the cues disagree'
+);
+
+$transcriptAfter = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The panel reports what was imported', str_contains($transcriptAfter['body'], 'the smoke test'));
+
+/* The panel on the watch page — the half a viewer actually sees. */
+$watchWithTranscript = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'The transcript appears under the video',
+    str_contains($watchWithTranscript['body'], 'id="transcript"'),
+    'imported and invisible'
+);
+check('It shows the lines', str_contains($watchWithTranscript['body'], 'Today we are talking about perseverance'));
+check(
+    'Each line links to its moment',
+    str_contains($watchWithTranscript['body'], '?t=9#transcript'),
+    'a transcript nobody can navigate is a wall of text'
+);
+
+/*
+ * The point of indexing one: finding the recording where somebody said a
+ * particular thing, when nothing else on the video mentions it.
+ */
+$spokenSearch = get($baseUrl . '/search?q=perseverance');
+check(
+    'A word only said aloud finds the video',
+    str_contains($spokenSearch['body'], 'A Test Video'),
+    'the transcript is stored and not searched'
+);
+
+$timestampSearch = get($baseUrl . '/search?q=00%3A00%3A04');
+check(
+    'Timestamps are not searchable',
+    !str_contains($timestampSearch['body'], 'A Test Video'),
+    'every transcript would match a query like "2026"'
+);
+
+/* Importing again replaces rather than appends. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'     => csrfFrom($transcriptAfter['body']),
+    'id'         => (string) $videoRow,
+    'action'     => 'transcript',
+    'transcript' => "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nA completely different take.\n",
+], $jar);
+
+check(
+    'Importing again replaces the old one',
+    (int) $db->value('SELECT COUNT(*) FROM {transcript_cues} WHERE video_id = ?', [$videoRow]) === 1,
+    'two takes of one recording are now interleaved'
+);
+
+/* Something that is not a subtitle file is refused, and changes nothing. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'     => csrfFrom($transcriptAfter['body']),
+    'id'         => (string) $videoRow,
+    'action'     => 'transcript',
+    'transcript' => "Here is a paragraph somebody pasted by mistake.\n\nAnd another.",
+], $jar);
+
+check(
+    'A file with no timestamps is refused',
+    (int) $db->value('SELECT COUNT(*) FROM {transcript_cues} WHERE video_id = ?', [$videoRow]) === 1,
+    'prose was stored as a transcript'
+);
+
+/* Removing it takes both tables with it. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($transcriptAfter['body']),
+    'id'     => (string) $videoRow,
+    'action' => 'transcript-delete',
+], $jar);
+
+check(
+    'Removing a transcript clears both tables',
+    (int) $db->value('SELECT COUNT(*) FROM {transcripts} WHERE video_id = ?', [$videoRow]) === 0
+        && (int) $db->value('SELECT COUNT(*) FROM {transcript_cues} WHERE video_id = ?', [$videoRow]) === 0,
+    'the cues outlived the transcript'
+);
+check(
+    'and the video stops matching what was said in it',
+    !str_contains(get($baseUrl . '/search?q=perseverance')['body'], 'A Test Video'),
+    'search still matches a transcript that has been removed'
+);
+
 echo "\nRevision history\n";
 
 /*

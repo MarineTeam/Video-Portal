@@ -332,6 +332,40 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
  * The subscribe box. Set apart from the listing above it with a rule rather
  * than a panel, so it reads as a footer to the page and not as another card.
  */
+/*
+ * The transcript. Scrolls within itself rather than pushing the rest of the
+ * page down — an hour of speech is a few thousand lines.
+ */
+.transcript { margin-top: 2.5rem; max-width: 48rem; }
+.transcript > summary {
+  cursor: pointer;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  padding: .5rem 0;
+}
+.transcript-lines {
+  list-style: none;
+  margin: .75rem 0 0;
+  padding: 0 .25rem 0 0;
+  max-height: 28rem;
+  overflow-y: auto;
+}
+.transcript-lines li {
+  display: flex;
+  gap: .75rem;
+  padding: .3125rem 0;
+  line-height: 1.55;
+}
+.transcript-time {
+  flex: 0 0 3.5rem;
+  font-variant-numeric: tabular-nums;
+  font-size: .8125rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding-top: .125rem;
+}
+.transcript-time:hover { color: inherit; }
+
 .subscribe {
   margin-top: 3rem;
   padding-top: 2rem;

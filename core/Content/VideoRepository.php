@@ -204,8 +204,16 @@ final class VideoRepository
                  * there would duplicate a video once per category and the
                  * DISTINCT would then have to fight the score column.
                  */
+                /*
+                 * Transcripts are joined rather than sub-queried for the same
+                 * reason as speakers: one row per video at most. The body is a
+                 * MEDIUMTEXT, so this is the one join here that carries real
+                 * weight — worth it, because the alternative is an EXISTS
+                 * evaluated once per term per row.
+                 */
                 $join .= ' LEFT JOIN {speakers} sp ON sp.id = v.speaker_id'
-                       . ' LEFT JOIN {series} se ON se.id = v.series_id';
+                       . ' LEFT JOIN {series} se ON se.id = v.series_id'
+                       . ' LEFT JOIN {transcripts} tr ON tr.video_id = v.id';
 
                 $categoryExists =
                     'EXISTS (SELECT 1 FROM {video_categories} vcs
@@ -237,9 +245,10 @@ final class VideoRepository
                         OR LOWER(v.description) LIKE ?
                         OR LOWER(sp.name) LIKE ?
                         OR LOWER(se.title) LIKE ?
+                        OR LOWER(tr.body) LIKE ?
                         OR ' . $categoryExists . ')';
 
-                    array_push($params, $contains, $contains, $contains, $contains, $contains);
+                    array_push($params, $contains, $contains, $contains, $contains, $contains, $contains);
 
                     $parts[] = '(CASE
                         WHEN LOWER(v.title) LIKE ? THEN ' . SearchQuery::WEIGHT_TITLE_PREFIX . '
@@ -261,6 +270,10 @@ final class VideoRepository
 
                     $parts[] = '(CASE WHEN LOWER(v.description) LIKE ? THEN '
                         . SearchQuery::WEIGHT_DESCRIPTION . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN LOWER(tr.body) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_TRANSCRIPT . ' ELSE 0 END)';
                     $scoreParams[] = $contains;
                 }
 

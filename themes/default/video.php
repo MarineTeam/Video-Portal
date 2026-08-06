@@ -133,6 +133,41 @@ $csrfField ??= '';
   </p>
 <?php endif ?>
 
+<?php
+/*
+ * The transcript.
+ *
+ * Collapsed by default: it can run to thousands of lines, and a page that
+ * opens two screens below the video is worse than one where the transcript is
+ * a click away. <details> does that with no JavaScript at all, and the browser
+ * still finds text inside a closed one when somebody uses Ctrl+F.
+ */
+$transcript ??= [];
+?>
+<?php if ($transcript !== []): ?>
+  <details class="transcript" id="transcript">
+    <summary>Transcript<span class="muted"> · <?= count($transcript) ?> lines</span></summary>
+
+    <ol class="transcript-lines">
+      <?php foreach ($transcript as $cue): ?>
+        <li>
+          <?php
+          /*
+           * The timestamp is a link to the same page with ?t=seconds rather
+           * than a button that seeks. Seeking inside a cross-origin player
+           * needs JavaScript and the provider's own protocol; a link works
+           * now, is shareable, and survives that being added later.
+           */
+          ?>
+          <a class="transcript-time"
+             href="?t=<?= (int) $cue['start'] ?>#transcript"><?= e(\Portal\Support\Str::duration((int) $cue['start'])) ?></a>
+          <span><?= e($cue['text']) ?></span>
+        </li>
+      <?php endforeach ?>
+    </ol>
+  </details>
+<?php endif ?>
+
 <?php do_action('after_video', $video) ?>
 
 <?php if ($related !== []): ?>

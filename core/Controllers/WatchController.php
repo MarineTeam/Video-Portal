@@ -100,6 +100,7 @@ final class WatchController extends Controller
                 // Which of this viewer's lists the video is already on, so the
                 // buttons can say "Saved" rather than offering to save
                 // something that is already there.
+                'transcript' => $this->transcriptCues($video->id),
                 'savedLists' => $this->savedLists($video->id),
                 'saveAction' => '/saved',
                 'csrfField'  => '<input type="hidden" name="_token" value="'
@@ -108,6 +109,26 @@ final class WatchController extends Controller
                 'backUrl' => '/',
             ]
         );
+    }
+
+    /**
+     * The transcript, if there is one.
+     *
+     * @return list<array{start: int, end: int, text: string}>
+     */
+    private function transcriptCues(int $videoId): array
+    {
+        try {
+            return $this->container
+                ->get(\Portal\Content\TranscriptRepository::class)
+                ->cues($videoId);
+        } catch (Throwable $e) {
+            // A transcript is an addition to the page, not the page. Losing it
+            // must never cost somebody the video.
+            error_log('Could not read the transcript: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /**

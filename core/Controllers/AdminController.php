@@ -124,6 +124,7 @@ final class AdminController extends Controller
             'series'         => $this->seriesRepo()->all(true),
             'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
+            'transcript'     => $this->transcriptSummary($video->id),
         ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
     }
 
@@ -136,6 +137,26 @@ final class AdminController extends Controller
      *
      * @return array{revisions: list<array<string, mixed>>, revisionDifferences: array<int, mixed>}
      */
+    /**
+     * The transcript summary for the edit screen, or null.
+     *
+     * Wrapped for the same reason as the revision panel: on the request that
+     * applies migration 0009 the table does not exist yet, and an edit screen
+     * that 500s because of a summary line is worse than one without it.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function transcriptSummary(int $videoId): ?array
+    {
+        try {
+            return $this->transcripts()->find($videoId);
+        } catch (Throwable $e) {
+            error_log('Could not read the transcript: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
     private function revisionPanel(string $subjectType, int $subjectId): array
     {
         try {
@@ -228,6 +249,14 @@ final class AdminController extends Controller
 
             case 'restore-revision':
                 return $this->restoreRevision($request, RevisionRepository::VIDEO, $id);
+
+            case 'transcript':
+                return $this->saveTranscript($request, $id);
+
+            case 'transcript-delete':
+                $this->transcripts()->delete($id);
+                Audit::log($this->db(), $this->user()?->email, 'transcript.delete', 'video', (string) $id);
+                return $this->back($request, 'Transcript removed.');
 
             default:
                 /*
@@ -1082,6 +1111,76 @@ final class AdminController extends Controller
     private function revisions(): RevisionRepository
     {
         return $this->container->get(RevisionRepository::class);
+    }
+
+    private function transcripts(): \Portal\Content\TranscriptRepository
+    {
+        return $this->container->get(\Portal\Content\TranscriptRepository::class);
+    }
+
+    /**
+     * Import a transcript, from an uploaded file or pasted text.
+     *
+     * Both, because both are how people have it: a .vtt from a captioning
+     * service, or text copied out of a transcription tool. Offering only one
+     * means the other person converts a file by hand or does not bother.
+     *
+     * The parse happens before anything is stored and the count is reported
+     * back. A file that produced two cues out of an expected four hundred is a
+     * broken import, and the number is the only way anybody finds out — the
+     * panel would otherwise just look short.
+     */
+    private function saveTranscript(Request $request, int $videoId): Response
+    {
+        $raw = (string) ($request->input('transcript') ?? '');
+
+        $upload = $_FILES['transcript_file'] ?? null;
+
+        if (is_array($upload)
+            && (int) ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK
+            && is_uploaded_file((string) $upload['tmp_name'])) {
+            /*
+             * A ceiling before reading. A subtitle file is measured in
+             * kilobytes; anything past a few megabytes is not one, and reading
+             * it to find that out is how a shared host runs out of memory.
+             */
+            if ((int) ($upload['size'] ?? 0) > 8 * 1024 * 1024) {
+                return $this->back($request, 'That file is too large to be a transcript.', 'error');
+            }
+
+            $contents = file_get_contents((string) $upload['tmp_name']);
+
+            if ($contents !== false) {
+                // The file wins when both are given: somebody who attached one
+                // meant the file, and the textarea may still hold the previous
+                // transcript the form rendered.
+                $raw = $contents;
+            }
+        }
+
+        if (trim($raw) === '') {
+            return $this->back($request, 'There was nothing to import.', 'error');
+        }
+
+        $cues = \Portal\Content\TranscriptParser::parse($raw);
+
+        if ($cues === []) {
+            return $this->back(
+                $request,
+                'No timed lines could be read from that. It needs to be WebVTT or SubRip.',
+                'error'
+            );
+        }
+
+        $stored = $this->transcripts()->replace(
+            $videoId,
+            $cues,
+            trim((string) ($request->input('transcript_source') ?? ''))
+        );
+
+        Audit::log($this->db(), $this->user()?->email, 'transcript.import', 'video', (string) $videoId, (string) $stored);
+
+        return $this->back($request, sprintf('Imported %d line(s).', $stored));
     }
 
     /**

@@ -461,6 +461,12 @@ final class AdminView
         $publishedAt = $this->attr($forInput($video->publishedAt));
         $unpublishAt = $this->attr($forInput($video->unpublishAt));
 
+        $transcriptPanel = $this->transcriptPanel(
+            isset($data['transcript']) && is_array($data['transcript']) ? $data['transcript'] : null,
+            $token,
+            $video->id
+        );
+
         $history = $this->revisionHistory(
             (array) ($data['revisions'] ?? []),
             (array) ($data['revisionDifferences'] ?? []),
@@ -621,7 +627,73 @@ final class AdminView
           </div>
         </form>
 
+        {$transcriptPanel}
+
         {$history}
+        HTML;
+    }
+
+    /**
+     * Importing a transcript.
+     *
+     * A separate form from the video's own, and enctype multipart, because a
+     * subtitle file is what people have — a captioning service hands you a
+     * .vtt and a transcription tool hands you text. Offering only one of the
+     * two means the other person converts a file by hand or does not bother.
+     *
+     * @param array<string, mixed>|null $transcript
+     */
+    private function transcriptPanel(?array $transcript, string $token, int $videoId): string
+    {
+        $current = '<p class="muted">No transcript yet.</p>';
+
+        if ($transcript !== null) {
+            $source = (string) ($transcript['source'] ?? '');
+            $current = sprintf(
+                '<p class="muted">%d line(s)%s, updated %s.</p>
+                 <form method="post" class="inline">
+                   <input type="hidden" name="_token" value="%s">
+                   <input type="hidden" name="id" value="%d">
+                   <button name="action" value="transcript-delete" class="btn tiny danger"
+                           onclick="return confirm(\'Remove this transcript?\')">Remove</button>
+                 </form>',
+                (int) ($transcript['cue_count'] ?? 0),
+                $source === '' ? '' : ' from ' . e($source),
+                e((string) ($transcript['updated_at'] ?? '')),
+                $token,
+                $videoId
+            );
+        }
+
+        return <<<HTML
+        <h2>Transcript</h2>
+        {$current}
+
+        <form method="post" action="/admin/videos" enctype="multipart/form-data">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$videoId}">
+
+          <fieldset>
+            <legend>Import</legend>
+            <p class="muted small">WebVTT or SubRip. Upload the file, or paste it below — whichever
+               you have. Importing replaces whatever is there now; two transcripts of one recording
+               are one mistake rather than something to merge.</p>
+
+            <label>File <input type="file" name="transcript_file" accept=".vtt,.srt,text/vtt,text/plain"></label>
+            <label>or paste it <textarea name="transcript" rows="6"
+                     placeholder="WEBVTT&#10;&#10;00:00:01.000 --> 00:00:04.000&#10;The first thing said."></textarea></label>
+            <label>Where it came from
+              <input type="text" name="transcript_source" placeholder="Whisper, the captioner, typed by hand">
+            </label>
+
+            <button class="btn" name="action" value="transcript">Import</button>
+          </fieldset>
+        </form>
+
+        <p class="muted small">A transcript is searchable, and a search that matches one shows the
+           moment the words were said. It is weighted well below a title on purpose: a transcript is
+           tens of thousands of words, so almost every common word is in almost every one, and
+           ranking it higher would return the whole library in arbitrary order.</p>
         HTML;
     }
 
