@@ -332,6 +332,26 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
  * The subscribe box. Set apart from the listing above it with a rule rather
  * than a panel, so it reads as a footer to the page and not as another card.
  */
+/* Chapters: a handful of links, the fastest way into a long recording. */
+.chapters { margin-top: 2.5rem; max-width: 48rem; }
+.chapter-list { list-style: none; margin: 0; padding: 0; }
+.chapter-list li { border-bottom: 1px solid rgb(148 163 184 / .14); }
+.chapter-list a {
+  display: flex;
+  gap: .75rem;
+  padding: .5rem .25rem;
+  text-decoration: none;
+  color: inherit;
+}
+.chapter-list a:hover { background: rgb(148 163 184 / .08); }
+.chapter-time {
+  flex: 0 0 3.5rem;
+  font-variant-numeric: tabular-nums;
+  font-size: .8125rem;
+  color: var(--text-muted);
+  padding-top: .125rem;
+}
+
 /*
  * The transcript. Scrolls within itself rather than pushing the rest of the
  * page down — an hour of speech is a few thousand lines.

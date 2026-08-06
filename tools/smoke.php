@@ -2191,6 +2191,80 @@ check(
     'a banner survived its own deletion'
 );
 
+echo "\nChapters\n";
+
+$chapterEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The edit screen offers a chapter list', str_contains($chapterEdit['body'], 'name="chapters"'));
+
+$savedChapters = postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($chapterEdit['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'chapters',
+    'chapters' => "Chapters:\n0:00 Welcome\n2:15 The reading from Psalm 1:1\n14:30 Questions",
+], $jar);
+
+check('Saving chapters succeeds', $savedChapters['status'] === 302, "got {$savedChapters['status']}");
+check(
+    'Three were stored, and the heading line was skipped',
+    (int) $db->value('SELECT COUNT(*) FROM {chapters} WHERE video_id = ?', [$videoRow]) === 3,
+    'a heading above the list cost somebody their chapters'
+);
+check(
+    'A time inside a title stayed a title',
+    (string) $db->value('SELECT title FROM {chapters} WHERE video_id = ? AND start_at = 135', [$videoRow])
+        === 'The reading from Psalm 1:1',
+    'a scripture reference was read as a marker'
+);
+
+$chapterEditAfter = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check(
+    'The box shows the list in the shape it was typed',
+    str_contains($chapterEditAfter['body'], '2:15 The reading'),
+    'changing one title would mean rebuilding the list'
+);
+
+$watchWithChapters = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check('Chapters appear under the video', str_contains($watchWithChapters['body'], 'id="chapters-heading"'));
+check('They are listed', str_contains($watchWithChapters['body'], 'Questions'));
+check(
+    'Each one links to its moment',
+    str_contains($watchWithChapters['body'], '?t=870'),
+    'a chapter nobody can click is a caption'
+);
+
+/* Text with no timestamps at all is a format mistake, and says so. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($chapterEditAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'chapters',
+    'chapters' => "Welcome\nThe reading\nQuestions",
+], $jar);
+
+check(
+    'A list with no timestamps changes nothing',
+    (int) $db->value('SELECT COUNT(*) FROM {chapters} WHERE video_id = ?', [$videoRow]) === 3,
+    'a mistyped list silently wiped the real one'
+);
+
+/* Emptying the box is how somebody removes them. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($chapterEditAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'chapters',
+    'chapters' => '',
+], $jar);
+
+check(
+    'Emptying the box removes them',
+    (int) $db->value('SELECT COUNT(*) FROM {chapters} WHERE video_id = ?', [$videoRow]) === 0,
+    'there is no way to take chapters off a video'
+);
+check(
+    'and the video page stops showing the section',
+    !str_contains(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body'], 'id="chapters-heading"'),
+    'an empty chapter heading is left behind'
+);
+
 echo "\nTranscripts\n";
 
 $transcriptEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);

@@ -135,6 +135,32 @@ $csrfField ??= '';
 
 <?php
 /*
+ * Chapters.
+ *
+ * Above the transcript and not collapsed: there are a handful of them, they
+ * are the fastest way into a long recording, and hiding the thing somebody
+ * came for behind a click is the wrong default.
+ */
+$chapters ??= [];
+?>
+<?php if ($chapters !== []): ?>
+  <section class="chapters" aria-labelledby="chapters-heading">
+    <h2 class="section-title" id="chapters-heading">Chapters</h2>
+    <ol class="chapter-list">
+      <?php foreach ($chapters as $chapter): ?>
+        <li>
+          <a href="?t=<?= (int) $chapter['start'] ?>">
+            <span class="chapter-time"><?= e(\Portal\Support\Str::duration((int) $chapter['start'])) ?></span>
+            <span><?= e($chapter['title']) ?></span>
+          </a>
+        </li>
+      <?php endforeach ?>
+    </ol>
+  </section>
+<?php endif ?>
+
+<?php
+/*
  * The transcript.
  *
  * Collapsed by default: it can run to thousands of lines, and a page that

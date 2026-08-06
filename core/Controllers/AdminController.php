@@ -125,6 +125,7 @@ final class AdminController extends Controller
             'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
             'transcript'     => $this->transcriptSummary($video->id),
+            'chapters'       => $this->chapterText($video->id),
         ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
     }
 
@@ -154,6 +155,26 @@ final class AdminController extends Controller
             error_log('Could not read the transcript: ' . $e->getMessage());
 
             return null;
+        }
+    }
+
+    /**
+     * The chapter list as text, in the shape it was typed.
+     *
+     * So changing one title does not mean rebuilding the list. Wrapped for the
+     * same reason as the other two panels: on the request that applies
+     * migration 0010 the table does not exist yet.
+     */
+    private function chapterText(int $videoId): string
+    {
+        try {
+            return \Portal\Content\ChapterParser::toText(
+                $this->container->get(\Portal\Content\ChapterRepository::class)->forVideo($videoId)
+            );
+        } catch (Throwable $e) {
+            error_log('Could not read the chapters: ' . $e->getMessage());
+
+            return '';
         }
     }
 
@@ -252,6 +273,38 @@ final class AdminController extends Controller
 
             case 'transcript':
                 return $this->saveTranscript($request, $id);
+
+            case 'chapters':
+                $submitted = trim((string) ($request->input('chapters') ?? ''));
+                $chapters = \Portal\Content\ChapterParser::parse($submitted);
+
+                /*
+                 * Checked BEFORE the write, not after.
+                 *
+                 * An empty box is a legitimate answer — that is how somebody
+                 * removes chapters. Text that produced nothing is a format
+                 * mistake, and the first version of this refused it with a
+                 * message after having already replaced the list with the
+                 * empty one. The message was right and the damage was done:
+                 * one mistyped save silently wiped a real list.
+                 */
+                if ($chapters === [] && $submitted !== '') {
+                    return $this->back(
+                        $request,
+                        'No chapters could be read from that, so nothing was changed. Each line needs a timestamp first, like "2:15 The reading".',
+                        'error'
+                    );
+                }
+
+                $stored = $this->container
+                    ->get(\Portal\Content\ChapterRepository::class)
+                    ->replace($id, $chapters);
+
+                Audit::log($this->db(), $this->user()?->email, 'chapters.save', 'video', (string) $id, (string) $stored);
+
+                return $this->back($request, $stored === 0
+                    ? 'Chapters cleared.'
+                    : sprintf('Saved %d chapter(s).', $stored));
 
             case 'transcript-delete':
                 $this->transcripts()->delete($id);

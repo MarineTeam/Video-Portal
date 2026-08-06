@@ -100,6 +100,7 @@ final class WatchController extends Controller
                 // Which of this viewer's lists the video is already on, so the
                 // buttons can say "Saved" rather than offering to save
                 // something that is already there.
+                'chapters'   => $this->chapters($video->id),
                 'transcript' => $this->transcriptCues($video->id),
                 'savedLists' => $this->savedLists($video->id),
                 'saveAction' => '/saved',
@@ -109,6 +110,25 @@ final class WatchController extends Controller
                 'backUrl' => '/',
             ]
         );
+    }
+
+    /**
+     * The chapters, if there are any.
+     *
+     * @return list<array{start: int, title: string}>
+     */
+    private function chapters(int $videoId): array
+    {
+        try {
+            return $this->container
+                ->get(\Portal\Content\ChapterRepository::class)
+                ->forVideo($videoId);
+        } catch (Throwable $e) {
+            // Navigation aids are an addition to the page, not the page.
+            error_log('Could not read the chapters: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /**

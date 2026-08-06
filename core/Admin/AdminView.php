@@ -461,6 +461,12 @@ final class AdminView
         $publishedAt = $this->attr($forInput($video->publishedAt));
         $unpublishAt = $this->attr($forInput($video->unpublishAt));
 
+        $chapterPanel = $this->chapterPanel(
+            (string) ($data['chapters'] ?? ''),
+            $token,
+            $video->id
+        );
+
         $transcriptPanel = $this->transcriptPanel(
             isset($data['transcript']) && is_array($data['transcript']) ? $data['transcript'] : null,
             $token,
@@ -627,9 +633,48 @@ final class AdminView
           </div>
         </form>
 
+        {$chapterPanel}
+
         {$transcriptPanel}
 
         {$history}
+        HTML;
+    }
+
+    /**
+     * Chapters, edited as text.
+     *
+     * A textarea rather than a row-at-a-time form because the input format is
+     * the one people already have — a list pasted from anywhere else works
+     * unchanged, and somebody starting from nothing types it faster than they
+     * could operate an interface.
+     */
+    private function chapterPanel(string $chapters, string $token, int $videoId): string
+    {
+        $value = e($chapters);
+
+        return <<<HTML
+        <h2>Chapters</h2>
+
+        <form method="post" action="/admin/videos">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$videoId}">
+
+          <fieldset>
+            <legend>Moments worth jumping to</legend>
+            <p class="muted small">One per line, timestamp first — the same shape you would paste into
+               a video description elsewhere. Empty the box to remove them.</p>
+
+            <label class="visually-hidden" for="chapters">Chapters</label>
+            <textarea id="chapters" name="chapters" rows="6"
+                      placeholder="0:00 Welcome&#10;2:15 The reading&#10;14:30 Questions">{$value}</textarea>
+
+            <p class="muted small">A line without a timestamp at the front is skipped, so a heading
+               above the list is harmless. A title containing a time — "Psalm 1:1" — stays a title.</p>
+
+            <button class="btn" name="action" value="chapters">Save chapters</button>
+          </fieldset>
+        </form>
         HTML;
     }
 
