@@ -217,6 +217,7 @@ $transcript ??= [];
 <div id="portal-player-data"
      data-video-id="<?= (int) $video['id'] ?>"
      data-resume-at="<?= (int) ($video['resumeAt'] ?? 0) ?>"
+     data-start-at="<?= (int) ($video['startAt'] ?? 0) ?>"
      hidden></div>
 
 <script src="<?= e($assetsUrl ?? '/theme-asset/default') ?>/player.js" defer></script>

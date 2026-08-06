@@ -88,6 +88,17 @@ final class WatchController extends Controller
                     'recordedAt'  => $this->formatDate($video->recordedAt),
                     'resumeAt'    => $this->resumePosition($video->id),
                     /*
+                     * An explicit moment from a link, which beats resume.
+                     *
+                     * Somebody who followed a chapter or a transcript line
+                     * asked for that moment; putting them back where they left
+                     * off instead would ignore what they clicked. Clamped
+                     * rather than trusted: the value is in a URL anybody can
+                     * edit, and a negative or absurd number handed to the
+                     * player is a seek to nowhere.
+                     */
+                    'startAt'     => $this->startPosition($request, $video->duration),
+                    /*
                      * The embed URL is empty for a premiere, so a theme that
                      * ignores this flag renders an iframe with no source rather
                      * than a playable video. The failure is visible and inert,
@@ -110,6 +121,30 @@ final class WatchController extends Controller
                 'backUrl' => '/',
             ]
         );
+    }
+
+    /**
+     * The moment a ?t= link asked for, or zero.
+     *
+     * Clamped against the video's own duration where one is known. A value
+     * past the end is not a seek anywhere useful, and the player's response to
+     * one varies by browser — better to ignore it than to find out.
+     */
+    private function startPosition(Request $request, ?int $duration): int
+    {
+        $requested = (int) ($request->query('t') ?? 0);
+
+        if ($requested <= 0) {
+            return 0;
+        }
+
+        if ($duration !== null && $duration > 0 && $requested >= $duration) {
+            return 0;
+        }
+
+        // A ceiling for the case where the duration is unknown — a video
+        // longer than a day is not one this is being asked to seek into.
+        return min($requested, 86400);
     }
 
     /**

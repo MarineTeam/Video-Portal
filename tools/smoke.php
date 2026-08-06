@@ -2265,6 +2265,39 @@ check(
     'an empty chapter heading is left behind'
 );
 
+/*
+ * The moment a chapter link actually asks for.
+ *
+ * Chapters and transcript lines are both ordinary links to ?t=seconds. With
+ * scripting off the page reloads and the player starts there; the JS only
+ * removes the reload. Either way the server has to read the parameter, so that
+ * is what these check — the part that works without a browser.
+ */
+/* Within the seeded video's 125 seconds — a moment past the end is its own
+   check below, and using one here would pass for the wrong reason. */
+$atMoment = getWithJar($baseUrl . '/watch/' . $videoSlug . '?t=60', $jar);
+check(
+    'A ?t= link sets the start position',
+    str_contains($atMoment['body'], 'data-start-at="60"'),
+    'the link reloads the page and starts from the beginning'
+);
+
+$noMoment = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check('Without one the start position is zero', str_contains($noMoment['body'], 'data-start-at="0"'));
+
+$absurdMoment = getWithJar($baseUrl . '/watch/' . $videoSlug . '?t=999999', $jar);
+check(
+    'A moment past the end is ignored',
+    str_contains($absurdMoment['body'], 'data-start-at="0"'),
+    'a seek past the end behaves differently in every browser'
+);
+
+$negativeMoment = getWithJar($baseUrl . '/watch/' . $videoSlug . '?t=-5', $jar);
+check('A negative moment is ignored', str_contains($negativeMoment['body'], 'data-start-at="0"'));
+
+$nonsenseMoment = getWithJar($baseUrl . '/watch/' . $videoSlug . '?t=notatime', $jar);
+check('A moment that is not a number is ignored', str_contains($nonsenseMoment['body'], 'data-start-at="0"'));
+
 echo "\nTranscripts\n";
 
 $transcriptEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
