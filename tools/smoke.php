@@ -1875,6 +1875,188 @@ check(
     'the query is not echoed back, so the page cannot be shared or reloaded'
 );
 
+echo "\nSubscriptions\n";
+
+/*
+ * Driven signed out throughout, because a subscriber is somebody with no
+ * account — that is the point of the feature, and a check run as the
+ * administrator would prove nothing about the path people actually use.
+ */
+$libraryForSubscribe = get($baseUrl . '/');
+check(
+    'The library offers a subscribe box',
+    str_contains($libraryForSubscribe['body'], 'action="/subscribe"'),
+    'there is no way for anybody to subscribe'
+);
+check(
+    'It says no account is needed',
+    str_contains($libraryForSubscribe['body'], 'No account needed'),
+    'the one thing that makes people use it goes unsaid'
+);
+
+$categoryForSubscribe = get($baseUrl . '/category/sermons');
+check(
+    'A category page offers its own scope',
+    str_contains($categoryForSubscribe['body'], 'name="scope" value="category"'),
+    'every page would subscribe people to the whole site'
+);
+
+/*
+ * No CSRF token, deliberately — see SubscriptionController. This POST comes
+ * from a visitor with no session, which is the whole point of the endpoint.
+ */
+$subscribed = post($baseUrl . '/subscribe', [
+    'email'  => 'subscriber@smoke.test',
+    'scope'  => 'site',
+]);
+
+check('Subscribing succeeds with no session', $subscribed['status'] === 302, "got {$subscribed['status']}");
+check(
+    'The subscription was stored',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions} WHERE email = ?', ['subscriber@smoke.test']) === 1,
+    'nothing was written'
+);
+
+/* Twice is once. A double-submitted form is the ordinary way this happens. */
+post($baseUrl . '/subscribe', [
+    'email'  => 'subscriber@smoke.test',
+    'scope'  => 'site',
+]);
+
+check(
+    'Subscribing twice stores one row',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions} WHERE email = ?', ['subscriber@smoke.test']) === 1,
+    'they would get two of every email'
+);
+
+/* A scope naming something that does not exist is refused. */
+post($baseUrl . '/subscribe', [
+    'email'    => 'nowhere@smoke.test',
+    'scope'    => 'series',
+    'scope_id' => '999999',
+]);
+
+check(
+    'Subscribing to something that does not exist is refused',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions} WHERE email = ?', ['nowhere@smoke.test']) === 0,
+    'a tampered form created a subscription to nothing'
+);
+
+post($baseUrl . '/subscribe', ['email' => 'not-an-address', 'scope' => 'site']);
+check(
+    'A malformed address is refused',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions} WHERE email LIKE ?', ['%not-an-address%']) === 0,
+    'the table would fill with things that can never be emailed'
+);
+
+/* Unsubscribing: the half that has to work for somebody with no account. */
+$subToken = (string) $db->value(
+    'SELECT token FROM {subscriptions} WHERE email = ?',
+    ['subscriber@smoke.test']
+);
+
+/*
+ * Guarded, because an empty token makes the URL "/unsubscribe/" — which the
+ * router trims to "/unsubscribe", matches against the POST route, and answers
+ * 405. Every check below would then fail with a message about the unsubscribe
+ * page while the actual fault was three checks earlier.
+ */
+check('There is a token to unsubscribe with', $subToken !== '', 'nothing was subscribed to test with');
+
+$unsubPage = get($baseUrl . '/unsubscribe/' . $subToken);
+check('The unsubscribe page opens with no session', $unsubPage['status'] === 200, "got {$unsubPage['status']}");
+check('It offers a button rather than acting', str_contains($unsubPage['body'], 'Unsubscribe from this'));
+check(
+    'and it still exists after the page was merely opened',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions} WHERE email = ?', ['subscriber@smoke.test']) === 1,
+    'A GET UNSUBSCRIBED SOMEBODY — a mail scanner following the link would do this'
+);
+
+$unsubbed = post($baseUrl . '/unsubscribe', ['token' => $subToken]);
+
+check('Unsubscribing succeeds', $unsubbed['status'] === 200, "got {$unsubbed['status']}");
+check(
+    'and the subscription is gone',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions} WHERE email = ?', ['subscriber@smoke.test']) === 0,
+    'the button did nothing'
+);
+
+/* An unknown token says the same thing as a used one. */
+$unknownToken = get($baseUrl . '/unsubscribe/aaaaaaaaaaaaaaaaaaaaaa');
+check(
+    'An unknown token gets the same page as a used one',
+    // Deliberately a phrase that cannot straddle the template's line wrap.
+    // "already been used" is split across two source lines and never matches.
+    $unknownToken['status'] === 200 && str_contains($unknownToken['body'], 'nothing to unsubscribe'),
+    "got {$unknownToken['status']} — a different answer tells a prober to keep guessing"
+);
+
+/* Announcing runs on the cron tick and claims each video exactly once. */
+$db->execute(
+    'INSERT INTO {subscriptions} (token, email, scope_type, created_at)
+     VALUES (?, ?, ?, NOW())',
+    ['smoketokensmoketoken12', 'announce@smoke.test', 'site']
+);
+$db->execute('DELETE FROM {announced_videos}');
+$db->execute('UPDATE {cron_jobs} SET is_enabled = 1, next_run_at = NOW() WHERE slug = ?', ['notifications.send']);
+
+$cronRun = get($baseUrl . '/cron?key=' . urlencode((string) $written['cron_secret']));
+check('The notification job runs', $cronRun['status'] === 200, "got {$cronRun['status']}");
+check(
+    'and claims the video it announced',
+    (int) $db->value('SELECT COUNT(*) FROM {announced_videos} WHERE video_id = ?', [$videoRow]) === 1,
+    'without a claim it would be announced again on every run'
+);
+
+$before = (int) $db->value('SELECT COUNT(*) FROM {announced_videos}');
+$db->execute('UPDATE {cron_jobs} SET next_run_at = NOW() WHERE slug = ?', ['notifications.send']);
+get($baseUrl . '/cron?key=' . urlencode((string) $written['cron_secret']));
+
+check(
+    'A second run announces nothing new',
+    (int) $db->value('SELECT COUNT(*) FROM {announced_videos}') === $before,
+    'the same video would be mailed twice'
+);
+
+/* Put the run back the way the rest of the script expects it. */
+$db->execute('UPDATE {cron_jobs} SET is_enabled = 0');
+$db->execute('DELETE FROM {subscriptions}');
+
+/* The switch turns the whole thing off. */
+$settingsForSubs = getWithJar($baseUrl . '/admin/settings', $jar);
+check('Settings offers the subscription switch', str_contains($settingsForSubs['body'], 'name="subscriptions_enabled"'));
+
+postWithJar($baseUrl . '/admin/settings', [
+    '_token'    => csrfFrom($settingsForSubs['body']),
+    'site_name' => 'Smoke Portal',
+    'timezone'  => 'UTC',
+], $jar);
+
+check(
+    'Switching it off removes the subscribe box',
+    !str_contains(get($baseUrl . '/')['body'], 'action="/subscribe"'),
+    'the box is still there'
+);
+
+post($baseUrl . '/subscribe', [
+    'email'  => 'late@smoke.test',
+    'scope'  => 'site',
+]);
+
+check(
+    'and the endpoint refuses too',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions}') === 0,
+    'the form was hidden but the route still accepted posts'
+);
+
+/* Back on, so anything after this sees the ordinary site. */
+postWithJar($baseUrl . '/admin/settings', [
+    '_token'                => csrfFrom($settingsForSubs['body']),
+    'site_name'             => 'Smoke Portal',
+    'timezone'              => 'UTC',
+    'subscriptions_enabled' => '1',
+], $jar);
+
 echo "\nNotices\n";
 
 $noticeScreen = getWithJar($baseUrl . '/admin/announcements', $jar);

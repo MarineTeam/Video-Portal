@@ -328,6 +328,19 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
  * are given a fixed basis so they do not each grab a third of the row and push
  * the thing people actually type into onto its own line.
  */
+/*
+ * The subscribe box. Set apart from the listing above it with a rule rather
+ * than a panel, so it reads as a footer to the page and not as another card.
+ */
+.subscribe {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border);
+  max-width: 34rem;
+}
+.subscribe-form { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.subscribe-form .field { flex: 1 1 16rem; }
+
 .search-toolbar .field:not(:first-child) { flex: 0 1 11rem; }
 .search-jump { margin-bottom: 2rem; }
 

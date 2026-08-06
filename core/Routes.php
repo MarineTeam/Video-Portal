@@ -12,6 +12,7 @@ use Portal\Controllers\CronController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\ShareController;
+use Portal\Controllers\SubscriptionController;
 use Portal\Controllers\UploadController;
 use Portal\Controllers\WatchController;
 use Portal\Http\Router;
@@ -59,6 +60,22 @@ final class Routes
         $router->get('/media/{slug}.mp4', [FeedController::class, 'media']);
         $router->get('/sitemap.xml', [FeedController::class, 'sitemap']);
         $router->get('/robots.txt', [FeedController::class, 'robots']);
+
+        /*
+         * Subscribing, and getting out again.
+         *
+         * Open to people with no account on purpose: somebody who wants to know
+         * when the service is posted has no reason to create one, and requiring
+         * it would mean only people who already visit ever subscribe.
+         *
+         * Unsubscribe is a GET that SHOWS a button and a POST that acts. Mail
+         * clients and security scanners follow links in email unasked, so an
+         * unsubscribe that happened on GET would fire when a scanner looked at
+         * the message and quietly remove somebody who never clicked.
+         */
+        $router->post('/subscribe', [SubscriptionController::class, 'subscribe']);
+        $router->get('/unsubscribe/{token}', [SubscriptionController::class, 'confirmUnsubscribe']);
+        $router->post('/unsubscribe', [SubscriptionController::class, 'unsubscribe']);
 
         // Theme and plugin assets. Served by PHP because they live outside the
         // document root, which is what stops anyone fetching a theme's

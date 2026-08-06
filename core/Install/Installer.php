@@ -409,6 +409,7 @@ final class Installer
             'sessions.purge'      => 3600,
             'videos.sync'         => 900,
             'shares.cleanup'      => 86400,
+            'notifications.send'  => 900,
         ] as $slug => $interval) {
             $db->execute(
                 'INSERT INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

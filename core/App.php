@@ -166,6 +166,19 @@ final class App
             => new \Portal\Content\SavedVideoRepository($c->get(Db::class)));
         $c->singleton(\Portal\Content\AnnouncementRepository::class, static fn (Container $c): \Portal\Content\AnnouncementRepository
             => new \Portal\Content\AnnouncementRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\SubscriptionRepository::class, static fn (Container $c): \Portal\Content\SubscriptionRepository
+            => new \Portal\Content\SubscriptionRepository(
+                $c->get(Db::class),
+                $c->get(CategoryRepository::class),
+            ));
+        $c->singleton(\Portal\Content\Notifier::class, static fn (Container $c): \Portal\Content\Notifier
+            => new \Portal\Content\Notifier(
+                $c->get(Db::class),
+                $c->get(Config::class),
+                $c->get(\Portal\Content\SubscriptionRepository::class),
+                $c->get(VideoRepository::class),
+                $c->get(\Portal\Mail\MailProvider::class),
+            ));
         $c->singleton(\Portal\Content\HomeRowRepository::class, static fn (Container $c): \Portal\Content\HomeRowRepository
             => new \Portal\Content\HomeRowRepository(
                 $c->get(Db::class),

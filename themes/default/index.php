@@ -195,6 +195,10 @@ $playlists ??= [];
 
 <?php do_action('after_video_list') ?>
 
+<?php if (!empty($subscribeEnabled)): ?>
+  <?= $template->partial('subscribe', get_defined_vars()) ?>
+<?php endif ?>
+
 <?php
 /*
  * No pagination under curated rows. The rows are a front page, not page one of

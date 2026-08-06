@@ -120,6 +120,19 @@ abstract class Controller
              */
             'allowIndexing' => $this->config()->settingBool('allow_indexing', false),
             'announcements' => $this->announcements(),
+
+            /*
+             * The subscribe form's defaults, shared rather than repeated in
+             * four listing actions. Each one overrides the scope; nothing has
+             * to remember to supply the token or check the switch.
+             *
+             * `$data + $shared` means anything the action set wins, so an
+             * override is a one-line addition where the page is built.
+             */
+            'subscribeEnabled' => $this->config()->settingBool('subscriptions_enabled', true),
+            'subscribeScope'   => 'site',
+            'subscribeScopeId' => null,
+            'subscribeLabel'   => 'new videos',
         ];
 
         $html = $themes->loader()->render($candidates, $data + $shared);

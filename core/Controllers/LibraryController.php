@@ -10,6 +10,7 @@ use Portal\Content\HomeRowRepository;
 use Portal\Content\PlaylistRepository;
 use Portal\Content\SavedVideoRepository;
 use Portal\Content\SeriesRepository;
+use Portal\Content\SubscriptionRepository;
 use Portal\Content\SpeakerRepository;
 use Portal\Content\Video;
 use Portal\Content\VideoPresenter;
@@ -173,6 +174,9 @@ final class LibraryController extends Controller
             [
                 'title'               => $category->name,
                 'heading'             => $category->name,
+                'subscribeScope'      => SubscriptionRepository::CATEGORY,
+                'subscribeScopeId'    => $category->id,
+                'subscribeLabel'      => 'new videos in ' . $category->name,
                 'description'         => $category->description,
                 'videos'              => $this->present($result['items']),
                 'children'            => $children,
@@ -214,6 +218,9 @@ final class LibraryController extends Controller
             [
                 'title'               => $series->title,
                 'heading'             => $series->title,
+                'subscribeScope'      => SubscriptionRepository::SERIES,
+                'subscribeScopeId'    => $series->id,
+                'subscribeLabel'      => 'new episodes of ' . $series->title,
                 'description'         => $series->description,
                 'videos'              => $this->present($videos),
                 'children'            => [],
@@ -260,6 +267,9 @@ final class LibraryController extends Controller
             [
                 'title'               => $speaker->name,
                 'heading'             => $speaker->name,
+                'subscribeScope'      => SubscriptionRepository::SPEAKER,
+                'subscribeScopeId'    => $speaker->id,
+                'subscribeLabel'      => 'new videos from ' . $speaker->name,
                 'description'         => $speaker->bio,
                 'videos'              => $this->present($result['items']),
                 'children'            => [],

@@ -80,6 +80,10 @@ echo $template->partial('header', get_defined_vars());
 
 <?php do_action('after_video_list') ?>
 
+<?php if (!empty($subscribeEnabled)): ?>
+  <?= $template->partial('subscribe', get_defined_vars()) ?>
+<?php endif ?>
+
 <?php if (($pagination['pages'] ?? 1) > 1): ?>
   <nav class="pagination" aria-label="Pagination">
     <?php if (!empty($pagination['prevUrl'])): ?>

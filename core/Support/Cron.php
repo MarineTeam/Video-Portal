@@ -90,6 +90,36 @@ final class Cron
 
             return "Removed {$removed} share(s), {$gates} expired link grant(s), {$limits} rate-limit row(s).";
         };
+
+        /*
+         * Announce anything that has become visible since the last run.
+         *
+         * There is no publish event to hook: a scheduled video appears because
+         * a comparison in a query started returning true, with no code running.
+         * So this asks the question in reverse — what is visible now that has
+         * never been announced — and the fire-once guarantee comes from an
+         * INSERT IGNORE against a primary key rather than from this job being
+         * run exactly once.
+         */
+        $this->handlers['notifications.send'] = static function (App $app): string {
+            $config = $app->container()->get(\Portal\Config::class);
+
+            if (!$config->settingBool('subscriptions_enabled', true)) {
+                return 'Subscriptions are switched off.';
+            }
+
+            $notifier = $app->container()->get(\Portal\Content\Notifier::class);
+
+            $pruned = $app->container()
+                ->get(\Portal\Content\SubscriptionRepository::class)
+                ->pruneOrphans();
+
+            $result = $notifier->run();
+
+            return $pruned > 0
+                ? $result . " Removed {$pruned} subscription(s) whose target had been deleted."
+                : $result;
+        };
     }
 
     /**

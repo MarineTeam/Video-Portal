@@ -1012,6 +1012,22 @@ final class AdminController extends Controller
         }
     }
 
+    /**
+     * How many people have subscribed.
+     *
+     * Wrapped, because on the one request that applies migration 0007 the
+     * table does not exist yet and the settings screen is more important than
+     * the number on it.
+     */
+    private function subscriberCount(): int
+    {
+        try {
+            return $this->container->get(\Portal\Content\SubscriptionRepository::class)->count();
+        } catch (Throwable) {
+            return 0;
+        }
+    }
+
     private function homeRowRepo(): \Portal\Content\HomeRowRepository
     {
         return $this->container->get(\Portal\Content\HomeRowRepository::class);
@@ -1639,7 +1655,11 @@ final class AdminController extends Controller
                 'podcast_image_url'   => $this->config()->setting('podcast_image_url', ''),
                 'podcast_category'    => $this->config()->setting('podcast_category', 'Religion & Spirituality'),
                 'podcast_explicit'    => $this->config()->setting('podcast_explicit', '0'),
+                // Default '1': the box is opt-out, because a subscribe form
+                // that nobody switched on is a feature nobody knows exists.
+                'subscriptions_enabled' => $this->config()->setting('subscriptions_enabled', '1'),
             ],
+            'subscriberCount' => $this->subscriberCount(),
             'cronJobs' => $cron->jobs(),
             'baseUrl'  => $this->config()->baseUrl(),
             // Geo lists are shown read-only: they live in config.php on
@@ -1682,6 +1702,7 @@ final class AdminController extends Controller
             'podcast_owner_email' => trim($request->input('podcast_owner_email') ?? ''),
             'podcast_image_url'   => trim($request->input('podcast_image_url') ?? ''),
             'podcast_category'    => trim($request->input('podcast_category') ?? ''),
+            'subscriptions_enabled' => $request->input('subscriptions_enabled') !== null ? '1' : '0',
         ]);
         Audit::log($this->db(), $this->user()?->email, 'settings.update');
 

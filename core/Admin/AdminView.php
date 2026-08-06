@@ -2400,6 +2400,8 @@ final class AdminView
         $membersDefault = $checked('members_thumbnail_default');
         $allowIndexing = $checked('allow_indexing');
         $podcastExplicit = $checked('podcast_explicit');
+        $subscriptionsEnabled = $checked('subscriptions_enabled');
+        $subscriberCount = (int) ($data['subscriberCount'] ?? 0);
 
         return <<<HTML
         <h1>Settings</h1>
@@ -2428,6 +2430,20 @@ final class AdminView
                <code>/sitemap.xml</code> is not served — so the three can never disagree. Turning it on
                lists only content that is already public; drafts, hidden videos, members-only content,
                and share links are never included either way.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Email about new videos</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="subscriptions_enabled" value="1"{$subscriptionsEnabled}>
+              Let people subscribe to new videos
+            </label>
+            <p class="muted small">Adds a subscribe box to the library and to every category, series,
+               and speaker page. No account is needed to subscribe, and every email carries an
+               unsubscribe link that works in one tap. Only public videos are ever announced —
+               members-only content is not news to a list anybody can join.</p>
+            <p class="muted small">{$subscriberCount} subscriber(s). Sending needs an email service
+               configured under <a href="/admin/providers">Services</a>.</p>
           </fieldset>
 
           <fieldset>
