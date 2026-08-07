@@ -474,6 +474,15 @@ final class AdminView
             $video->id
         );
 
+        $captionPanel = ($data['captionsSupported'] ?? false)
+            ? $this->captionPanel(
+                (array) ($data['captions'] ?? []),
+                isset($data['transcript']) && is_array($data['transcript']),
+                $token,
+                $video->id
+            )
+            : '';
+
         $transcriptPanel = $this->transcriptPanel(
             isset($data['transcript']) && is_array($data['transcript']) ? $data['transcript'] : null,
             $token,
@@ -644,6 +653,8 @@ final class AdminView
 
         {$chapterPanel}
 
+        {$captionPanel}
+
         {$transcriptPanel}
 
         {$history}
@@ -726,6 +737,114 @@ final class AdminView
                downloadable by somebody who could watch it, and unpublishing takes it away too.</p>
 
             <button class="btn" name="action" value="attach">Attach</button>
+          </fieldset>
+        </form>
+        HTML;
+    }
+
+    /**
+     * Caption tracks, which live at the video provider rather than here.
+     *
+     * The whole panel is absent for a provider that cannot carry them — see
+     * SupportsCaptions. Offering an upload that cannot reach a player is worse
+     * than offering nothing, because the person doing it has no way to tell it
+     * did not work.
+     *
+     * @param list<array{language: string, label: string}> $captions
+     */
+    private function captionPanel(
+        array $captions,
+        bool $hasTranscript,
+        string $token,
+        int $videoId
+    ): string {
+        $rows = '';
+
+        foreach ($captions as $caption) {
+            $rows .= sprintf(
+                '<tr>
+                   <td>%s <span class="muted small">%s</span></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <input type="hidden" name="caption_language" value="%s">
+                       <button name="action" value="caption-delete" class="btn tiny danger"
+                               onclick="return confirm(\'Remove these captions?\')">Remove</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($caption['label']),
+                e($caption['language']),
+                $token,
+                $videoId,
+                $this->attr($caption['language'])
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">No captions on this video.</td></tr>';
+        }
+
+        $options = '';
+        foreach (\Portal\Content\CaptionFile::languages() as $tag => $name) {
+            $options .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                $this->attr($tag),
+                $tag === 'en' ? ' selected' : '',
+                e($name)
+            );
+        }
+
+        /*
+         * Offered only when there is a transcript to convert, and with its cost
+         * stated. Cues are stored at second precision because a transcript
+         * panel seeks to the second, so captions made this way can sit up to a
+         * second early — which reads as the captions being slightly out rather
+         * than as a consequence of a choice somebody made.
+         */
+        $fromTranscript = $hasTranscript
+            ? '<label class="checkbox">
+                 <input type="checkbox" name="caption_from_transcript" value="1">
+                 Use this video\'s transcript instead of a file
+               </label>
+               <p class="muted small">Handy when you have no caption file, with one cost: transcript
+                  lines are stored to the nearest second, so captions built from one can appear up to
+                  a second early. A real caption file keeps its exact timings.</p>'
+            : '';
+
+        $limit = \Portal\Content\AssetPolicy::formatSize(\Portal\Content\CaptionFile::MAX_BYTES);
+
+        return <<<HTML
+        <h2>Captions</h2>
+
+        <table>
+          <tbody>{$rows}</tbody>
+        </table>
+
+        <form method="post" action="/admin/videos" enctype="multipart/form-data">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$videoId}">
+
+          <fieldset>
+            <legend>Add captions</legend>
+            <p class="muted small">Captions are stored at your video provider, because the player is
+               theirs — nothing kept here could put text on the screen. That also means this list is
+               read from them, so it is what viewers will really see.</p>
+
+            <label>Language <select name="caption_language">{$options}</select></label>
+            <label>Label <input type="text" name="caption_label"
+                                placeholder="Shown in the player's caption menu"></label>
+
+            <label>File <input type="file" name="caption_file" accept=".vtt,.srt,text/vtt"></label>
+            <p class="muted small">WebVTT or SubRip, up to {$limit}. Timings, positioning and styling
+               are passed through untouched.</p>
+
+            {$fromTranscript}
+
+            <p class="muted small">Uploading a language that is already here replaces it.</p>
+
+            <button class="btn" name="action" value="caption">Upload captions</button>
           </fieldset>
         </form>
         HTML;

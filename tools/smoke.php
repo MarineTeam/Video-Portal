@@ -145,15 +145,21 @@ function postJsonWithJar(string $url, array $payload, string $jar): array
  * @param array<string, string> $fields
  * @return array{status: int, body: string, headers: array<string, string>}
  */
-function uploadWithJar(string $url, array $fields, string $fileField, string $path, string $jar): array
-{
+function uploadWithJar(
+    string $url,
+    array $fields,
+    string $fileField,
+    string $path,
+    string $jar,
+    string $mime = 'application/zip'
+): array {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HEADER         => true,
         CURLOPT_POST           => true,
         CURLOPT_POSTFIELDS     => $fields + [
-            $fileField => new CURLFile($path, 'application/zip', basename($path)),
+            $fileField => new CURLFile($path, $mime, basename($path)),
         ],
         CURLOPT_COOKIEJAR      => $jar,
         CURLOPT_COOKIEFILE     => $jar,
@@ -2733,6 +2739,171 @@ check(
     !str_contains(get($baseUrl . '/search?q=perseverance')['body'], 'A Test Video'),
     'search still matches a transcript that has been removed'
 );
+
+/* ------------------------------------------------------------------ captions
+ *
+ * Captions have no local table to assert against — they live at the video
+ * provider, because the player is an iframe on the provider's domain and
+ * nothing stored here could put text on the screen. So these checks are about
+ * the two things this side genuinely owns: that the panel is reachable and
+ * says what it does, and that a file is validated BEFORE anything is sent.
+ *
+ * This install's bunny.net credentials are placeholders, so an upload that
+ * passes validation reaches the network and fails there. That failing is the
+ * point of the last check: it is the only outcome that distinguishes "refused
+ * here" from "sent", and a handler nothing calls would look identical to a
+ * working one in every check above it.
+ */
+echo "\nCaptions\n";
+
+$captionEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'The edit screen offers a caption upload',
+    str_contains($captionEdit['body'], 'name="caption_file"'),
+    'the panel that would make captions reachable is not on the page'
+);
+check(
+    'with a language to pick',
+    str_contains($captionEdit['body'], 'name="caption_language"')
+        && str_contains($captionEdit['body'], 'Portuguese (Brazil)')
+);
+check(
+    'and it says where captions actually live',
+    str_contains($captionEdit['body'], 'stored at your video provider'),
+    'somebody removing a caption in the provider dashboard has no idea why it vanished here'
+);
+
+/*
+ * The transcript was deleted just above, so the "use the transcript instead"
+ * option should be gone. Worth checking in both states: an option that renders
+ * unconditionally would offer a conversion with nothing to convert, and the
+ * failure lands as a confusing error at submit time.
+ */
+check(
+    'The transcript option is absent when there is no transcript',
+    !str_contains($captionEdit['body'], 'name="caption_from_transcript"'),
+    'the form offers to convert a transcript this video does not have'
+);
+
+$captionVtt = "WEBVTT\n\n"
+            . "00:00:01.250 --> 00:00:04.500\nWelcome to the recording.\n\n"
+            . "00:00:04.500 --> 00:00:09.750 align:start position:10%\nAnd the second line.\n";
+
+$captionPath = sys_get_temp_dir() . '/portal-smoke-captions-' . getmypid() . '.vtt';
+file_put_contents($captionPath, $captionVtt);
+
+/* A language code that is not one is refused before any of this is read. */
+uploadWithJar($baseUrl . '/admin/videos', [
+    '_token'           => csrfFrom($captionEdit['body']),
+    'id'               => (string) $videoRow,
+    'action'           => 'caption',
+    'caption_language' => '../../etc/passwd',
+], 'caption_file', $captionPath, $jar, 'text/vtt');
+
+$afterBadLanguage = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'A language code that is not one is refused',
+    str_contains($afterBadLanguage['body'], 'not a language code'),
+    'the tag becomes a URL path at the provider, so this one has to be refused here'
+);
+
+/* Nothing to upload at all — no file, no transcript. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'           => csrfFrom($afterBadLanguage['body']),
+    'id'               => (string) $videoRow,
+    'action'           => 'caption',
+    'caption_language' => 'en',
+], $jar);
+
+$afterNothing = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'A caption upload with nothing in it is refused',
+    str_contains($afterNothing['body'], 'No timed lines could be read'),
+    'an empty upload would reach the provider and become a caption track with no cues'
+);
+
+/* Prose in a .vtt is refused for the same reason. */
+$prosePath = sys_get_temp_dir() . '/portal-smoke-not-captions-' . getmypid() . '.vtt';
+file_put_contents($prosePath, "Here is a paragraph somebody pasted by mistake.\n\nAnd another.\n");
+
+uploadWithJar($baseUrl . '/admin/videos', [
+    '_token'           => csrfFrom($afterNothing['body']),
+    'id'               => (string) $videoRow,
+    'action'           => 'caption',
+    'caption_language' => 'en',
+], 'caption_file', $prosePath, $jar, 'text/vtt');
+
+$afterProse = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'A file with no timings is refused',
+    str_contains($afterProse['body'], 'No timed lines could be read'),
+    'prose would have been stored as a caption track'
+);
+
+/*
+ * And a real one gets past validation and reaches the provider. With
+ * placeholder credentials that call fails, which is what proves it was made —
+ * every check above this one would pass just as happily against a handler
+ * nothing ever called.
+ */
+uploadWithJar($baseUrl . '/admin/videos', [
+    '_token'           => csrfFrom($afterProse['body']),
+    'id'               => (string) $videoRow,
+    'action'           => 'caption',
+    'caption_language' => 'EN',
+    'caption_label'    => 'English',
+], 'caption_file', $captionPath, $jar, 'text/vtt');
+
+$afterReal = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'A real caption file gets past validation and is sent',
+    str_contains($afterReal['body'], 'bunny.net'),
+    'a valid file was refused locally, so the upload path is never exercised at all'
+);
+check(
+    'and the failure is a message on the screen, not an error page',
+    $afterReal['status'] === 200,
+    'an editor who hits a provider outage loses the form they were filling in'
+);
+
+@unlink($captionPath);
+@unlink($prosePath);
+
+/*
+ * Put a transcript back, so the conversion option can be checked in its other
+ * state. Left in place afterwards would change what the revision checks below
+ * are counting, so it goes again immediately.
+ */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'     => csrfFrom($afterReal['body']),
+    'id'         => (string) $videoRow,
+    'action'     => 'transcript',
+    'transcript' => "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nSomething said.\n",
+], $jar);
+
+$withTranscript = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'The transcript option appears once there is a transcript',
+    str_contains($withTranscript['body'], 'name="caption_from_transcript"'),
+    'the option is decoration rather than a real condition'
+);
+check(
+    'and it says what converting one costs',
+    str_contains($withTranscript['body'], 'nearest second'),
+    'captions built from a transcript can sit a second early and nobody is told why'
+);
+
+postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($withTranscript['body']),
+    'id'     => (string) $videoRow,
+    'action' => 'transcript-delete',
+], $jar);
 
 echo "\nRevision history\n";
 

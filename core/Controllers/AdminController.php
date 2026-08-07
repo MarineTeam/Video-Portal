@@ -127,6 +127,8 @@ final class AdminController extends Controller
             'transcript'     => $this->transcriptSummary($video->id),
             'chapters'       => $this->chapterText($video->id),
             'assets'         => $this->attachments($video->id),
+            'captions'       => $this->captions($video),
+            'captionsSupported' => $this->captionProvider() !== null,
         ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
     }
 
@@ -305,6 +307,12 @@ final class AdminController extends Controller
 
             case 'transcript':
                 return $this->saveTranscript($request, $id);
+
+            case 'caption':
+                return $this->saveCaption($request, $video);
+
+            case 'caption-delete':
+                return $this->deleteCaption($request, $video);
 
             case 'chapters':
                 $submitted = trim((string) ($request->input('chapters') ?? ''));
@@ -1372,6 +1380,190 @@ final class AdminController extends Controller
         Audit::log($this->db(), $this->user()?->email, 'transcript.import', 'video', (string) $videoId, (string) $stored);
 
         return $this->back($request, sprintf('Imported %d line(s).', $stored));
+    }
+
+    /**
+     * The provider, if it can carry captions.
+     *
+     * Null is a normal answer and every caller handles it: a provider without
+     * caption support is not a misconfiguration, it is a provider whose player
+     * has no caption menu. The panel disappears rather than offering an upload
+     * that could not work.
+     */
+    private function captionProvider(): ?\Portal\Video\SupportsCaptions
+    {
+        try {
+            $provider = $this->container->get(\Portal\Video\VideoProvider::class);
+        } catch (Throwable $e) {
+            // An unconfigured provider is the normal state of a fresh install.
+            error_log('Could not resolve the video provider: ' . $e->getMessage());
+
+            return null;
+        }
+
+        return $provider instanceof \Portal\Video\SupportsCaptions ? $provider : null;
+    }
+
+    /**
+     * Caption tracks for the edit screen.
+     *
+     * @return list<array{language: string, label: string}>
+     */
+    private function captions(\Portal\Content\Video $video): array
+    {
+        $provider = $this->captionProvider();
+
+        return $provider === null ? [] : $provider->listCaptions($video->providerId);
+    }
+
+    /**
+     * Send a caption track to the provider.
+     *
+     * Two sources, for the same reason the transcript importer has two: a
+     * captioning service hands you a .vtt or an .srt, and somebody who already
+     * imported a transcript here should not have to go and find the file
+     * again. The transcript path costs sub-second timing — the cues were
+     * stored at second precision because a transcript panel seeks to the
+     * second — and the form says so rather than letting somebody discover it
+     * as captions that feel half a beat early.
+     */
+    private function saveCaption(Request $request, \Portal\Content\Video $video): Response
+    {
+        $provider = $this->captionProvider();
+
+        if ($provider === null) {
+            return $this->back($request, 'This video provider cannot store captions.', 'error');
+        }
+
+        $language = \Portal\Content\CaptionFile::language(
+            (string) ($request->input('caption_language') ?? '')
+        );
+
+        if ($language === null) {
+            return $this->back(
+                $request,
+                'That is not a language code. Use something like "en", "es", or "pt-br".',
+                'error'
+            );
+        }
+
+        $vtt = $this->captionSource($request, $video);
+
+        if ($vtt === null) {
+            return $this->back(
+                $request,
+                'No timed lines could be read from that. A caption file has to be WebVTT or SubRip.',
+                'error'
+            );
+        }
+
+        $label = \Portal\Content\CaptionFile::label(
+            (string) ($request->input('caption_label') ?? ''),
+            $language
+        );
+
+        try {
+            $provider->uploadCaption($video->providerId, $language, $label, $vtt);
+        } catch (HttpException $e) {
+            /*
+             * A flash rather than an error page.
+             *
+             * Everything on this screen reports failure in the same place, and
+             * a provider having a bad afternoon is the most ordinary failure
+             * here — the one thing an editor must be able to do about it is try
+             * again, which a 502 with the form gone does not help with.
+             */
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'caption.upload',
+            'video',
+            (string) $video->id,
+            $language
+        );
+
+        /*
+         * The cue count is the only feedback there is. The captions now live at
+         * the provider and nothing here can look inside them again, so a file
+         * that yielded four cues out of four hundred has to be visible at the
+         * moment it is uploaded or not at all.
+         */
+        return $this->back($request, sprintf(
+            'Uploaded %d caption line(s) in %s.',
+            \Portal\Content\CaptionFile::cueCount($vtt),
+            $label
+        ));
+    }
+
+    /**
+     * The WebVTT to upload, from whichever source was given.
+     *
+     * The file wins over the transcript when both are offered: somebody who
+     * attached one meant the file, and it is the source with real timings.
+     */
+    private function captionSource(Request $request, \Portal\Content\Video $video): ?string
+    {
+        $upload = $_FILES['caption_file'] ?? null;
+
+        if (is_array($upload)
+            && (int) ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK
+            && is_uploaded_file((string) $upload['tmp_name'])) {
+            // Checked before reading. Finding out a 900MB upload was not a
+            // caption file by loading it is how a shared host runs out of
+            // memory.
+            if ((int) ($upload['size'] ?? 0) > \Portal\Content\CaptionFile::MAX_BYTES) {
+                return null;
+            }
+
+            $contents = file_get_contents((string) $upload['tmp_name']);
+
+            return $contents === false ? null : \Portal\Content\CaptionFile::toVtt($contents);
+        }
+
+        if ((string) ($request->input('caption_from_transcript') ?? '') === '') {
+            return null;
+        }
+
+        return \Portal\Content\CaptionFile::fromTranscriptCues(
+            $this->transcripts()->cues($video->id)
+        );
+    }
+
+    private function deleteCaption(Request $request, \Portal\Content\Video $video): Response
+    {
+        $provider = $this->captionProvider();
+
+        if ($provider === null) {
+            return $this->back($request, 'This video provider cannot store captions.', 'error');
+        }
+
+        $language = \Portal\Content\CaptionFile::language(
+            (string) ($request->input('caption_language') ?? '')
+        );
+
+        if ($language === null) {
+            return $this->back($request, 'That is not a language code.', 'error');
+        }
+
+        try {
+            $provider->deleteCaption($video->providerId, $language);
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'caption.delete',
+            'video',
+            (string) $video->id,
+            $language
+        );
+
+        return $this->back($request, 'Captions removed.');
     }
 
     /**

@@ -25,7 +25,7 @@ use Throwable;
  * Playback working while thumbnails 403 is the signature of having pasted the
  * first key into both fields.
  */
-final class BunnyStreamProvider implements VideoProvider
+final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
 {
     private const API_BASE = 'https://video.bunnycdn.com/library';
     private const TUS_ENDPOINT = 'https://video.bunnycdn.com/tusupload';
@@ -425,6 +425,123 @@ final class BunnyStreamProvider implements VideoProvider
         }
 
         $this->pageCache = [];
+    }
+
+    // -------------------------------------------------------------- captions
+
+    /**
+     * The caption tracks bunny.net holds for one video.
+     *
+     * Read from the video record rather than from a captions endpoint, because
+     * there is no endpoint that lists them — bunny.net returns the tracks as
+     * part of the video, and asking for the video is the only way to find out
+     * what is really there.
+     *
+     * An unreachable provider returns an empty list rather than throwing, and
+     * waits a short time rather than the usual fifteen seconds. This renders a
+     * page: an edit screen that 502s because bunny.net was slow is worse than
+     * one that says there are no captions, and either is worse than one that
+     * sits there. The upload form beneath it works regardless.
+     *
+     * @return list<array{language: string, label: string}>
+     */
+    public function listCaptions(string $providerId): array
+    {
+        // Nothing to ask, so nothing is asked. A fresh install has no
+        // credentials and should not spend a round trip finding that out.
+        if (!$this->uploadsConfigured()) {
+            return [];
+        }
+
+        try {
+            $response = Http::get(
+                $this->apiUrl('/videos/' . rawurlencode($providerId)),
+                $this->authHeaders(),
+                ['timeout' => 6]
+            );
+        } catch (Throwable) {
+            return [];
+        }
+
+        if ($response->failed()) {
+            return [];
+        }
+
+        $captions = [];
+
+        foreach ($response->json()['captions'] ?? [] as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $language = (string) ($item['srclang'] ?? '');
+
+            if ($language === '') {
+                continue;
+            }
+
+            $captions[] = [
+                'language' => $language,
+                'label'    => (string) ($item['label'] ?? $language),
+            ];
+        }
+
+        return $captions;
+    }
+
+    /**
+     * Send a caption track to bunny.net.
+     *
+     * The file goes base64-encoded inside a JSON body, which is bunny.net's
+     * API and not a choice made here. It is the one place in this class where
+     * a whole file passes through the app server — acceptable only because
+     * CaptionFile caps the input at two megabytes, and worth contrasting with
+     * video upload, which goes browser-to-bunny precisely because it cannot.
+     *
+     * Uploading over an existing language replaces it. bunny.net treats the
+     * language tag as the key, which is why CaptionFile lowercases it: "EN"
+     * and "en" would otherwise be two tracks for one language and the player
+     * would offer the viewer both.
+     */
+    public function uploadCaption(string $providerId, string $language, string $label, string $vtt): void
+    {
+        $response = Http::postJson(
+            $this->apiUrl(
+                '/videos/' . rawurlencode($providerId) . '/captions/' . rawurlencode($language)
+            ),
+            [
+                'srclang'      => $language,
+                'label'        => $label,
+                'captionsFile' => base64_encode($vtt),
+            ],
+            ['AccessKey' => $this->apiKey()]
+        );
+
+        if ($response->failed()) {
+            throw HttpException::upstream(
+                'bunny.net would not store those captions: ' . $response->errorMessage()
+            );
+        }
+    }
+
+    public function deleteCaption(string $providerId, string $language): void
+    {
+        $response = Http::request(
+            'DELETE',
+            $this->apiUrl(
+                '/videos/' . rawurlencode($providerId) . '/captions/' . rawurlencode($language)
+            ),
+            null,
+            $this->authHeaders()
+        );
+
+        // 404 means the track is already gone, which is the state the caller
+        // asked for.
+        if ($response->failed() && $response->status !== 404) {
+            throw HttpException::upstream(
+                'Could not remove those captions at bunny.net: ' . $response->errorMessage()
+            );
+        }
     }
 
     // ----------------------------------------------------------- collections
