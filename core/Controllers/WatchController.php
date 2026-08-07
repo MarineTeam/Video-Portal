@@ -113,6 +113,7 @@ final class WatchController extends Controller
                 // something that is already there.
                 'attachments' => $this->attachments($video->id),
                 'chapters'   => $this->chapters($video->id),
+                'scripture'  => $this->scriptureLinks($video->id),
                 'transcript' => $this->transcriptCues($video->id),
                 'savedLists' => $this->savedLists($video->id),
                 'saveAction' => '/saved',
@@ -180,6 +181,45 @@ final class WatchController extends Controller
      *
      * @return list<array{start: int, title: string}>
      */
+    /**
+     * The passages this video covers, each linking to everything else on it.
+     *
+     * The link is the point. A reference printed as text tells somebody what
+     * was preached; a reference that is a link turns the archive into something
+     * you can follow — which is the entire reason for indexing them.
+     *
+     * Links to the CHAPTER rather than the verse, because a verse page would be
+     * one video deep on almost every site and a dead end reads as a broken
+     * feature.
+     *
+     * @return list<array{label: string, url: string}>
+     */
+    private function scriptureLinks(int $videoId): array
+    {
+        try {
+            $links = [];
+
+            foreach ($this->container->get(\Portal\Content\ScriptureRepository::class)->forVideo($videoId) as $row) {
+                $links[] = [
+                    'label' => \Portal\Content\ScriptureParser::format([
+                        'book'       => (string) $row['book'],
+                        'chapter'    => (int) $row['chapter'],
+                        'verse'      => $row['verse'] === null ? null : (int) $row['verse'],
+                        'endChapter' => (int) $row['end_chapter'],
+                        'endVerse'   => $row['end_verse'] === null ? null : (int) $row['end_verse'],
+                    ]),
+                    'url'   => '/scripture/' . (string) $row['book'] . '/' . (int) $row['chapter'],
+                ];
+            }
+
+            return $links;
+        } catch (Throwable $e) {
+            error_log('Could not read the scripture references: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
     private function chapters(int $videoId): array
     {
         try {

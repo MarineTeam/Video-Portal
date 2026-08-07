@@ -179,8 +179,11 @@ final class TemplateLoader
         // affect the pages it claimed to cover.
         $candidates = [...$candidates, ...match ($type) {
             'video'                                        => ['single', 'index'],
+            // scripture-book is a listing like the rest of these. The
+            // scripture INDEX is not — it lists books rather than videos — so
+            // it falls through to 'index' and ships its own template.
             'category', 'series', 'speaker', 'tag', 'search',
-            'playlist', 'saved'                            => ['archive', 'index'],
+            'playlist', 'saved', 'scripture-book'          => ['archive', 'index'],
             default                                        => ['index'],
         }];
 

@@ -129,6 +129,7 @@ final class AdminController extends Controller
             'assets'         => $this->attachments($video->id),
             'captions'       => $this->captions($video),
             'captionsSupported' => $this->captionProvider() !== null,
+            'scripture'      => $this->scriptureForEdit($video->id),
         ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
     }
 
@@ -441,6 +442,8 @@ final class AdminController extends Controller
                  * encoding-status refresh would be turned off within a day.
                  */
                 do_action('video_updated', $id, $video->title);
+
+                $this->saveScripture($request, $id);
 
                 return $this->back($request, 'Video saved.');
         }
@@ -1391,6 +1394,108 @@ final class AdminController extends Controller
         Audit::log($this->db(), $this->user()?->email, 'transcript.import', 'video', (string) $videoId, (string) $stored);
 
         return $this->back($request, sprintf('Imported %d line(s).', $stored));
+    }
+
+    private function scripture(): \Portal\Content\ScriptureRepository
+    {
+        return $this->container->get(\Portal\Content\ScriptureRepository::class);
+    }
+
+    /**
+     * What the edit screen shows: the manual field's contents, and what the
+     * description contributed, separately.
+     *
+     * Separately because they behave differently, and a single merged list
+     * would make an editor think they could delete a parsed reference by
+     * clearing the box.
+     *
+     * @return array{manual: string, parsed: list<string>}
+     */
+    private function scriptureForEdit(int $videoId): array
+    {
+        try {
+            $manual = [];
+            $parsed = [];
+
+            foreach ($this->scripture()->forVideo($videoId) as $row) {
+                $formatted = \Portal\Content\ScriptureParser::format([
+                    'book'       => (string) $row['book'],
+                    'chapter'    => (int) $row['chapter'],
+                    'verse'      => $row['verse'] === null ? null : (int) $row['verse'],
+                    'endChapter' => (int) $row['end_chapter'],
+                    'endVerse'   => $row['end_verse'] === null ? null : (int) $row['end_verse'],
+                ]);
+
+                if ((string) $row['source'] === 'manual') {
+                    $manual[] = $formatted;
+                } else {
+                    $parsed[] = $formatted;
+                }
+            }
+
+            return ['manual' => implode('; ', $manual), 'parsed' => $parsed];
+        } catch (Throwable $e) {
+            // On the request that applies migration 0014 the table does not
+            // exist yet, and an edit screen that 500s over a panel is worse
+            // than one without it.
+            error_log('Portal: could not read scripture references: ' . $e->getMessage());
+
+            return ['manual' => '', 'parsed' => []];
+        }
+    }
+
+    /**
+     * Keep a video's scripture references in step with the edit.
+     *
+     * Two sources with one rule each, so neither can quietly undo the other:
+     *
+     *   manual  whatever is in the scripture field, replaced wholesale. Empty
+     *           the box and the manual references go, which is how somebody
+     *           removes one.
+     *   parsed  re-read from the description on every save, because the
+     *           description is the thing that just changed.
+     *
+     * A re-scan never touches manual references and an editor's list is never
+     * extended by the description, which is the only arrangement where an
+     * editor's correction survives the next edit somebody else makes.
+     *
+     * Absent means leave alone, as everywhere else in this handler — a POST
+     * that does not mention scripture must not clear it.
+     */
+    private function saveScripture(Request $request, int $videoId): void
+    {
+        try {
+            $scripture = $this->scripture();
+
+            $typed = $request->input('scripture');
+
+            if ($typed !== null) {
+                $scripture->replace(
+                    $videoId,
+                    \Portal\Content\ScriptureParser::parse((string) $typed),
+                    'manual'
+                );
+            }
+
+            $description = $request->input('description');
+
+            if ($description !== null) {
+                $scripture->replace(
+                    $videoId,
+                    \Portal\Content\ScriptureParser::parse((string) $description),
+                    'parsed'
+                );
+                $scripture->markScanned($videoId);
+            }
+        } catch (Throwable $e) {
+            /*
+             * Never fatal. On the request that applies this migration the table
+             * does not exist yet, and losing an index entry is a smaller
+             * failure than an editor's save appearing to have been refused when
+             * the video was in fact written.
+             */
+            error_log('Portal: could not update scripture references: ' . $e->getMessage());
+        }
     }
 
     /**

@@ -165,7 +165,28 @@ $attachments ??= [];
  * came for behind a click is the wrong default.
  */
 $chapters ??= [];
+
+/*
+ * Scripture references, above the chapters.
+ *
+ * Chips rather than prose, and every one is a link to everything else on that
+ * chapter — a reference printed as text says what was preached, a reference
+ * that is a link turns the archive into something you can follow, which is the
+ * whole reason for indexing them.
+ */
+$scripture ??= [];
 ?>
+<?php if ($scripture !== []): ?>
+  <section class="scripture" aria-labelledby="scripture-heading">
+    <h2 class="section-title" id="scripture-heading">Scripture</h2>
+    <div class="chips">
+      <?php foreach ($scripture as $reference): ?>
+        <a class="chip" href="<?= e($reference['url']) ?>"><?= e($reference['label']) ?></a>
+      <?php endforeach ?>
+    </div>
+  </section>
+<?php endif ?>
+
 <?php if ($chapters !== []): ?>
   <section class="chapters" aria-labelledby="chapters-heading">
     <h2 class="section-title" id="chapters-heading">Chapters</h2>

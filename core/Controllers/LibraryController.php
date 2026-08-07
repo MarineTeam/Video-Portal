@@ -474,6 +474,117 @@ final class LibraryController extends Controller
      * because somebody typing a series name wants the series page and not
      * twelve of its episodes scattered through a ranking.
      */
+    /**
+     * Every book with something under it.
+     *
+     * Only books in use. A page listing all seventy-three with sixty-eight of
+     * them empty buries the five worth clicking, and a visitor cannot tell an
+     * empty book from a broken link until they have tried it.
+     */
+    public function scriptureIndex(Request $request): Response
+    {
+        $repo = $this->container->get(\Portal\Content\ScriptureRepository::class);
+
+        $books = [];
+        foreach ($repo->booksInUse() as $row) {
+            $slug = (string) $row['book'];
+
+            $books[] = [
+                'slug'       => $slug,
+                'name'       => \Portal\Content\ScriptureBooks::name($slug) ?? $slug,
+                'testament'  => \Portal\Content\ScriptureBooks::testament($slug) ?? '',
+                'videos'     => (int) $row['videos'],
+                'url'        => '/scripture/' . $slug,
+            ];
+        }
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('scripture', []),
+            [
+                'title'   => 'Scripture',
+                'heading' => 'Browse by passage',
+                'books'   => $books,
+            ]
+        );
+    }
+
+    /**
+     * One book, or one chapter of it.
+     *
+     * @param array<string, string> $params
+     */
+    public function scriptureBook(Request $request, array $params): Response
+    {
+        $book = (string) ($params['book'] ?? '');
+
+        if (!\Portal\Content\ScriptureBooks::exists($book)) {
+            throw HttpException::notFound('There is no book at that address.');
+        }
+
+        $repo = $this->container->get(\Portal\Content\ScriptureRepository::class);
+        $name = \Portal\Content\ScriptureBooks::name($book) ?? $book;
+
+        $chapter = isset($params['chapter']) ? (int) $params['chapter'] : null;
+
+        if ($chapter !== null
+            && ($chapter < 1 || $chapter > \Portal\Content\ScriptureBooks::chapters($book))) {
+            // A chapter the book does not have is a 404 rather than an empty
+            // page: the address is wrong, and saying "nothing here" implies it
+            // might have something later.
+            throw HttpException::notFound('That chapter does not exist.');
+        }
+
+        /*
+         * The ids come from the scripture index; the VIDEOS come from the
+         * ordinary listing query, so this page gets the same visibility rules,
+         * presenter and thumbnail handling as everything else. An empty list of
+         * ids is a real answer and produces an empty page, not the whole
+         * library.
+         */
+        $ids = $repo->videoIds($book, $chapter);
+
+        $result = $this->videos()->query([
+            'ids'               => $ids,
+            'includeMemberOnly' => $this->canWatch(),
+            'includePremieres'  => true,
+        ], 1, 100);
+
+        /*
+         * Chapters go out as `children`, which is the shape archive.php already
+         * renders as a strip of chips. A template of its own would be a second
+         * listing layout to keep in step with the first, and a theme author who
+         * restyled archive.php would find this page ignoring them.
+         */
+        $chapters = [];
+        foreach ($repo->chaptersInUse($book) as $number => $count) {
+            $chapters[] = [
+                'name'  => (string) $number,
+                'slug'  => (string) $number,
+                'count' => $count,
+                'url'   => '/scripture/' . $book . '/' . $number,
+            ];
+        }
+
+        $heading = $chapter === null ? $name : $name . ' ' . $chapter;
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('scripture-book', ['slug' => $book]),
+            [
+                'title'               => $heading,
+                'heading'             => $heading,
+                'book'                => ['slug' => $book, 'name' => $name],
+                'chapter'             => $chapter,
+                'description'         => $chapter === null
+                    ? null
+                    : 'Everything touching ' . $name . ' ' . $chapter . '.',
+                'videos'              => $this->present($result['items']),
+                'children'            => $chapters,
+                'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+                'pagination'          => ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null],
+            ]
+        );
+    }
+
     public function search(Request $request): Response
     {
         $term = trim($request->query('q') ?? '');

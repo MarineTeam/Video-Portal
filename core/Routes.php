@@ -36,6 +36,17 @@ final class Routes
         $router->get('/category/{slug}', [LibraryController::class, 'category']);
         $router->get('/series/{slug}', [LibraryController::class, 'series']);
         $router->get('/speaker/{slug}', [LibraryController::class, 'speaker']);
+
+        /*
+         * The chapter route is declared BEFORE the book route. Both would match
+         * "/scripture/john/3" otherwise — {book} is unconstrained, so the more
+         * specific pattern has to be offered first or the chapter is never
+         * reached. The same collision that made /comments/report resolve as a
+         * video called "report" in Phase 4.
+         */
+        $router->get('/scripture', [LibraryController::class, 'scriptureIndex']);
+        $router->get('/scripture/{book}/{chapter:\d+}', [LibraryController::class, 'scriptureBook']);
+        $router->get('/scripture/{book}', [LibraryController::class, 'scriptureBook']);
         $router->get('/playlist/{slug}', [LibraryController::class, 'playlist']);
         $router->get('/search', [LibraryController::class, 'search']);
 

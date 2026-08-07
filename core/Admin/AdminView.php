@@ -496,6 +496,21 @@ final class AdminView
             $video->id
         );
 
+        /*
+         * The two sources are shown separately, because they behave
+         * differently: clearing the box removes what an editor typed and does
+         * nothing to what the description says. Merging them into one list
+         * would make the box look like it governed both.
+         */
+        $scripture = (array) ($data['scripture'] ?? ['manual' => '', 'parsed' => []]);
+        $scriptureManual = $this->attr((string) ($scripture['manual'] ?? ''));
+
+        $fromDescription = (array) ($scripture['parsed'] ?? []);
+        $scriptureParsed = $fromDescription === []
+            ? '<p class="muted small">Nothing found in the description.</p>'
+            : '<p class="muted small">Also found in the description, and kept in step with it: '
+              . e(implode(', ', $fromDescription)) . '.</p>';
+
         $captionPanel = ($data['captionsSupported'] ?? false)
             ? $this->captionPanel(
                 (array) ($data['captions'] ?? []),
@@ -571,6 +586,16 @@ final class AdminView
                 <p class="muted small">Categories you set here take precedence over the collection this
                    video came from at your video provider.</p>
                 {$checkboxes}
+              </fieldset>
+
+              <fieldset>
+                <legend>Scripture</legend>
+                <label>Passages <input type="text" name="scripture" value="{$scriptureManual}"
+                                       placeholder="John 3:16; Romans 8:28-30"></label>
+                <p class="muted small">Separate them however you like — this reads the same shapes as a
+                   description, so "1 Cor 13", "I Corinthians 13" and "First Corinthians 13" all work.
+                   Empty the box to remove the ones you added.</p>
+                {$scriptureParsed}
               </fieldset>
 
               <fieldset>

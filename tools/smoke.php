@@ -3605,6 +3605,129 @@ check(
     'the switch only goes one way'
 );
 
+/* ---------------------------------------------------------------- scripture
+ *
+ * The parser is pinned by unit tests and the queries by integration tests.
+ * What neither can tell you is whether a person can get from an edit form to a
+ * browse page — which is the whole feature, and the shape of defect this
+ * project keeps finding.
+ */
+echo "\nScripture\n";
+
+$scriptureEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'The edit screen offers a scripture field',
+    str_contains($scriptureEdit['body'], 'name="scripture"'),
+    'the index can only ever be filled by the description'
+);
+
+/*
+ * Saved through the REAL form, with a description that also carries a
+ * reference — so both sources are exercised at once and the two rules can be
+ * seen not to fight.
+ */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'      => csrfFrom($scriptureEdit['body']),
+    'id'          => (string) $videoRow,
+    '_whole_form' => '1',
+    'action'      => 'save',
+    'title'       => 'A Test Video',
+    'slug'        => $videoSlug,
+    'description' => 'A sermon drawing on Romans 8:28-30.',
+    'scripture'   => 'Micah 6:8',
+], $jar);
+
+check(
+    'A typed reference is stored',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {scripture_refs} WHERE video_id = ? AND book = ? AND source = ?',
+        [$videoRow, 'micah', 'manual']
+    ) === 1,
+    'the field renders but nothing reads it'
+);
+check(
+    'and one in the description is found without being typed',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {scripture_refs} WHERE video_id = ? AND book = ? AND source = ?',
+        [$videoRow, 'romans', 'parsed']
+    ) === 1,
+    'descriptions are never read, so the back catalogue can never be indexed'
+);
+
+$afterScripture = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check(
+    'The edit screen shows what the description contributed, separately',
+    str_contains($afterScripture['body'], 'Also found in the description'),
+    'an editor cannot tell which references clearing the box would remove'
+);
+
+/* The browse pages, which are the point of storing any of this. */
+$scriptureIndex = get($baseUrl . '/scripture');
+check('The scripture index renders', $scriptureIndex['status'] === 200, "got {$scriptureIndex['status']}");
+check('It lists a book that has something under it', str_contains($scriptureIndex['body'], 'Romans'));
+check(
+    'and groups by testament',
+    str_contains($scriptureIndex['body'], 'New Testament'),
+    'seventy-three books in one list is not a page anybody scans'
+);
+check(
+    'A book with nothing under it is not listed',
+    !str_contains($scriptureIndex['body'], 'Habakkuk'),
+    'sixty-eight empty books bury the five worth clicking'
+);
+
+$bookPage = get($baseUrl . '/scripture/romans');
+check('A book page renders', $bookPage['status'] === 200, "got {$bookPage['status']}");
+check('It lists the video', str_contains($bookPage['body'], 'A Test Video'));
+check(
+    'and offers the chapters that have content',
+    str_contains($bookPage['body'], '/scripture/romans/8'),
+    'a book page with no way into a chapter is a dead end'
+);
+
+$chapterPage = get($baseUrl . '/scripture/romans/8');
+check('A chapter page renders', $chapterPage['status'] === 200, "got {$chapterPage['status']}");
+check('It lists the video', str_contains($chapterPage['body'], 'A Test Video'));
+
+check(
+    'A chapter with nothing in it is empty rather than showing the library',
+    !str_contains(get($baseUrl . '/scripture/romans/2')['body'], 'A Test Video'),
+    'an empty id list was ignored and the whole library listed instead'
+);
+check(
+    'A chapter the book does not have is a 404',
+    get($baseUrl . '/scripture/romans/99')['status'] === 404
+);
+check(
+    'A book that does not exist is a 404',
+    get($baseUrl . '/scripture/hesitations')['status'] === 404
+);
+
+/*
+ * The route order check. Both patterns match "/scripture/romans/8" and the
+ * unconstrained {book} one would swallow it — the same collision that made
+ * /comments/report resolve as a video called "report" in Phase 4.
+ */
+check(
+    'The chapter route is not swallowed by the book route',
+    str_contains($chapterPage['body'], 'Romans 8'),
+    'the chapter number was read as a book name'
+);
+
+/* And the watch page has to link out, or nothing leads to any of this. */
+$watchScripture = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'The watch page shows the passages',
+    str_contains($watchScripture['body'], 'Micah 6:8'),
+    'references are stored and never shown'
+);
+check(
+    'and links them to everything else on that chapter',
+    str_contains($watchScripture['body'], '/scripture/micah/6'),
+    'a reference printed as text is a dead end'
+);
+
 /* ----------------------------------------------------------------- webhooks
  *
  * Nothing here is delivered. The scheduled jobs are switched off for this run,

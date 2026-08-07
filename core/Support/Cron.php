@@ -168,6 +168,41 @@ final class Cron
             );
         };
 
+        /*
+         * Read descriptions nobody has read yet for scripture references.
+         *
+         * A job rather than a one-off, because parsing happens in PHP and a
+         * library of a thousand sermons cannot be worked through inside the
+         * request that upgrades the schema. Batched, and it stops on its own
+         * once every video carries a scanned-at stamp — including the ones that
+         * turned out to mention no passage at all, which is why the stamp is a
+         * column and not the presence of a reference.
+         */
+        $this->handlers['scripture.scan'] = static function (App $app): string {
+            $scripture = $app->container()->get(\Portal\Content\ScriptureRepository::class);
+
+            $videos = $scripture->unscanned();
+
+            if ($videos === []) {
+                return 'Every description has been read.';
+            }
+
+            $found = 0;
+            foreach ($videos as $video) {
+                $references = \Portal\Content\ScriptureParser::parse($video['description']);
+
+                if ($references !== []) {
+                    $found += $scripture->replace($video['id'], $references, 'parsed');
+                }
+
+                // Stamped whether or not anything was found, or a library full
+                // of sermons that mention no passage would be re-read forever.
+                $scripture->markScanned($video['id']);
+            }
+
+            return sprintf('Read %d description(s), found %d reference(s).', count($videos), $found);
+        };
+
         $this->handlers['webhooks.cleanup'] = static function (App $app): string {
             $removed = $app->container()
                 ->get(\Portal\Content\WebhookRepository::class)
@@ -203,6 +238,7 @@ final class Cron
             'notifications.send' => 900,
             'webhooks.deliver'   => 60,
             'webhooks.cleanup'   => 86400,
+            'scripture.scan'     => 300,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

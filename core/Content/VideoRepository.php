@@ -142,6 +142,34 @@ final class VideoRepository
         if (empty($filters['includeHidden'])) {
             $conditions[] = 'v.hidden = 0';
         }
+
+        /*
+         * Restrict to a set of ids somebody else worked out.
+         *
+         * How the scripture pages list videos: that index answers "which videos
+         * touch Romans 8" and then hands the ids here, so the listing goes
+         * through the same visibility rules, the same presenter and the same
+         * pagination as every other one. Building a second listing query beside
+         * this one would be a second place for the members-only rules to be
+         * wrong, and only one of them would get fixed.
+         *
+         * An EMPTY array is a real answer meaning "nothing matched", and it has
+         * to produce no rows rather than being ignored — the natural bug here
+         * is an empty IN () that either is a syntax error or silently drops the
+         * filter and lists the whole library.
+         */
+        if (isset($filters['ids']) && is_array($filters['ids'])) {
+            $ids = array_values(array_unique(array_filter(array_map('intval', $filters['ids']))));
+
+            if ($ids === []) {
+                $conditions[] = '1 = 0';
+            } else {
+                $conditions[] = 'v.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+                foreach ($ids as $id) {
+                    $params[] = $id;
+                }
+            }
+        }
         if (empty($filters['includeMemberOnly'])) {
             $conditions[] = 'v.member_only = 0';
         }

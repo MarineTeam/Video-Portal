@@ -184,6 +184,8 @@ final class App
         $c->singleton(\Portal\Content\AssetRepository::class, static fn (Container $c): \Portal\Content\AssetRepository
             // Outside the document root on purpose — see the migration.
             => new \Portal\Content\AssetRepository($c->get(Db::class), PORTAL_STORAGE));
+        $c->singleton(\Portal\Content\ScriptureRepository::class, static fn (Container $c): \Portal\Content\ScriptureRepository
+            => new \Portal\Content\ScriptureRepository($c->get(Db::class)));
         $c->singleton(\Portal\Content\WebhookRepository::class, static fn (Container $c): \Portal\Content\WebhookRepository
             => new \Portal\Content\WebhookRepository($c->get(Db::class)));
         $c->singleton(\Portal\Content\WebhookDispatcher::class, static fn (Container $c): \Portal\Content\WebhookDispatcher
