@@ -126,6 +126,7 @@ final class AdminController extends Controller
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
             'transcript'     => $this->transcriptSummary($video->id),
             'chapters'       => $this->chapterText($video->id),
+            'assets'         => $this->attachments($video->id),
         ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
     }
 
@@ -165,6 +166,25 @@ final class AdminController extends Controller
      * same reason as the other two panels: on the request that applies
      * migration 0010 the table does not exist yet.
      */
+    /**
+     * A video's attachments.
+     *
+     * Wrapped like the other panels: on the request that applies migration
+     * 0012 the table does not exist yet.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function attachments(int $videoId): array
+    {
+        try {
+            return $this->container->get(\Portal\Content\AssetRepository::class)->forVideo($videoId);
+        } catch (Throwable $e) {
+            error_log('Could not read the attachments: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
     private function chapterText(int $videoId): string
     {
         try {
@@ -270,6 +290,18 @@ final class AdminController extends Controller
 
             case 'restore-revision':
                 return $this->restoreRevision($request, RevisionRepository::VIDEO, $id);
+
+            case 'attach':
+                return $this->attachFile($request, $id);
+
+            case 'detach':
+                $this->container
+                    ->get(\Portal\Content\AssetRepository::class)
+                    ->delete((int) ($request->input('asset') ?? 0));
+
+                Audit::log($this->db(), $this->user()?->email, 'asset.delete', 'video', (string) $id);
+
+                return $this->back($request, 'Attachment removed.');
 
             case 'transcript':
                 return $this->saveTranscript($request, $id);
@@ -1199,6 +1231,77 @@ final class AdminController extends Controller
     private function revisions(): RevisionRepository
     {
         return $this->container->get(RevisionRepository::class);
+    }
+
+    /**
+     * Attach a file to a video.
+     *
+     * The upload is checked before anything is read: PHP's own error code
+     * first, then that it genuinely arrived as an upload, then the size, then
+     * the extension against the allowlist. Reading a 500MB temp file to
+     * discover it is too large is how a shared host runs out of memory.
+     */
+    private function attachFile(Request $request, int $videoId): Response
+    {
+        $upload = $_FILES['attachment'] ?? null;
+
+        if (!is_array($upload) || (int) ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            return $this->back($request, 'Choose a file to attach.', 'error');
+        }
+
+        $error = (int) $upload['error'];
+
+        if ($error !== UPLOAD_ERR_OK) {
+            /*
+             * INI_SIZE and FORM_SIZE are the common ones and they mean the same
+             * thing to the person: it was too big. Naming the limit is more use
+             * than naming the constant, since the host's limit may be lower
+             * than ours and there is nothing here that can change it.
+             */
+            return $this->back($request, match ($error) {
+                UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => sprintf(
+                    'That file is larger than this server accepts. The limit here is %s, and your host may set a lower one.',
+                    \Portal\Content\AssetPolicy::formatSize(\Portal\Content\AssetPolicy::MAX_BYTES)
+                ),
+                UPLOAD_ERR_PARTIAL => 'The upload was interrupted. Try again.',
+                default            => 'That file could not be uploaded.',
+            }, 'error');
+        }
+
+        $temporary = (string) ($upload['tmp_name'] ?? '');
+
+        if (!is_uploaded_file($temporary)) {
+            return $this->back($request, 'That file could not be uploaded.', 'error');
+        }
+
+        $name = (string) ($upload['name'] ?? '');
+
+        if (!\Portal\Content\AssetPolicy::isAllowed($name)) {
+            return $this->back(
+                $request,
+                'That kind of file cannot be attached. Documents, images, and audio only.',
+                'error'
+            );
+        }
+
+        try {
+            $stored = $this->container
+                ->get(\Portal\Content\AssetRepository::class)
+                ->store($videoId, $temporary, $name, $this->user()?->email ?? '');
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'asset.create',
+            'video',
+            (string) $videoId,
+            (string) $stored['original_name']
+        );
+
+        return $this->back($request, 'Attached ' . $stored['original_name'] . '.');
     }
 
     private function transcripts(): \Portal\Content\TranscriptRepository

@@ -111,6 +111,7 @@ final class WatchController extends Controller
                 // Which of this viewer's lists the video is already on, so the
                 // buttons can say "Saved" rather than offering to save
                 // something that is already there.
+                'attachments' => $this->attachments($video->id),
                 'chapters'   => $this->chapters($video->id),
                 'transcript' => $this->transcriptCues($video->id),
                 'savedLists' => $this->savedLists($video->id),
@@ -145,6 +146,33 @@ final class WatchController extends Controller
         // A ceiling for the case where the duration is unknown — a video
         // longer than a day is not one this is being asked to seek into.
         return min($requested, 86400);
+    }
+
+    /**
+     * Files attached to this video.
+     *
+     * Listed without re-checking permission: reaching this page already means
+     * the video is watchable, and the download route checks again for itself.
+     *
+     * @return list<array{id: int, name: string, size: string}>
+     */
+    private function attachments(int $videoId): array
+    {
+        try {
+            $rows = $this->container
+                ->get(\Portal\Content\AssetRepository::class)
+                ->forVideo($videoId);
+
+            return array_map(static fn (array $row): array => [
+                'id'   => (int) $row['id'],
+                'name' => (string) $row['original_name'],
+                'size' => \Portal\Content\AssetPolicy::formatSize((int) $row['size_bytes']),
+            ], $rows);
+        } catch (Throwable $e) {
+            error_log('Could not read the attachments: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /**

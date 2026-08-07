@@ -7,6 +7,7 @@ namespace Portal;
 use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
+use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\FeedController;
@@ -37,6 +38,17 @@ final class Routes
         $router->get('/speaker/{slug}', [LibraryController::class, 'speaker']);
         $router->get('/playlist/{slug}', [LibraryController::class, 'playlist']);
         $router->get('/search', [LibraryController::class, 'search']);
+
+        /*
+         * Attachments. No middleware: the handler checks the VIDEO's rules,
+         * which is stricter than any blanket guard could be — a public video's
+         * handout should reach a stranger, and a members-only one should not,
+         * and only the row knows which this is.
+         *
+         * The trailing name is decoration for the browser's save dialog and is
+         * never read; the id is the whole address.
+         */
+        $router->get('/asset/{id:\d+}/{name}', [AssetDownloadController::class, 'download']);
 
         // No token: see the note on the handler. This is the only POST here
         // that does not verify one, and the reason is written down.

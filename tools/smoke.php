@@ -2228,6 +2228,150 @@ check(
     'a banner survived its own deletion'
 );
 
+echo "\nAttachments\n";
+
+$attachEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The edit screen offers an attachment upload', str_contains($attachEdit['body'], 'name="attachment"'));
+check(
+    'It says attachments follow the video',
+    str_contains($attachEdit['body'], 'Attachments follow the video'),
+    'an editor cannot tell whether a handout on a members-only video is public'
+);
+
+/* A real multipart upload, the way a browser sends one. */
+$notesPath = sys_get_temp_dir() . '/portal-smoke-notes-' . getmypid() . '.pdf';
+file_put_contents($notesPath, "%PDF-1.4\nSmoke test handout.\n");
+
+$attached = uploadWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($attachEdit['body']),
+    'id'     => (string) $videoRow,
+    'action' => 'attach',
+], 'attachment', $notesPath, $jar);
+
+check('Attaching succeeds', $attached['status'] === 302, "got {$attached['status']}");
+
+$assetId = (int) $db->value('SELECT id FROM {file_assets} WHERE video_id = ? ORDER BY id DESC LIMIT 1', [$videoRow]);
+check('The attachment was recorded', $assetId > 0, 'nothing was written');
+
+$storedPath = (string) $db->value('SELECT path FROM {file_assets} WHERE id = ?', [$assetId]);
+check(
+    'The file went outside the document root',
+    $storedPath !== '' && is_file(PORTAL_ROOT . '/storage/' . $storedPath),
+    "expected a file at storage/{$storedPath}"
+);
+check(
+    'and is not reachable by URL',
+    get($baseUrl . '/storage/' . $storedPath)['status'] === 404,
+    'a members-only handout would be public to anybody who guessed the path'
+);
+check(
+    'and is not named after the upload',
+    !str_contains($storedPath, 'notes'),
+    'the stored name should be random'
+);
+
+/* Downloading, with the headers that decide how a browser treats it. */
+$download = getWithJar($baseUrl . '/asset/' . $assetId . '/notes.pdf', $jar);
+check('Downloading succeeds', $download['status'] === 200, "got {$download['status']}");
+check('It carries the file', str_contains($download['body'], 'Smoke test handout'));
+check(
+    'It is served as a PDF from the allowlist',
+    str_contains($download['headers']['content-type'] ?? '', 'application/pdf'),
+    'got "' . ($download['headers']['content-type'] ?? 'nothing') . '"'
+);
+check(
+    'It is sent as an attachment',
+    str_contains($download['headers']['content-disposition'] ?? '', 'attachment'),
+    'an inline file can surprise somebody'
+);
+check(
+    'and the browser is told not to sniff it',
+    ($download['headers']['x-content-type-options'] ?? '') === 'nosniff',
+    'a file that looks like HTML would render in this origin'
+);
+check(
+    'It is not cacheable by a shared cache',
+    str_contains($download['headers']['cache-control'] ?? '', 'private'),
+    'one viewer copy could be served to a stranger'
+);
+
+/* The claim the whole design rests on: the video governs the file. */
+$publicDownload = get($baseUrl . '/asset/' . $assetId . '/notes.pdf');
+check(
+    'A public video s handout reaches a stranger',
+    $publicDownload['status'] === 200,
+    "got {$publicDownload['status']}"
+);
+
+$db->execute('UPDATE {videos} SET member_only = 1 WHERE id = ?', [$videoRow]);
+$membersDownload = get($baseUrl . '/asset/' . $assetId . '/notes.pdf');
+$db->execute('UPDATE {videos} SET member_only = 0 WHERE id = ?', [$videoRow]);
+
+check(
+    'A members-only video s handout does not',
+    $membersDownload['status'] === 404,
+    "got {$membersDownload['status']} — A PRIVATE HANDOUT WAS DOWNLOADABLE"
+);
+
+$db->execute('UPDATE {videos} SET is_published = 0 WHERE id = ?', [$videoRow]);
+$unpublishedDownload = get($baseUrl . '/asset/' . $assetId . '/notes.pdf');
+$db->execute('UPDATE {videos} SET is_published = 1 WHERE id = ?', [$videoRow]);
+
+check(
+    'Unpublishing takes the handout with it',
+    $unpublishedDownload['status'] === 404,
+    "got {$unpublishedDownload['status']}"
+);
+
+/* Executable types are refused. */
+$shellPath = sys_get_temp_dir() . '/portal-smoke-shell-' . getmypid() . '.php';
+file_put_contents($shellPath, "<?php echo 'pwned';");
+
+uploadWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($attachEdit['body']),
+    'id'     => (string) $videoRow,
+    'action' => 'attach',
+], 'attachment', $shellPath, $jar);
+
+check(
+    'A .php cannot be attached',
+    (int) $db->value('SELECT COUNT(*) FROM {file_assets} WHERE original_name LIKE ?', ['%.php']) === 0,
+    'A SHELL WAS UPLOADED'
+);
+
+@unlink($shellPath);
+
+/* The watch page lists it. */
+$watchWithFiles = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'The file is listed under the video',
+    str_contains($watchWithFiles['body'], 'id="attachments-heading"'),
+    'attached and invisible'
+);
+check('It links to the download', str_contains($watchWithFiles['body'], '/asset/' . $assetId . '/'));
+
+/* Removing takes the file with it. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($attachEdit['body']),
+    'id'     => (string) $videoRow,
+    'action' => 'detach',
+    'asset'  => (string) $assetId,
+], $jar);
+
+check(
+    'Removing an attachment deletes the file too',
+    (int) $db->value('SELECT COUNT(*) FROM {file_assets} WHERE id = ?', [$assetId]) === 0
+        && !is_file(PORTAL_ROOT . '/storage/' . $storedPath),
+    'the row went and the file stayed'
+);
+check(
+    'and the download stops working',
+    get($baseUrl . '/asset/' . $assetId . '/notes.pdf')['status'] === 404,
+    'a removed attachment is still downloadable'
+);
+
+@unlink($notesPath);
+
 echo "\nAnalytics\n";
 
 $analytics = getWithJar($baseUrl . '/admin/analytics', $jar);

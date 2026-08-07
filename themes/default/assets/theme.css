@@ -332,6 +332,18 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
  * The subscribe box. Set apart from the listing above it with a rule rather
  * than a panel, so it reads as a footer to the page and not as another card.
  */
+/* Attachments: notes and handouts, above chapters because people come for them. */
+.attachments { margin-top: 2.5rem; max-width: 48rem; }
+.attachment-list { list-style: none; margin: 0; padding: 0; }
+.attachment-list li { border-bottom: 1px solid rgb(148 163 184 / .14); }
+.attachment-list a {
+  display: block;
+  padding: .5rem .25rem;
+  text-decoration: none;
+  color: inherit;
+}
+.attachment-list a:hover { background: rgb(148 163 184 / .08); }
+
 /* Chapters: a handful of links, the fastest way into a long recording. */
 .chapters { margin-top: 2.5rem; max-width: 48rem; }
 .chapter-list { list-style: none; margin: 0; padding: 0; }

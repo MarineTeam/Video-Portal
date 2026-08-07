@@ -135,6 +135,29 @@ $csrfField ??= '';
 
 <?php
 /*
+ * Attachments. Above chapters because a handout is something people came for,
+ * where a chapter list is something they use once they are watching.
+ */
+$attachments ??= [];
+?>
+<?php if ($attachments !== []): ?>
+  <section class="attachments" aria-labelledby="attachments-heading">
+    <h2 class="section-title" id="attachments-heading">Files</h2>
+    <ul class="attachment-list">
+      <?php foreach ($attachments as $file): ?>
+        <li>
+          <a href="/asset/<?= (int) $file['id'] ?>/<?= rawurlencode($file['name']) ?>">
+            <?= e($file['name']) ?>
+            <span class="muted"> · <?= e($file['size']) ?></span>
+          </a>
+        </li>
+      <?php endforeach ?>
+    </ul>
+  </section>
+<?php endif ?>
+
+<?php
+/*
  * Chapters.
  *
  * Above the transcript and not collapsed: there are a handful of them, they

@@ -462,6 +462,12 @@ final class AdminView
         $publishedAt = $this->attr($forInput($video->publishedAt));
         $unpublishAt = $this->attr($forInput($video->unpublishAt));
 
+        $attachmentPanel = $this->attachmentPanel(
+            (array) ($data['assets'] ?? []),
+            $token,
+            $video->id
+        );
+
         $chapterPanel = $this->chapterPanel(
             (string) ($data['chapters'] ?? ''),
             $token,
@@ -634,6 +640,8 @@ final class AdminView
           </div>
         </form>
 
+        {$attachmentPanel}
+
         {$chapterPanel}
 
         {$transcriptPanel}
@@ -650,6 +658,79 @@ final class AdminView
      * unchanged, and somebody starting from nothing types it faster than they
      * could operate an interface.
      */
+    /**
+     * Files attached to a video.
+     *
+     * @param list<array<string, mixed>> $assets
+     */
+    private function attachmentPanel(array $assets, string $token, int $videoId): string
+    {
+        $rows = '';
+
+        foreach ($assets as $asset) {
+            $name = (string) $asset['original_name'];
+
+            $rows .= sprintf(
+                '<tr>
+                   <td><a href="/asset/%d/%s">%s</a><br>
+                       <span class="muted small">%s%s</span></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <input type="hidden" name="asset" value="%d">
+                       <button name="action" value="detach" class="btn tiny danger"
+                               onclick="return confirm(\'Remove this attachment? The file is deleted.\')">Remove</button>
+                     </form>
+                   </td>
+                 </tr>',
+                (int) $asset['id'],
+                rawurlencode($name),
+                e($name),
+                e(\Portal\Content\AssetPolicy::formatSize((int) $asset['size_bytes'])),
+                ((string) $asset['uploaded_by']) === '' ? '' : ' · ' . e((string) $asset['uploaded_by']),
+                $token,
+                $videoId,
+                (int) $asset['id']
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="2" class="muted">Nothing attached.</td></tr>';
+        }
+
+        $limit = \Portal\Content\AssetPolicy::formatSize(\Portal\Content\AssetPolicy::MAX_BYTES);
+        $kinds = implode(', ', array_keys(\Portal\Content\AssetPolicy::types()));
+
+        return <<<HTML
+        <h2>Attachments</h2>
+
+        <table>
+          <tbody>{$rows}</tbody>
+        </table>
+
+        <form method="post" action="/admin/videos" enctype="multipart/form-data">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$videoId}">
+
+          <fieldset>
+            <legend>Attach a file</legend>
+            <p class="muted small">Notes, slides, a handout. Up to {$limit}.</p>
+
+            <label>File <input type="file" name="attachment" required></label>
+
+            <p class="muted small">Allowed: {$kinds}. Anything a browser could execute is refused,
+               including HTML and SVG — an SVG is an image everywhere else and a script container
+               here.</p>
+            <p class="muted small">Attachments follow the video: one on a members-only video is only
+               downloadable by somebody who could watch it, and unpublishing takes it away too.</p>
+
+            <button class="btn" name="action" value="attach">Attach</button>
+          </fieldset>
+        </form>
+        HTML;
+    }
+
     private function chapterPanel(string $chapters, string $token, int $videoId): string
     {
         $value = e($chapters);
