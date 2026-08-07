@@ -20,6 +20,7 @@
 !/plugins/geo/
 !/plugins/comments/
 !/plugins/ratings/
+!/plugins/query-monitor/
 /themes/*
 !/themes/default/
 !/themes/.gitkeep

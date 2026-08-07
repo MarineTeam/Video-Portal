@@ -75,7 +75,17 @@ foreach ((array) glob(PORTAL_PLUGINS . '/*/src/*.php') as $file) {
     }
 
     $slug = basename(dirname(dirname($file)));
-    $class = 'Portal\\Plugins\\' . ucfirst($slug) . '\\' . basename($file, '.php');
+
+    /*
+     * A hyphenated slug becomes StudlyCase, not just a capital first letter.
+     * "query-monitor" is Portal\Plugins\QueryMonitor — ucfirst alone produced
+     * "Query-monitor", which is not a legal namespace segment, so the first
+     * plugin with a two-word slug failed this check while being perfectly
+     * correct. Every existing plugin has a one-word slug, which is why it went
+     * unnoticed until now.
+     */
+    $namespace = str_replace(' ', '', ucwords(str_replace('-', ' ', $slug)));
+    $class = 'Portal\\Plugins\\' . $namespace . '\\' . basename($file, '.php');
 
     try {
         require_once $file;

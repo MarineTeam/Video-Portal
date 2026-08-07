@@ -3605,6 +3605,103 @@ check(
     'the switch only goes one way'
 );
 
+/* ------------------------------------------------------------ query monitor
+ *
+ * Activated here rather than with the other bundled plugins, and turned off
+ * again immediately, because while it is on it prints the SQL of every request
+ * into the footer of every page — which would give an earlier check asserting
+ * that some string is ABSENT a whole new place to find it.
+ *
+ * The two claims worth proving are that it renders at all, and that it does not
+ * render for anybody else. Everything it shows is a description of the database
+ * to whoever reads it.
+ */
+echo "\nQuery monitor\n";
+
+$qmPlugins = getWithJar($baseUrl . '/admin/plugins', $jar);
+check('Query Monitor is listed', str_contains($qmPlugins['body'], 'Query Monitor'));
+
+$qmActivated = postWithJar($baseUrl . '/admin/plugins', [
+    '_token' => csrfFrom($qmPlugins['body']),
+    'slug'   => 'query-monitor',
+    'action' => 'activate',
+], $jar);
+
+check('Activating it succeeds', $qmActivated['status'] === 302, "got {$qmActivated['status']}");
+check(
+    'and it stayed active after the redirect',
+    (int) $db->value('SELECT is_active FROM {plugins} WHERE slug = ?', ['query-monitor']) === 1,
+    'it was deactivated again, which means it threw on load — check the error log'
+);
+
+/*
+ * addCapability had no consumer anywhere in the codebase until this plugin, so
+ * this is the first evidence it works at all — including that activation is
+ * where it runs, rather than on every request.
+ */
+check(
+    'It registered its own capability',
+    (string) $db->value(
+        'SELECT owner_plugin FROM {capabilities} WHERE slug = ?',
+        ['view_query_monitor']
+    ) === 'query-monitor',
+    'the capability the panel checks does not exist, so nobody could ever be granted it'
+);
+
+$qmAdmin = getWithJar($baseUrl . '/admin/videos', $jar);
+
+check(
+    'The panel renders on an admin screen',
+    str_contains($qmAdmin['body'], 'id="query-monitor"'),
+    'the admin layout had no hook point at all before this; if this fails, admin_footer is not firing'
+);
+check(
+    'It reports the query count and the timings',
+    str_contains($qmAdmin['body'], 'queries · ') && str_contains($qmAdmin['body'], 'ms SQL'),
+    'the panel rendered but measured nothing'
+);
+check(
+    'and names the statements the page actually ran',
+    str_contains($qmAdmin['body'], 'SELECT'),
+    'a query monitor showing no queries is measuring the wrong request'
+);
+
+$qmPublic = getWithJar($baseUrl . '/', $jar);
+check(
+    'It renders on the public site too, for a permitted viewer',
+    str_contains($qmPublic['body'], 'id="query-monitor"')
+);
+
+/*
+ * The check that matters. A stranger must see none of this — not the SQL, not
+ * the counts, not the bar. Rendered by the same hook on the same page, so the
+ * only thing standing between the two responses is the capability test.
+ */
+$qmStranger = get($baseUrl . '/');
+check(
+    'A signed-out visitor sees no panel',
+    !str_contains($qmStranger['body'], 'id="query-monitor"'),
+    'the query monitor is describing the database to the public'
+);
+check(
+    'and no SQL of any kind',
+    !str_contains($qmStranger['body'], 'SELECT '),
+    'statements leaked into a page a stranger can load'
+);
+
+/* Off again, and the panel goes with it. */
+postWithJar($baseUrl . '/admin/plugins', [
+    '_token' => csrfFrom($qmAdmin['body']),
+    'slug'   => 'query-monitor',
+    'action' => 'deactivate',
+], $jar);
+
+check(
+    'Deactivating removes the panel',
+    !str_contains(getWithJar($baseUrl . '/admin/videos', $jar)['body'], 'id="query-monitor"'),
+    'a deactivated plugin is still rendering'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

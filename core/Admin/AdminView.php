@@ -93,6 +93,26 @@ final class AdminView
 
         $css = $this->css();
 
+        /*
+         * The admin shell's one hook point.
+         *
+         * Everything a plugin could previously reach was on the public side —
+         * this layout had no do_action at all, so a plugin with something to
+         * say about an admin request had nowhere to say it. Buffered rather
+         * than echoed because this method returns a string; a hook that printed
+         * directly would land above the doctype.
+         *
+         * Deliberately at the end of the body and given the screen name, so
+         * what hooks it can decide whether it applies here. Anything a plugin
+         * renders here is inside the admin area, which is already governed by
+         * its own capability check — but that check governs the PAGE, not what
+         * a plugin chooses to print on it, so a plugin printing anything
+         * sensitive still has to check for itself.
+         */
+        ob_start();
+        do_action('admin_footer', $screen);
+        $pluginFooter = (string) ob_get_clean();
+
         return <<<HTML
         <!doctype html>
         <html lang="en">
@@ -115,6 +135,7 @@ final class AdminView
           {$flash}
           {$body}
         </main>
+        {$pluginFooter}
         </body>
         </html>
         HTML;
