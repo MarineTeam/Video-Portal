@@ -141,6 +141,8 @@ final class Routes
         $router->post('/admin/homepage', [AdminController::class, 'saveHomeRow'], ['admin.area']);
         $router->get('/admin/announcements', [AdminController::class, 'announcementsScreen'], ['admin.area']);
         $router->post('/admin/announcements', [AdminController::class, 'saveAnnouncement'], ['admin.area']);
+        $router->get('/admin/webhooks', [AdminController::class, 'webhooksScreen'], ['admin.area']);
+        $router->post('/admin/webhooks', [AdminController::class, 'saveWebhook'], ['admin.area']);
         $router->get('/admin/speakers', [AdminController::class, 'speakers'], ['admin.area']);
         $router->post('/admin/speakers', [AdminController::class, 'saveSpeaker'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);

@@ -184,6 +184,17 @@ final class CommentRepository
             'updated_at'   => $now,
         ]);
 
+        /*
+         * Fired whatever the moderation status, including "held".
+         *
+         * A comment waiting in a queue is precisely what a moderator wants to
+         * be told about — announcing only the approved ones would notify on the
+         * comments that need no attention and stay silent on the ones that do.
+         * The status is in the payload so a listener that only cares about
+         * published comments can still tell.
+         */
+        do_action('comment_posted', $id, $videoId, $status, $authorName);
+
         return ['id' => $id, 'status' => $status];
     }
 

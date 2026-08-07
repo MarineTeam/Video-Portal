@@ -120,6 +120,96 @@ final class Cron
                 ? $result . " Removed {$pruned} subscription(s) whose target had been deleted."
                 : $result;
         };
+
+        /*
+         * Send the webhook queue, and notice anything newly published.
+         *
+         * Both halves are here rather than in two jobs because they are one
+         * question — "what has happened that somebody should be told about" —
+         * and splitting them would mean a publish detected by one job waiting
+         * for the other job's schedule before it went anywhere.
+         *
+         * Publishing is asked in reverse, exactly as the announcement job asks
+         * it: a scheduled video becomes visible when a comparison starts
+         * returning true, and no code runs at that moment to hook.
+         */
+        $this->handlers['webhooks.deliver'] = static function (App $app): string {
+            $webhooks = $app->container()->get(\Portal\Content\WebhookRepository::class);
+
+            $announced = 0;
+            foreach ($webhooks->unreportedPublishedVideos() as $video) {
+                // The claim comes BEFORE the enqueue. Losing a notification is
+                // recoverable by a person; sending the same one repeatedly to
+                // somebody's integration is not.
+                if (!$webhooks->claimVideo((int) $video['id'])) {
+                    continue;
+                }
+
+                $webhooks->enqueue('video.published', [
+                    'id'          => (int) $video['id'],
+                    'slug'        => (string) $video['slug'],
+                    'title'       => (string) $video['title'],
+                    'publishedAt' => $video['published_at'],
+                ]);
+
+                $announced++;
+            }
+
+            $result = $app->container()->get(\Portal\Content\WebhookDispatcher::class)->run();
+
+            return sprintf(
+                '%d newly published, %d delivered, %d failed%s.',
+                $announced,
+                $result['sent'],
+                $result['failed'],
+                $result['disabled'] > 0
+                    ? sprintf(', %d endpoint(s) switched off', $result['disabled'])
+                    : ''
+            );
+        };
+
+        $this->handlers['webhooks.cleanup'] = static function (App $app): string {
+            $removed = $app->container()
+                ->get(\Portal\Content\WebhookRepository::class)
+                ->prune();
+
+            return "Removed {$removed} old delivery record(s).";
+        };
+    }
+
+    /**
+     * Make sure every core job has a row.
+     *
+     * Core job rows have only ever been written by the INSTALLER, so a site
+     * installed before a job existed never gets one — and a job with no row is
+     * never due, so it silently does nothing forever. That is what happened to
+     * notifications.send: it shipped in Phase 4, every install created before
+     * then has no row for it, and subscriptions on those sites have been
+     * quietly sending nothing since.
+     *
+     * Called after migrations apply, which is the only moment the deployed
+     * code is known to have changed — doing it per request would be a write on
+     * every page load to answer a question whose answer almost never changes.
+     *
+     * INSERT IGNORE, so a job an administrator deliberately disabled is left
+     * disabled rather than being switched back on by an upgrade.
+     */
+    public function ensureCoreJobs(): void
+    {
+        foreach ([
+            'sessions.purge'     => 3600,
+            'videos.sync'        => 900,
+            'shares.cleanup'     => 86400,
+            'notifications.send' => 900,
+            'webhooks.deliver'   => 60,
+            'webhooks.cleanup'   => 86400,
+        ] as $slug => $interval) {
+            $this->db->execute(
+                'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)
+                 VALUES (?, ?, NOW(), 1)',
+                [$slug, $interval]
+            );
+        }
     }
 
     /**

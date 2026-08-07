@@ -3605,6 +3605,202 @@ check(
     'the switch only goes one way'
 );
 
+/* ----------------------------------------------------------------- webhooks
+ *
+ * Nothing here is delivered. The scheduled jobs are switched off for this run,
+ * and pointing a real POST at anything would put a network round trip inside a
+ * single-threaded test server. What these checks are for is the half that is
+ * ours: that the screen is reachable, that a URL the server must not be pointed
+ * at is refused, and — the one that matters — that an ordinary edit really does
+ * put something in the queue.
+ */
+echo "\nWebhooks\n";
+
+$hookScreen = getWithJar($baseUrl . '/admin/webhooks', $jar);
+
+check('Webhooks screen renders', $hookScreen['status'] === 200, "got {$hookScreen['status']}");
+check(
+    'It appears in the admin navigation',
+    str_contains(getWithJar($baseUrl . '/admin', $jar)['body'], '/admin/webhooks'),
+    'a screen only somebody who read the source could find'
+);
+check(
+    'It says deliveries are queued rather than immediate',
+    str_contains($hookScreen['body'], 'queued, not immediate'),
+    'somebody will otherwise report the feature as broken when it is merely waiting for cron'
+);
+check(
+    'and documents how to verify a signature',
+    str_contains($hookScreen['body'], 'X-Portal-Signature'),
+    'a signature nobody is told how to check is a signature nobody checks'
+);
+
+/*
+ * The refusals. An admin typed the URL, so this is not about a malicious
+ * admin — it is that a delivery goes out FROM this server, so an internal
+ * address turns a settings form into a way to reach things that are not
+ * meant to be reachable from outside.
+ */
+foreach ([
+    'http://example.com/hook'                  => 'plain http',
+    'https://127.0.0.1/hook'                   => 'loopback',
+    'https://169.254.169.254/latest/meta-data/' => 'the cloud metadata service',
+    'https://user:pass@example.com/hook'       => 'credentials in the URL',
+    'file:///etc/passwd'                       => 'a file URL',
+] as $badUrl => $what) {
+    postWithJar($baseUrl . '/admin/webhooks', [
+        '_token' => csrfFrom($hookScreen['body']),
+        'action' => 'create',
+        'url'    => $badUrl,
+    ], $jar);
+
+    check(
+        "An endpoint at {$what} is refused",
+        (int) $db->value('SELECT COUNT(*) FROM {webhooks} WHERE url = ?', [$badUrl]) === 0,
+        'the server can be pointed at ' . $what
+    );
+}
+
+/* A real one is accepted, and its secret is shown exactly once. */
+$created = postWithJar($baseUrl . '/admin/webhooks', [
+    '_token'   => csrfFrom($hookScreen['body']),
+    'action'   => 'create',
+    'url'      => 'https://example.com/hooks/smoke',
+    'events'   => ['video.updated'],
+    'description' => 'The smoke test',
+], $jar);
+
+check('A public https endpoint is accepted', $created['status'] === 302, "got {$created['status']}");
+
+$hookId = (int) $db->value('SELECT id FROM {webhooks} WHERE url = ?', ['https://example.com/hooks/smoke']);
+check('and it was stored', $hookId > 0);
+
+$secret = (string) $db->value('SELECT secret FROM {webhooks} WHERE id = ?', [$hookId]);
+/*
+ * The Location header is an ABSOLUTE url — redirect() runs the path through
+ * Config::url() so emailed and cross-origin redirects are never relative — so
+ * it is followed as-is. Prefixing $baseUrl to it produces a doubled URL, which
+ * fetches nothing and then fails the NEXT check too, because the page it
+ * returns has no CSRF token in it.
+ */
+$afterCreate = getWithJar(
+    $created['headers']['location'] ?? ($baseUrl . '/admin/webhooks'),
+    $jar
+);
+
+check(
+    'The signing secret is shown once, on the way back',
+    $secret !== '' && str_contains($afterCreate['body'], $secret),
+    'an endpoint whose secret was never shown cannot verify anything'
+);
+check(
+    'and not again on the next visit',
+    !str_contains(getWithJar($baseUrl . '/admin/webhooks', $jar)['body'], $secret),
+    'every visit reprints every secret'
+);
+check(
+    'It only subscribed to what was ticked',
+    (string) $db->value('SELECT events FROM {webhooks} WHERE id = ?', [$hookId]) === 'video.updated'
+);
+
+/*
+ * The check the whole feature rests on: an ordinary edit, through the real
+ * form, has to put something in the queue. Everything above would pass just as
+ * happily against a set of hooks nothing ever fires — which is exactly what
+ * happened to comment reporting in Phase 4.
+ */
+$queuedBefore = (int) $db->value('SELECT COUNT(*) FROM {webhook_deliveries}');
+
+$videoEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'      => csrfFrom($videoEdit['body']),
+    'id'          => (string) $videoRow,
+    '_whole_form' => '1',
+    'action'      => 'save',
+    'title'       => 'A Test Video',
+    'slug'        => $videoSlug,
+], $jar);
+
+check(
+    'Editing a video queues a delivery',
+    (int) $db->value('SELECT COUNT(*) FROM {webhook_deliveries}') === $queuedBefore + 1,
+    'the events are registered but nothing fires them'
+);
+check(
+    'The queued payload names the event and the video',
+    (function () use ($db): bool {
+        $payload = (string) $db->value(
+            'SELECT payload FROM {webhook_deliveries} ORDER BY id DESC LIMIT 1'
+        );
+        $decoded = json_decode($payload, true);
+
+        return is_array($decoded)
+            && ($decoded['event'] ?? '') === 'video.updated'
+            && isset($decoded['data']['id'], $decoded['occurredAt']);
+    })(),
+    'the body is not the shape a receiver was promised'
+);
+
+/*
+ * An endpoint subscribed to one event must not receive another. Tested through
+ * a real second event rather than by reading the column back, because the
+ * column being right says nothing about whether anything consults it.
+ */
+$beforeUnwanted = (int) $db->value('SELECT COUNT(*) FROM {webhook_deliveries}');
+postWithJar($baseUrl . '/admin/webhooks', [
+    '_token' => csrfFrom($afterCreate['body']),
+    'id'     => (string) $hookId,
+    'action' => 'disable',
+], $jar);
+
+check(
+    'Switching it off stops it being queued for',
+    (function () use ($baseUrl, $jar, $db, $videoRow, $videoSlug, $beforeUnwanted): bool {
+        $edit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+        postWithJar($baseUrl . '/admin/videos', [
+            '_token'      => csrfFrom($edit['body']),
+            'id'          => (string) $videoRow,
+            '_whole_form' => '1',
+            'action'      => 'save',
+            'title'       => 'A Test Video',
+            'slug'        => $videoSlug,
+        ], $jar);
+
+        return (int) $db->value('SELECT COUNT(*) FROM {webhook_deliveries}') === $beforeUnwanted;
+    })(),
+    'a switched-off endpoint is still collecting work'
+);
+
+/* And removing it takes the history with it. */
+postWithJar($baseUrl . '/admin/webhooks', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/webhooks', $jar)['body']),
+    'id'     => (string) $hookId,
+    'action' => 'delete',
+], $jar);
+
+check(
+    'Removing an endpoint removes its queue too',
+    (int) $db->value('SELECT COUNT(*) FROM {webhooks} WHERE id = ?', [$hookId]) === 0
+        && (int) $db->value('SELECT COUNT(*) FROM {webhook_deliveries} WHERE webhook_id = ?', [$hookId]) === 0,
+    'deliveries survived the endpoint they were addressed to'
+);
+
+/*
+ * The cron rows. notifications.send has only ever been created by the
+ * INSTALLER, so every site installed before Phase 4 has no row for it — and a
+ * job with no row is never due, so subscriptions on those sites have been
+ * silently sending nothing. This install is fresh, so the check that means
+ * something is that every job this version defines has a row at all.
+ */
+foreach (['sessions.purge', 'videos.sync', 'shares.cleanup', 'notifications.send',
+          'webhooks.deliver', 'webhooks.cleanup'] as $job) {
+    check(
+        "The {$job} job has a row",
+        (int) $db->value('SELECT COUNT(*) FROM {cron_jobs} WHERE slug = ?', [$job]) === 1,
+        'a job with no row is never due, so it does nothing, silently, forever'
+    );
+}
+
 /* ------------------------------------------------------------ query monitor
  *
  * Activated here rather than with the other bundled plugins, and turned off

@@ -40,6 +40,7 @@ final class AdminView
             'home-rows'     => $this->homeRows($data),
             'analytics'     => $this->analytics($data),
             'announcements' => $this->announcements($data),
+            'webhooks'      => $this->webhooks($data),
             'speakers'      => $this->speakers($data),
             'users'       => $this->users($data),
             'permissions' => $this->permissions($data),
@@ -1985,6 +1986,187 @@ final class AdminView
     }
 
     // --------------------------------------------------------- announcements
+
+    /**
+     * Webhook endpoints, and how their deliveries have been going.
+     *
+     * The delivery history is on the same screen as the endpoints rather than
+     * behind a link, because the question somebody arrives with is almost
+     * always "is this working" and the answer is entirely in the history. An
+     * endpoint row on its own can only say what was configured.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function webhooks(array $data): string
+    {
+        $token = e((string) $data['token']);
+        $deliveries = (array) ($data['deliveries'] ?? []);
+        $pending = (int) ($data['pending'] ?? 0);
+
+        $rows = '';
+        foreach ((array) ($data['webhooks'] ?? []) as $endpoint) {
+            $rows .= $this->webhookCard($endpoint, $token, (array) ($deliveries[(int) $endpoint['id']] ?? []));
+        }
+
+        if ($rows === '') {
+            $rows = '<p class="muted">No endpoints. Nothing is being sent anywhere.</p>';
+        }
+
+        $checkboxes = '';
+        foreach ((array) ($data['events'] ?? []) as $event => $description) {
+            $checkboxes .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="events[]" value="%s" checked> '
+                . '<code>%s</code> — %s</label>',
+                $this->attr((string) $event),
+                e((string) $event),
+                e((string) $description)
+            );
+        }
+
+        /*
+         * Shown once, on the redirect that created or rotated it. The value is
+         * in the database and an admin could read it there, so this is
+         * convenience rather than secrecy — but a screen that reprinted every
+         * secret on every visit would be one more place for one to be seen
+         * over somebody's shoulder.
+         */
+        $secret = (string) ($data['newSecret'] ?? '');
+        $secretBox = $secret === '' ? '' : sprintf(
+            '<div class="flash ok"><p><strong>Signing secret:</strong> <code>%s</code></p>'
+            . '<p class="small">Copy it now — it is not shown again. The receiving system needs it to '
+            . 'verify that a delivery came from here.</p></div>',
+            e($secret)
+        );
+
+        $pendingNote = $pending === 0
+            ? '<p class="muted small">Nothing waiting to be sent.</p>'
+            : sprintf(
+                '<p class="muted small">%d delivery(s) waiting. They go out on the next scheduled run.</p>',
+                $pending
+            );
+
+        return <<<HTML
+        <h1>Webhooks</h1>
+
+        <p class="muted">A POST to another system when something happens here. Every delivery is
+           signed, so the receiver can tell it came from this site and not from somebody who guessed
+           the URL.</p>
+
+        <p class="muted small"><strong>Deliveries are queued, not immediate.</strong> Sending happens
+           on the scheduled run, because doing it while somebody waits would put another server's
+           slowness in front of your own pages. If your host offers cron, point it at the URL on the
+           <a href="/admin/cron">scheduled jobs</a> screen — without it, deliveries only go out when
+           somebody visits the site, which on a quiet day means late rather than never.</p>
+
+        {$secretBox}
+        {$pendingNote}
+
+        {$rows}
+
+        <h2>Add an endpoint</h2>
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+
+          <fieldset>
+            <legend>Where to send it</legend>
+            <label>URL <input type="url" name="url" placeholder="https://example.com/hooks/portal" required></label>
+            <p class="muted small">Must be https, and must be reachable from the public internet.
+               An address on a private network is refused: deliveries go out from this server, so an
+               internal address would let this reach things that are not meant to be reachable from
+               outside.</p>
+
+            <label>Description <input type="text" name="description" placeholder="What is at the other end"></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>What to send</legend>
+            {$checkboxes}
+            <p class="muted small">Tick nothing and it receives everything, including events added in
+               later versions.</p>
+          </fieldset>
+
+          <button class="btn" name="action" value="create">Add endpoint</button>
+        </form>
+
+        <h2>Verifying a delivery</h2>
+        <p class="muted small">Each request carries <code>X-Portal-Signature: t=&lt;unix time&gt;,v1=&lt;hex&gt;</code>,
+           where the hex is <code>HMAC-SHA256</code> of <code>"&lt;t&gt;.&lt;raw body&gt;"</code> using the
+           endpoint's secret. Compare it in constant time, and reject anything whose timestamp is more
+           than a few minutes old — that is what stops a captured delivery being replayed later.</p>
+        HTML;
+    }
+
+    /**
+     * @param array<string, mixed>              $endpoint
+     * @param list<array<string, mixed>>        $deliveries
+     */
+    private function webhookCard(array $endpoint, string $token, array $deliveries): string
+    {
+        $id = (int) $endpoint['id'];
+        $active = (int) $endpoint['is_active'] === 1;
+
+        $status = $active
+            ? '<span class="pill ok">Active</span>'
+            : '<span class="pill bad">Off</span>';
+
+        $reason = (string) $endpoint['disabled_reason'];
+        $reasonNote = $reason === '' ? '' : '<p class="pill bad">' . e($reason) . '</p>';
+
+        $history = '';
+        foreach ($deliveries as $delivery) {
+            $result = match ((string) $delivery['status']) {
+                'delivered' => '<span class="pill ok">' . (int) $delivery['response_status'] . '</span>',
+                'failed'    => '<span class="pill bad">gave up</span>',
+                default     => '<span class="pill">waiting</span>',
+            };
+
+            $history .= sprintf(
+                '<tr><td><code>%s</code></td><td>%s</td><td class="muted small">%s</td>'
+                . '<td class="muted small">%s</td></tr>',
+                e((string) $delivery['event']),
+                $result,
+                e((string) $delivery['created_at']),
+                e((string) $delivery['error'])
+            );
+        }
+
+        $history = $history === ''
+            ? '<p class="muted small">Nothing sent yet.</p>'
+            : '<table><tbody>' . $history . '</tbody></table>';
+
+        $toggle = $active
+            ? '<button name="action" value="disable" class="btn tiny secondary">Switch off</button>'
+            : '<button name="action" value="enable" class="btn tiny">Switch on</button>';
+
+        $events = (string) $endpoint['events'];
+        $eventLabel = $events === \Portal\Content\WebhookPolicy::ALL_EVENTS
+            ? 'every event'
+            : e($events);
+
+        $url = e((string) $endpoint['url']);
+        $description = e((string) $endpoint['description']);
+
+        return <<<HTML
+        <div class="panel">
+          <h3><code>{$url}</code> {$status}</h3>
+          <p class="muted small">{$description}</p>
+          <p class="muted small">Sends: {$eventLabel}</p>
+          {$reasonNote}
+
+          {$history}
+
+          <form method="post" class="inline">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="id" value="{$id}">
+            {$toggle}
+            <button name="action" value="rotate" class="btn tiny secondary"
+                    onclick="return confirm('Replace the signing secret? Deliveries will fail until the receiving system is updated.')">New secret</button>
+            <button name="action" value="delete" class="btn tiny danger"
+                    onclick="return confirm('Remove this endpoint and its delivery history?')">Remove</button>
+          </form>
+        </div>
+        HTML;
+    }
 
     /** @param array<string, mixed> $data */
     private function announcements(array $data): string

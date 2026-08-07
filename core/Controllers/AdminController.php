@@ -276,6 +276,7 @@ final class AdminController extends Controller
             case 'delete':
                 $videos->softDelete($id);
                 Audit::log($this->db(), $this->user()?->email, 'video.delete', 'video', (string) $id, $video->title);
+                do_action('video_deleted', $id, $video->title);
                 return $this->back($request, 'Video moved to trash.');
 
             case 'publish':
@@ -431,6 +432,16 @@ final class AdminController extends Controller
                 }
 
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
+
+                /*
+                 * Fired here rather than in the repository, for the same reason
+                 * the revision snapshot is taken here: this is where a HUMAN
+                 * edit happens. The provider sync calls update() too, and an
+                 * integration woken a hundred times an hour by a routine
+                 * encoding-status refresh would be turned off within a day.
+                 */
+                do_action('video_updated', $id, $video->title);
+
                 return $this->back($request, 'Video saved.');
         }
     }
@@ -1628,6 +1639,101 @@ final class AdminController extends Controller
         return $this->admin('announcements', [
             'announcements' => $this->announcementRepo()->all(),
         ]);
+    }
+
+    // ---------------------------------------------------------------- webhooks
+
+    private function webhookRepo(): \Portal\Content\WebhookRepository
+    {
+        return $this->container->get(\Portal\Content\WebhookRepository::class);
+    }
+
+    public function webhooksScreen(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->webhookRepo();
+        $endpoints = $repo->all();
+
+        // The delivery history is loaded per endpoint rather than as one join,
+        // because a site with two endpoints is the normal case and the join
+        // would be written for a site with fifty.
+        $deliveries = [];
+        foreach ($endpoints as $endpoint) {
+            $deliveries[(int) $endpoint['id']] = $repo->recentDeliveries((int) $endpoint['id'], 10);
+        }
+
+        return $this->admin('webhooks', [
+            'webhooks'   => $endpoints,
+            'deliveries' => $deliveries,
+            'pending'    => $repo->pendingCount(),
+            'events'     => \Portal\Content\WebhookPolicy::events(),
+            // The secret is shown once, on the request that created it, and
+            // never again — it is in the database, so this is convenience
+            // rather than secrecy, but a page that reprints every secret on
+            // every visit is one more place for them to be seen.
+            'newSecret'  => $request->query('secret') ?? '',
+        ]);
+    }
+
+    public function saveWebhook(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->webhookRepo();
+        $action = (string) ($request->input('action') ?? 'create');
+        $id = (int) ($request->input('id') ?? 0);
+
+        switch ($action) {
+            case 'delete':
+                $repo->delete($id);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.delete', 'webhook', (string) $id);
+                return $this->back($request, 'Endpoint removed.');
+
+            case 'disable':
+                $repo->setActive($id, false);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.disable', 'webhook', (string) $id);
+                return $this->back($request, 'Endpoint switched off.');
+
+            case 'enable':
+                $repo->setActive($id, true);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.enable', 'webhook', (string) $id);
+                return $this->back($request, 'Endpoint switched on. Its failure count has been reset.');
+
+            case 'rotate':
+                $secret = $repo->rotateSecret($id);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.rotate', 'webhook', (string) $id);
+                // Through the URL so it survives the redirect. It is a fresh
+                // secret for an endpoint nothing has been signed with yet.
+                return $this->redirect('/admin/webhooks?secret=' . rawurlencode($secret));
+
+            default:
+                $url = trim((string) ($request->input('url') ?? ''));
+
+                $reason = \Portal\Content\WebhookPolicy::rejectionReason(
+                    $url,
+                    $this->config()->bool('webhook_allow_private_addresses', false)
+                );
+
+                if ($reason !== null) {
+                    return $this->back($request, $reason, 'error');
+                }
+
+                $new = $repo->create(
+                    $url,
+                    \Portal\Content\WebhookPolicy::normalizeEvents($request->inputArray('events')),
+                    (string) ($request->input('description') ?? '')
+                );
+
+                $row = $repo->find($new);
+
+                Audit::log($this->db(), $this->user()?->email, 'webhook.create', 'webhook', (string) $new, $url);
+
+                return $this->redirect(
+                    '/admin/webhooks?secret=' . rawurlencode((string) ($row['secret'] ?? ''))
+                );
+        }
     }
 
     public function saveAnnouncement(Request $request): Response

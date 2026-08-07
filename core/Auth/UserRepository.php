@@ -173,6 +173,16 @@ final class UserRepository
               WHERE id = ?',
             [$authorized ? 1 : 0, $authorized ? date('Y-m-d H:i:s') : null, $by, $userId]
         );
+
+        /*
+         * Only the approval fires. Withdrawing access is not the same event and
+         * an integration told "authorized" for both would grant on a revoke —
+         * so there is no hook here for the false case rather than one carrying
+         * a flag somebody has to read correctly.
+         */
+        if ($authorized) {
+            do_action('user_authorized', $userId, $by);
+        }
     }
 
     public function setRole(int $userId, string $roleSlug): void
