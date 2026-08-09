@@ -32,6 +32,13 @@ final class Series
         public readonly bool $hidden = false,
         public readonly bool $featured = false,
         public readonly int $videoCount = 0,
+
+        /**
+         * Locked in order: an episode opens when the one before it has been
+         * watched. Off by default and opt-in per series — most series are a
+         * collection people dip into, and locking those would be wrong.
+         */
+        public readonly bool $sequential = false,
     ) {
     }
 
@@ -57,6 +64,7 @@ final class Series
             featured:    (bool) ($row['featured'] ?? false),
             // Only present when the query asked for it.
             videoCount:  (int) ($row['video_count'] ?? 0),
+            sequential:  (bool) ($row['sequential'] ?? false),
         );
     }
 

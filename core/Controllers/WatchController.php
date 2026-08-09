@@ -57,9 +57,20 @@ final class WatchController extends Controller
             throw HttpException::notFound('There is no video at that address.');
         }
 
+        /*
+         * Locked because the episode before it has not been watched.
+         *
+         * Resolved BEFORE the embed URL is minted, and it suppresses it the
+         * same way a premiere does — so there is no signed URL on the page to
+         * find with developer tools. An editor bypasses it, as with premieres,
+         * because reviewing a course means watching episode nine without
+         * sitting through the first eight.
+         */
+        $locked = $canManage ? null : $this->lockState($video);
+
         $embedUrl = '';
 
-        if (!$premiering || $canManage) {
+        if ($canManage || (!$premiering && $locked === null)) {
             $provider = $this->container->get(VideoProvider::class);
 
             try {
@@ -107,6 +118,13 @@ final class WatchController extends Controller
                      */
                     'premiering'  => $premiering && !$canManage,
                     'premiereAt'  => $premiering ? $this->formatDate($video->publishedAt) : null,
+                    /*
+                     * Null when watchable. When it is not, it names the episode
+                     * to watch first and links to it — "locked" on its own is a
+                     * dead end, and the one thing the person needs is the way
+                     * forward.
+                     */
+                    'locked'      => $locked,
                 ],
                 // Which of this viewer's lists the video is already on, so the
                 // buttons can say "Saved" rather than offering to save
@@ -181,6 +199,103 @@ final class WatchController extends Controller
      *
      * @return list<array{start: int, title: string}>
      */
+    /**
+     * Whether a sequential series is holding this video back.
+     *
+     * Returns null when it is watchable — including for every video that is not
+     * in a sequential series at all, which is nearly all of them, so the cost
+     * on an ordinary page is one field read from a series row already needed
+     * for the breadcrumb.
+     *
+     * FAILS OPEN, deliberately, against this codebase's usual rule that access
+     * checks fail closed. What it is gating is not secret: by the time this
+     * runs, the members-only rules and the authorized flag have already said
+     * this person may watch this video, and all this decides is whether they
+     * may watch it YET. Failing closed on a database hiccup would shut somebody
+     * out of a course they are entitled to, with no way to explain it. The real
+     * boundary is underneath, and it still holds.
+     *
+     * @return array{title: string, url: string}|null
+     */
+    private function lockState(Video $video): ?array
+    {
+        if ($video->seriesId === null) {
+            return null;
+        }
+
+        $user = $this->guard()->user();
+
+        if ($user === null) {
+            // Nobody is signed in, so there is no progress to have. Watching is
+            // already governed by the guards above; a lock here would only
+            // punish a public series for having an order.
+            return null;
+        }
+
+        try {
+            $series = $this->container->get(\Portal\Content\SeriesRepository::class)->find($video->seriesId);
+
+            if ($series === null || !$series->sequential) {
+                return null;
+            }
+
+            /*
+             * The order this VIEWER can see, not the whole series. An episode
+             * hidden from them is skipped rather than becoming a wall they can
+             * never get past.
+             */
+            $episodes = $this->container->get(VideoRepository::class)->forSeries($series->id);
+            $order = array_map(static fn ($v): int => $v->id, $episodes);
+
+            $completed = $this->completedIn($user->id, $order);
+
+            $state = \Portal\Content\UnlockPolicy::state($order, $completed, $video->id);
+
+            if (!$state['locked']) {
+                return null;
+            }
+
+            foreach ($episodes as $episode) {
+                if ($episode->id === $state['requires']) {
+                    return ['title' => $episode->title, 'url' => '/watch/' . $episode->slug];
+                }
+            }
+
+            return null;
+        } catch (Throwable $e) {
+            error_log('Portal: could not resolve the unlock state, so the video is open: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Which of these videos this viewer has finished.
+     *
+     * One query for the whole series rather than one per episode — the mistake
+     * the batched thumbnail modes exist to avoid.
+     *
+     * @param  list<int> $videoIds
+     * @return list<int>
+     */
+    private function completedIn(int $userId, array $videoIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $videoIds))));
+
+        if ($ids === []) {
+            return [];
+        }
+
+        $rows = $this->db()->all(
+            'SELECT video_id FROM {watch_progress}
+              WHERE user_id = ? AND completed_at IS NOT NULL
+                AND video_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')',
+            [$userId, ...$ids]
+        );
+
+        return array_map(static fn (array $row): int => (int) $row['video_id'], $rows);
+    }
+
     /**
      * The passages this video covers, each linking to everything else on it.
      *

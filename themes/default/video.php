@@ -40,6 +40,26 @@ echo $template->partial('header', get_defined_vars());
     <p class="premiere-label">Premieres</p>
     <p class="premiere-date"><?= e((string) ($video['premiereAt'] ?? 'soon')) ?></p>
   </div>
+
+<?php elseif (!empty($video['locked'])): ?>
+  <?php
+  /*
+   * Held back by a series that is meant to be watched in order. Like a
+   * premiere, the embed URL was never minted, so there is nothing on the page
+   * to reach for.
+   *
+   * It names the episode and links to it. "Locked" on its own is a dead end,
+   * and the one thing this person needs is the way forward.
+   */
+  ?>
+  <div class="premiere">
+    <p class="premiere-label">Watch in order</p>
+    <p class="premiere-date">
+      Finish
+      <a href="<?= e($video['locked']['url']) ?>"><?= e($video['locked']['title']) ?></a>
+      first.
+    </p>
+  </div>
 <?php else: ?>
 <div class="player">
   <?php

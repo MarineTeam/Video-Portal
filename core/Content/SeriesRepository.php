@@ -181,7 +181,7 @@ final class SeriesRepository
             $fields['category_id'] = $this->categoryId($attributes['category_id']);
         }
 
-        foreach (['is_published', 'member_only', 'hidden', 'featured'] as $key) {
+        foreach (['is_published', 'member_only', 'hidden', 'featured', 'sequential'] as $key) {
             if (array_key_exists($key, $attributes)) {
                 $fields[$key] = (int) (bool) $attributes[$key];
             }

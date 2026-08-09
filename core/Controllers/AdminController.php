@@ -985,6 +985,7 @@ final class AdminController extends Controller
                         'member_only'  => $request->input('member_only') !== null,
                         'hidden'       => $request->input('hidden') !== null,
                         'featured'     => $request->input('featured') !== null,
+                        'sequential'   => $request->input('sequential') !== null,
                     ]);
                     Audit::log($this->db(), $this->user()?->email, 'series.update', 'series', (string) $id);
                     return $this->back($request, 'Series saved.');

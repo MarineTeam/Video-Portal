@@ -1453,6 +1453,7 @@ final class AdminView
         $memberAttr = $series->memberOnly ? ' checked' : '';
         $hiddenAttr = $series->hidden ? ' checked' : '';
         $featuredAttr = $series->featured ? ' checked' : '';
+        $sequentialAttr = $series->sequential ? ' checked' : '';
 
         return <<<HTML
         <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
@@ -1478,6 +1479,19 @@ final class AdminView
                 <label class="checkbox"><input type="checkbox" name="member_only" value="1"{$memberAttr}> Members only</label>
                 <label class="checkbox"><input type="checkbox" name="hidden" value="1"{$hiddenAttr}> Hidden</label>
                 <label class="checkbox"><input type="checkbox" name="featured" value="1"{$featuredAttr}> Featured</label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Order</legend>
+                <label class="checkbox">
+                  <input type="checkbox" name="sequential" value="1"{$sequentialAttr}>
+                  Watch in order
+                </label>
+                <p class="muted small">Each episode stays locked until the one before it has been watched
+                   to the end. Meant for a course; leave it off for a series people dip into.</p>
+                <p class="muted small">Only the episode immediately before counts, so adding one in the
+                   middle later locks exactly one thing rather than closing the whole course for
+                   somebody who had finished it. Editors are never locked out, so you can still review.</p>
               </fieldset>
 
               <button class="btn" name="action" value="update">Save</button>

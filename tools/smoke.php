@@ -3605,6 +3605,130 @@ check(
     'the switch only goes one way'
 );
 
+/* -------------------------------------------------------- sequential unlock
+ *
+ * The claim that matters is not "a message appears" but "no embed URL is on
+ * the page" — a lock that only hides a player is one anybody can walk past
+ * with developer tools, and it would look identical in a test that checked for
+ * the message.
+ *
+ * Driven as an ordinary signed-in viewer, because an editor bypasses the lock
+ * by design and the administrator this script signs in as would see nothing.
+ */
+echo "\nSequential unlock\n";
+
+$now = date('Y-m-d H:i:s');
+
+$courseId = $db->insert('series', [
+    'slug' => 'a-course', 'title' => 'A Course', 'sequential' => 1,
+    'is_published' => 1, 'created_at' => $now, 'updated_at' => $now,
+]);
+
+$episodeIds = [];
+foreach (['one', 'two'] as $index => $name) {
+    $episodeIds[$name] = $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'smoke-course-' . $name,
+        'slug' => 'course-episode-' . $name, 'title' => 'Episode ' . ucfirst($name),
+        'status' => 'ready', 'is_published' => 1, 'duration' => 100,
+        'series_id' => $courseId, 'series_position' => $index,
+        'created_at' => $now, 'updated_at' => $now,
+    ]);
+}
+
+/* A viewer who is not an editor. */
+$viewerEmail = 'course-viewer@smoke.test';
+$viewerId = $db->insert('users', [
+    'email' => $viewerEmail, 'name' => 'Course Viewer',
+    'authorized' => 1, 'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash('course-viewer-password-1234', PASSWORD_DEFAULT),
+    'created_at' => $now, 'updated_at' => $now,
+]);
+
+$viewerJar = sys_get_temp_dir() . '/portal-smoke-course-' . getmypid() . '.txt';
+@unlink($viewerJar);
+
+$loginPage = getWithJar($baseUrl . '/auth/login', $viewerJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom($loginPage['body']),
+    'email'    => $viewerEmail,
+    'password' => 'course-viewer-password-1234',
+], $viewerJar);
+
+$firstEpisode = getWithJar($baseUrl . '/watch/course-episode-one', $viewerJar);
+check(
+    'The first episode plays',
+    $firstEpisode['status'] === 200 && str_contains($firstEpisode['body'], '<iframe'),
+    'nobody could ever start the course'
+);
+
+$secondEpisode = getWithJar($baseUrl . '/watch/course-episode-two', $viewerJar);
+
+check(
+    'The second episode is held back',
+    str_contains($secondEpisode['body'], 'Watch in order'),
+    'the lock is not applied at all'
+);
+check(
+    'and no player URL is on the page',
+    !str_contains($secondEpisode['body'], 'iframe.mediadelivery.net')
+        && !str_contains($secondEpisode['body'], 'token='),
+    'a signed URL was minted for a locked video, so the lock is decoration'
+);
+check(
+    'It names the episode to watch first, and links to it',
+    str_contains($secondEpisode['body'], 'Episode One')
+        && str_contains($secondEpisode['body'], '/watch/course-episode-one'),
+    '"locked" with no way forward is a dead end'
+);
+
+/* Finishing the first opens the second. */
+$db->execute(
+    'INSERT INTO {watch_progress}
+        (user_id, video_id, position_seconds, duration_seconds, completed_at, updated_at)
+     VALUES (?, ?, 100, 100, NOW(), NOW())',
+    [$viewerId, $episodeIds['one']]
+);
+
+$secondAfter = getWithJar($baseUrl . '/watch/course-episode-two', $viewerJar);
+check(
+    'Finishing the first opens the second',
+    str_contains($secondAfter['body'], '<iframe') && !str_contains($secondAfter['body'], 'Watch in order'),
+    'the course cannot be progressed through at all'
+);
+
+/* An editor is never locked out — reviewing episode nine must not need eight. */
+$db->execute('DELETE FROM {watch_progress} WHERE user_id = ?', [$viewerId]);
+
+check(
+    'An editor is not locked out',
+    str_contains(getWithJar($baseUrl . '/watch/course-episode-two', $jar)['body'], '<iframe'),
+    'nobody can review a course without watching it in full first'
+);
+
+/* And a series that is not sequential locks nothing. */
+$db->execute('UPDATE {series} SET sequential = 0 WHERE id = ?', [$courseId]);
+
+check(
+    'A series that is not sequential locks nothing',
+    !str_contains(getWithJar($baseUrl . '/watch/course-episode-two', $viewerJar)['body'], 'Watch in order'),
+    'every series on the site is now a course'
+);
+
+/* The admin toggle has to exist, or none of the above is reachable. */
+$seriesEdit = getWithJar($baseUrl . '/admin/series/' . $courseId, $jar);
+check(
+    'The series screen offers the toggle',
+    str_contains($seriesEdit['body'], 'name="sequential"'),
+    'the column exists and no form can set it'
+);
+check(
+    'and says what inserting an episode later will do',
+    str_contains($seriesEdit['body'], 'immediately before'),
+    'an editor cannot predict what adding an episode does to people mid-course'
+);
+
+@unlink($viewerJar);
+
 /* ---------------------------------------------------------------- scripture
  *
  * The parser is pinned by unit tests and the queries by integration tests.
