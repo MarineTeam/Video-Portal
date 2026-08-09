@@ -648,6 +648,7 @@ final class AdminController extends Controller
         'timezone',
         'watermark_default',
         'members_thumbnail_default',
+        'require_verified_email',
         'geo_enabled',
         'admin_geo_enabled',
     ];
@@ -2630,6 +2631,9 @@ final class AdminController extends Controller
                 // Default '1': the box is opt-out, because a subscribe form
                 // that nobody switched on is a feature nobody knows exists.
                 'subscriptions_enabled' => $this->config()->setting('subscriptions_enabled', '1'),
+                // Default '0': enforcing this is a decision with real lockout
+                // risk, so it belongs to whoever owns the site.
+                'require_verified_email' => $this->config()->setting('require_verified_email', '0'),
             ],
             'subscriberCount' => $this->subscriberCount(),
             'cronJobs' => $cron->jobs(),
@@ -2675,6 +2679,7 @@ final class AdminController extends Controller
             'podcast_image_url'   => trim($request->input('podcast_image_url') ?? ''),
             'podcast_category'    => trim($request->input('podcast_category') ?? ''),
             'subscriptions_enabled' => $request->input('subscriptions_enabled') !== null ? '1' : '0',
+            'require_verified_email' => $request->input('require_verified_email') !== null ? '1' : '0',
         ]);
         Audit::log($this->db(), $this->user()?->email, 'settings.update');
 

@@ -1726,6 +1726,109 @@ check(
 
 $db->execute('DELETE FROM {comments} WHERE author_email LIKE ?', ['bulk%@smoke.test']);
 
+/* ----------------------------------------------- requiring a confirmed email
+ *
+ * The oldest open item in the project, and the checks that matter are the two
+ * exemptions — a mistake there does not fail a test, it produces a site nobody
+ * can get into.
+ */
+echo "\nConfirmed email addresses\n";
+
+$settingsScreen = getWithJar($baseUrl . '/admin/settings', $jar);
+
+check(
+    'Settings offers the switch',
+    str_contains($settingsScreen['body'], 'name="require_verified_email"'),
+    'the guard exists and nothing can turn it on'
+);
+check(
+    'and says why it cannot lock you out',
+    str_contains($settingsScreen['body'], 'never blocked'),
+    'an owner cannot tell whether turning this on is recoverable'
+);
+check(
+    'It is off to begin with',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {settings} WHERE `key` = ? AND `value` = ?',
+        ['require_verified_email', '1']
+    ) === 0,
+    'an upgrade would start refusing people on a site that never asked'
+);
+
+/*
+ * Switched on, against an account that signed in through a provider — no local
+ * password, not an administrator. That is exactly the case the setting is for,
+ * and the only one it should touch.
+ */
+$db->execute(
+    'INSERT INTO {settings} (`key`, `value`, updated_at) VALUES (?, ?, NOW())
+     ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = NOW()',
+    ['require_verified_email', '1']
+);
+
+$readerId = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['note-reader@smoke.test']);
+$db->execute('UPDATE {users} SET email_verified = 0 WHERE id = ?', [$readerId]);
+
+$verifyJar = sys_get_temp_dir() . '/portal-smoke-verify-' . getmypid() . '.txt';
+@unlink($verifyJar);
+
+$vLogin = getWithJar($baseUrl . '/auth/login', $verifyJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom($vLogin['body']),
+    'email'    => 'note-reader@smoke.test',
+    'password' => 'note-reader-password-1234',
+], $verifyJar);
+
+check(
+    'An account with a local password is never blocked',
+    getWithJar($baseUrl . '/watch/' . $videoSlug, $verifyJar)['status'] === 200,
+    'local sign-in is the way back in on a host with no shell, and this closed it'
+);
+
+/*
+ * Take the password away and the same account becomes provider-only, which is
+ * the case the setting exists for. Done by editing the row rather than by
+ * making a second account, so the ONLY thing that differs between the two
+ * checks is the exemption being tested.
+ */
+$db->execute('UPDATE {users} SET password_hash = NULL WHERE id = ?', [$readerId]);
+
+$blocked = getWithJar($baseUrl . '/watch/' . $videoSlug, $verifyJar);
+
+check(
+    'An unverified provider account is refused',
+    $blocked['status'] === 403 && str_contains($blocked['body'], 'Confirm your email address'),
+    "got {$blocked['status']}"
+);
+check(
+    'and is told what to do about it',
+    str_contains($blocked['body'], 'sign in again'),
+    'a 403 with no way forward is a dead end'
+);
+
+check(
+    'An administrator is never blocked',
+    getWithJar($baseUrl . '/admin/settings', $jar)['status'] === 200
+        && getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['status'] === 200,
+    'the person who can switch this off was locked out by it'
+);
+
+/* Confirming the address lets them straight through. */
+$db->execute('UPDATE {users} SET email_verified = 1 WHERE id = ?', [$readerId]);
+
+check(
+    'Confirming the address is enough',
+    getWithJar($baseUrl . '/watch/' . $videoSlug, $verifyJar)['status'] === 200
+);
+
+/* Off again, and the account restored, so the rest of the run is unaffected. */
+$db->execute('DELETE FROM {settings} WHERE `key` = ?', ['require_verified_email']);
+$db->execute(
+    'UPDATE {users} SET password_hash = ? WHERE id = ?',
+    [password_hash('note-reader-password-1234', PASSWORD_DEFAULT), $readerId]
+);
+@unlink($verifyJar);
+
 echo "\nRatings\n";
 
 /*

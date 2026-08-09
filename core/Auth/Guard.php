@@ -98,6 +98,14 @@ final class Guard
             }
 
             if ($user->isAdmin() || $user->authorized) {
+                $unverified = $this->unverifiedBlock($user);
+
+                if ($unverified !== null) {
+                    return $request->wantsJson()
+                        ? Response::error('Confirm your email address before watching.', 403)
+                        : Response::html($unverified, 403);
+                }
+
                 $this->users->touchLastSeen($user->id);
                 return null;
             }
@@ -196,9 +204,104 @@ final class Guard
         return Response::redirect($this->auth->loginUrl($returnTo));
     }
 
+    /**
+     * The page to show instead of the video, or null to let them through.
+     *
+     * THE OLDEST OPEN ITEM IN THIS PROJECT. All three predecessor apps recorded
+     * "email_verified is not enforced" as a known gap, and this codebase has
+     * carried the claim from the identity provider since Phase 1 without ever
+     * acting on it. Acting on it is a decision with real lockout risk, so it is
+     * built as a switch rather than as a rule — and off, so the risky decision
+     * belongs to whoever owns the site rather than to whoever wrote this.
+     *
+     * Two exemptions, and both are the difference between a setting and a trap:
+     *
+     * ADMINISTRATORS ARE NEVER BLOCKED. The person who can turn this off must
+     * never be locked out by it. That is the same property the geo plugin
+     * protects — restricting the public site can never, on its own, close the
+     * screen that would undo it — and it is the reason this is safe to ship on
+     * by anybody who wants it.
+     *
+     * AN ACCOUNT WITH A LOCAL PASSWORD IS NEVER BLOCKED. There is no
+     * verification flow for local passwords; nothing in this app can ever set
+     * email_verified on one, so requiring it would lock every local account out
+     * permanently with no path back. Local sign-in is the break-glass route on
+     * a host with no shell, and this must not be the thing that closes it.
+     *
+     * What is left is exactly the case the setting is for: an account that came
+     * from an identity provider which said, in so many words, that the address
+     * was not confirmed.
+     */
+    private function unverifiedBlock(User $user): ?string
+    {
+        if ($user->emailVerified || $user->isAdmin() || $user->hasPassword) {
+            return null;
+        }
+
+        try {
+            // Resolved from the container rather than injected: Guard is built
+            // in several places and adding a constructor argument would touch
+            // every one of them for a setting read on one branch.
+            $config = \Portal\Container::instance()->get(\Portal\Config::class);
+
+            if (!$config->settingBool('require_verified_email', false)) {
+                return null;
+            }
+        } catch (\Throwable $e) {
+            // Unreadable settings mean this cannot be ON, because it defaults
+            // to off. Failing open here is failing to the default, not past it.
+            error_log('Portal: could not read the verification setting: ' . $e->getMessage());
+
+            return null;
+        }
+
+        return $this->unverifiedPage($user);
+    }
+
+    private function unverifiedPage(User $user): string
+    {
+        $email = e($user->email);
+
+        return $this->noticePage(
+            'Confirm your email address',
+            <<<HTML
+            <h1>Confirm your email address</h1>
+            <p>You are signed in as <span class="email">{$email}</span>, but the service you
+               signed in with has not confirmed that the address is yours.</p>
+            <p>Check that address for a confirmation message, then sign in again. If there is
+               nothing there, ask whoever runs this site — they can confirm it for you.</p>
+            <a href="/auth/logout">Sign out</a>
+            HTML
+        );
+    }
+
     private function pendingPage(User $user): string
     {
         $email = e($user->email);
+
+        return $this->noticePage(
+            'Account pending approval',
+            <<<HTML
+            <h1>Your account is not approved yet</h1>
+            <p>You are signed in as <span class="email">{$email}</span>, but an administrator
+               has not yet given this account access to the video library.</p>
+            <p>If you were expecting access, let whoever invited you know — they can approve
+               you from the admin area.</p>
+            <a href="/auth/logout">Sign out</a>
+            HTML
+        );
+    }
+
+    /**
+     * The chrome both notices share.
+     *
+     * Standalone HTML rather than a theme template, deliberately: this renders
+     * for somebody the site is refusing, and a 403 page that depends on the
+     * theme booting is a 403 that can become a 500.
+     */
+    private function noticePage(string $title, string $body): string
+    {
+        $title = e($title);
 
         return <<<HTML
         <!doctype html>
@@ -207,7 +310,7 @@ final class Guard
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="robots" content="noindex">
-        <title>Account pending approval</title>
+        <title>{$title}</title>
         <style>
           :root { color-scheme: dark; }
           body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
@@ -224,12 +327,7 @@ final class Guard
         </head>
         <body>
           <main class="card">
-            <h1>Your account is not approved yet</h1>
-            <p>You are signed in as <span class="email">{$email}</span>, but an administrator
-               has not yet given this account access to the video library.</p>
-            <p>If you were expecting access, let whoever invited you know — they can approve
-               you from the admin area.</p>
-            <a href="/auth/logout">Sign out</a>
+            {$body}
           </main>
         </body>
         </html>

@@ -3318,6 +3318,7 @@ final class AdminView
         $allowIndexing = $checked('allow_indexing');
         $podcastExplicit = $checked('podcast_explicit');
         $subscriptionsEnabled = $checked('subscriptions_enabled');
+        $requireVerified = $checked('require_verified_email');
         $subscriberCount = (int) ($data['subscriberCount'] ?? 0);
 
         return <<<HTML
@@ -3397,6 +3398,23 @@ final class AdminView
               <input type="checkbox" name="podcast_explicit" value="1"{$podcastExplicit}>
               Mark this podcast as explicit
             </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Who may watch</legend>
+
+            <label class="checkbox">
+              <input type="checkbox" name="require_verified_email" value="1"{$requireVerified}>
+              Require a confirmed email address
+            </label>
+            <p class="muted small">Only applies to accounts that signed in through an identity
+               provider — Auth0, Google, Microsoft. If that service says the address has not been
+               confirmed, the account can sign in and read the library but cannot watch.</p>
+            <p class="muted small"><strong>Two exemptions, so this can never lock you out.</strong>
+               Administrators are never blocked, because the person who can switch this off must not
+               be shut out by it. Neither is any account with a password set here — there is no way
+               to confirm an address for one, so requiring it would close local sign-in permanently,
+               and local sign-in is how you get back in on a host with no shell.</p>
           </fieldset>
 
           <button class="btn">Save</button>
