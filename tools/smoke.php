@@ -3605,6 +3605,177 @@ check(
     'the switch only goes one way'
 );
 
+/* --------------------------------------------------------------- live streams
+ *
+ * The state is never stored, so the interesting checks are the ones that move
+ * a stream between states by changing only its timestamps — no job runs, and
+ * nothing here presses a "go live" button.
+ */
+echo "\nLive streams\n";
+
+$liveScreen = getWithJar($baseUrl . '/admin/live', $jar);
+check('The live screen renders', $liveScreen['status'] === 200, "got {$liveScreen['status']}");
+check(
+    'It says plainly that this site does not host the stream',
+    str_contains($liveScreen['body'], 'does not host the stream'),
+    'an admin expecting to press go-live finds out at ten to eleven on a Sunday'
+);
+check(
+    'and explains the badge expires on its own',
+    str_contains($liveScreen['body'], 'nobody believes'),
+    'a forgotten stream says LIVE for a month'
+);
+check(
+    'It appears in the admin navigation',
+    str_contains(getWithJar($baseUrl . '/admin', $jar)['body'], '/admin/live')
+);
+
+/* A URL that would execute in an iframe src is refused. */
+foreach ([
+    'javascript:alert(1)'                        => 'a javascript address',
+    'data:text/html,<script>alert(1)</script>'   => 'a data address',
+    'http://example.com/embed/1'                 => 'an insecure address',
+] as $badUrl => $what) {
+    postWithJar($baseUrl . '/admin/live', [
+        '_token'    => csrfFrom($liveScreen['body']),
+        'action'    => 'create',
+        'title'     => 'Refused ' . $what,
+        'embed_url' => $badUrl,
+    ], $jar);
+
+    check(
+        "A stream at {$what} is refused",
+        (int) $db->value('SELECT COUNT(*) FROM {live_streams} WHERE embed_url = ?', [$badUrl]) === 0,
+        'that address would go straight into an iframe src'
+    );
+}
+
+/* A real one, scheduled for the future. */
+postWithJar($baseUrl . '/admin/live', [
+    '_token'    => csrfFrom($liveScreen['body']),
+    'action'    => 'create',
+    'title'     => 'Sunday Service',
+    'embed_url' => 'https://www.youtube.com/embed/smoke-test',
+    'starts_at' => date('Y-m-d\TH:i', time() + 7200),
+], $jar);
+
+$streamId = (int) $db->value('SELECT id FROM {live_streams} WHERE title = ?', ['Sunday Service']);
+check('A well-formed stream is accepted', $streamId > 0);
+
+$streamSlug = (string) $db->value('SELECT slug FROM {live_streams} WHERE id = ?', [$streamId]);
+
+$liveIndex = get($baseUrl . '/live');
+check('The public live page renders', $liveIndex['status'] === 200, "got {$liveIndex['status']}");
+check('It lists the stream', str_contains($liveIndex['body'], 'Sunday Service'));
+check(
+    'A scheduled stream is not shown as live',
+    !str_contains($liveIndex['body'], 'Live now'),
+    'the badge is on before the stream is'
+);
+
+$streamPage = get($baseUrl . '/live/' . $streamSlug);
+check('The stream page renders', $streamPage['status'] === 200, "got {$streamPage['status']}");
+check(
+    'and does not load somebody else\'s frame before it starts',
+    !str_contains($streamPage['body'], 'youtube.com/embed/smoke-test'),
+    'every early visitor makes a request to the broadcaster on our behalf'
+);
+
+/*
+ * Move the start into the past. Nothing else changes — no job, no button —
+ * which is the entire claim about how going live works here.
+ */
+$db->execute('UPDATE {live_streams} SET starts_at = DATE_SUB(NOW(), INTERVAL 5 MINUTE) WHERE id = ?', [$streamId]);
+
+$nowLive = get($baseUrl . '/live/' . $streamSlug);
+check(
+    'Passing its start time is all it takes to go live',
+    str_contains($nowLive['body'], 'youtube.com/embed/smoke-test'),
+    'a stream that has started is not showing'
+);
+check(
+    'and the listing says so',
+    str_contains(get($baseUrl . '/live')['body'], 'Live now')
+);
+
+/* Ending it by hand beats the schedule. */
+postWithJar($baseUrl . '/admin/live', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/live', $jar)['body']),
+    'id'     => (string) $streamId,
+    'action' => 'end',
+], $jar);
+
+check(
+    'Marking it ended takes the frame away at once',
+    !str_contains(get($baseUrl . '/live/' . $streamSlug)['body'], 'youtube.com/embed/smoke-test'),
+    'a stream that finished early keeps broadcasting until its planned end'
+);
+
+/* And putting it back on restores it, because streams get ended by mistake. */
+postWithJar($baseUrl . '/admin/live', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/live', $jar)['body']),
+    'id'     => (string) $streamId,
+    'action' => 'resume',
+], $jar);
+
+check(
+    'Putting it back on works',
+    str_contains(get($baseUrl . '/live/' . $streamSlug)['body'], 'youtube.com/embed/smoke-test'),
+    'one mis-click costs the rest of the broadcast'
+);
+
+/* The safety net: a stream with no end stops claiming to be live. */
+$db->execute(
+    'UPDATE {live_streams} SET starts_at = DATE_SUB(NOW(), INTERVAL 48 HOUR), ends_at = NULL WHERE id = ?',
+    [$streamId]
+);
+
+check(
+    'A stream nobody ended stops saying live',
+    !str_contains(get($baseUrl . '/live')['body'], 'Live now'),
+    'a badge nobody believes on the week it is true'
+);
+
+/* Once there is a recording, the stream page hands over to it. */
+$db->execute('UPDATE {live_streams} SET video_id = ? WHERE id = ?', [$videoRow, $streamId]);
+
+$handover = get($baseUrl . '/live/' . $streamSlug);
+check(
+    'A stream with a recording sends people to it',
+    $handover['status'] === 302 && str_contains($handover['headers']['location'] ?? '', '/watch/' . $videoSlug),
+    "got {$handover['status']}"
+);
+
+/*
+ * Members-only streams are invisible to a stranger.
+ *
+ * The schedule is put back to something LIVE first. Left as it was — 48 hours
+ * old with no end — the safety net has already ended it, and both checks below
+ * would pass without membership deciding anything: the stranger sees nothing
+ * because it is over, and so does everybody else.
+ */
+$db->execute(
+    'UPDATE {live_streams}
+        SET member_only = 1, video_id = NULL, ended_at = NULL,
+            starts_at = DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+      WHERE id = ?',
+    [$streamId]
+);
+
+check(
+    'A members-only stream is a 404 for a stranger',
+    get($baseUrl . '/live/' . $streamSlug)['status'] === 404,
+    'telling somebody a members-only thing exists is itself a leak'
+);
+check(
+    'and is absent from the public listing',
+    !str_contains(get($baseUrl . '/live')['body'], 'Sunday Service')
+);
+check(
+    'but an approved viewer still sees it',
+    str_contains(getWithJar($baseUrl . '/live', $jar)['body'], 'Sunday Service')
+);
+
 /* --------------------------------------------------------------- web push
  *
  * Nothing here is delivered — a real notification needs a real push service and

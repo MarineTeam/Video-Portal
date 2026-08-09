@@ -1747,6 +1747,117 @@ final class AdminController extends Controller
         ]);
     }
 
+    // ------------------------------------------------------------------- live
+
+    private function liveRepo(): \Portal\Content\LiveStreamRepository
+    {
+        return $this->container->get(\Portal\Content\LiveStreamRepository::class);
+    }
+
+    public function liveScreen(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        return $this->admin('live', [
+            'streams' => $this->liveRepo()->all(),
+            // Only ready videos, so a recording cannot be attached to something
+            // that is still encoding and would 404 for everybody who followed
+            // the redirect.
+            'videos'  => $this->container->get(VideoRepository::class)->query([], 1, 100)['items'],
+        ]);
+    }
+
+    public function saveLive(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        $repo = $this->liveRepo();
+        $action = (string) ($request->input('action') ?? 'create');
+        $id = (int) ($request->input('id') ?? 0);
+
+        switch ($action) {
+            case 'delete':
+                $repo->delete($id);
+                Audit::log($this->db(), $this->user()?->email, 'live.delete', 'live', (string) $id);
+                return $this->back($request, 'Stream removed.');
+
+            case 'end':
+                $repo->end($id);
+                Audit::log($this->db(), $this->user()?->email, 'live.end', 'live', (string) $id);
+                return $this->back($request, 'Marked as ended.');
+
+            case 'resume':
+                $repo->resume($id);
+                Audit::log($this->db(), $this->user()?->email, 'live.resume', 'live', (string) $id);
+                return $this->back($request, 'Back on. Its schedule decides again.');
+
+            case 'update':
+                $reason = \Portal\Content\LiveStreamPolicy::rejectionReason(
+                    (string) ($request->input('embed_url') ?? '')
+                );
+
+                if ($reason !== null) {
+                    return $this->back($request, $reason, 'error');
+                }
+
+                $repo->update($id, [
+                    'title'        => $request->input('title'),
+                    'description'  => $request->input('description'),
+                    'embed_url'    => $request->input('embed_url'),
+                    'starts_at'    => $request->input('starts_at'),
+                    'ends_at'      => $request->input('ends_at'),
+                    'video_id'     => $request->input('video_id'),
+                    'is_published' => $request->input('is_published') !== null,
+                    'member_only'  => $request->input('member_only') !== null,
+                ]);
+
+                Audit::log($this->db(), $this->user()?->email, 'live.update', 'live', (string) $id);
+
+                return $this->back($request, $this->liveAdvice($request));
+
+            default:
+                $reason = \Portal\Content\LiveStreamPolicy::rejectionReason(
+                    (string) ($request->input('embed_url') ?? '')
+                );
+
+                if ($reason !== null) {
+                    return $this->back($request, $reason, 'error');
+                }
+
+                $new = $repo->create([
+                    'title'        => $request->input('title'),
+                    'description'  => $request->input('description'),
+                    'embed_url'    => $request->input('embed_url'),
+                    'starts_at'    => $request->input('starts_at'),
+                    'ends_at'      => $request->input('ends_at'),
+                    'is_published' => true,
+                    'member_only'  => $request->input('member_only') !== null,
+                ]);
+
+                Audit::log($this->db(), $this->user()?->email, 'live.create', 'live', (string) $new);
+
+                return $this->back($request, $this->liveAdvice($request));
+        }
+    }
+
+    /**
+     * A saved message that mentions the commonest mistake, if it applies.
+     *
+     * Pasting the page you are watching rather than the embed produces a frame
+     * the other site refuses to render — visible only as an empty rectangle,
+     * with the explanation in a console nobody has open. Saying so at the
+     * moment of saving is the only point where it is cheap to fix.
+     */
+    private function liveAdvice(Request $request): string
+    {
+        $warning = \Portal\Content\LiveStreamPolicy::embedWarning(
+            (string) ($request->input('embed_url') ?? '')
+        );
+
+        return $warning === null ? 'Stream saved.' : 'Stream saved. ' . $warning;
+    }
+
     // ---------------------------------------------------------------- webhooks
 
     private function webhookRepo(): \Portal\Content\WebhookRepository

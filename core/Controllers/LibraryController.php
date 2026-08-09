@@ -475,6 +475,74 @@ final class LibraryController extends Controller
      * twelve of its episodes scattered through a ranking.
      */
     /**
+     * What is on, and what is coming.
+     *
+     * @param array<string, string> $params
+     */
+    public function live(Request $request, array $params = []): Response
+    {
+        $repo = $this->container->get(\Portal\Content\LiveStreamRepository::class);
+        $canWatch = $this->canWatch();
+
+        $slug = (string) ($params['slug'] ?? '');
+
+        if ($slug !== '') {
+            $stream = $repo->findBySlug($slug);
+
+            if ($stream === null || (int) $stream['is_published'] !== 1) {
+                throw HttpException::notFound('There is no stream at that address.');
+            }
+
+            if ((int) $stream['member_only'] === 1 && !$canWatch) {
+                // A 404 rather than a 403, as everywhere else: telling somebody
+                // that a members-only thing exists is itself a leak.
+                throw HttpException::notFound('There is no stream at that address.');
+            }
+
+            /*
+             * Once there is a recording, the stream page hands over to it. The
+             * archive is where somebody looks afterwards, and a page that says
+             * "this ended" beside a recording nobody linked is a dead end.
+             */
+            if ($stream['video_id'] !== null) {
+                $video = $this->videos()->find((int) $stream['video_id']);
+
+                if ($video !== null && $video->isVisible()) {
+                    return Response::redirect($this->config()->url('/watch/' . $video->slug), 302);
+                }
+            }
+
+            return $this->view(
+                $this->themeManager()->loader()->hierarchy('live-stream', ['slug' => $slug]),
+                [
+                    'title'   => (string) $stream['title'],
+                    'heading' => (string) $stream['title'],
+                    'stream'  => $stream,
+                    /*
+                     * The embed URL is only handed to the template when the
+                     * stream is actually on. Before it starts there is nothing
+                     * to watch, and a frame loaded early is a request to
+                     * somebody else's server on behalf of every visitor who
+                     * opened the page hours beforehand.
+                     */
+                    'embedUrl' => $stream['state'] === \Portal\Content\LiveStreamPolicy::LIVE
+                        ? (string) $stream['embed_url']
+                        : '',
+                ]
+            );
+        }
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('live', []),
+            [
+                'title'    => 'Live',
+                'heading'  => 'Live',
+                'streams'  => $repo->upcoming($canWatch),
+            ]
+        );
+    }
+
+    /**
      * Every book with something under it.
      *
      * Only books in use. A page listing all seventy-three with sixty-eight of

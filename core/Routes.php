@@ -44,6 +44,9 @@ final class Routes
          * reached. The same collision that made /comments/report resolve as a
          * video called "report" in Phase 4.
          */
+        $router->get('/live', [LibraryController::class, 'live']);
+        $router->get('/live/{slug}', [LibraryController::class, 'live']);
+
         $router->get('/scripture', [LibraryController::class, 'scriptureIndex']);
         $router->get('/scripture/{book}/{chapter:\d+}', [LibraryController::class, 'scriptureBook']);
         $router->get('/scripture/{book}', [LibraryController::class, 'scriptureBook']);
@@ -152,6 +155,8 @@ final class Routes
         $router->post('/admin/homepage', [AdminController::class, 'saveHomeRow'], ['admin.area']);
         $router->get('/admin/announcements', [AdminController::class, 'announcementsScreen'], ['admin.area']);
         $router->post('/admin/announcements', [AdminController::class, 'saveAnnouncement'], ['admin.area']);
+        $router->get('/admin/live', [AdminController::class, 'liveScreen'], ['admin.area']);
+        $router->post('/admin/live', [AdminController::class, 'saveLive'], ['admin.area']);
         $router->get('/admin/webhooks', [AdminController::class, 'webhooksScreen'], ['admin.area']);
         $router->post('/admin/webhooks', [AdminController::class, 'saveWebhook'], ['admin.area']);
         $router->get('/admin/speakers', [AdminController::class, 'speakers'], ['admin.area']);

@@ -296,6 +296,7 @@ abstract class Controller
             ['label' => 'Homepage',   'path' => '/admin/homepage',      'key' => 'home-rows',     'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
             ['label' => 'Analytics',  'path' => '/admin/analytics',     'key' => 'analytics',     'cap' => \Portal\Auth\Capability::VIEW_ANALYTICS],
             ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
+            ['label' => 'Live',       'path' => '/admin/live', 'key' => 'live', 'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
             ['label' => 'Webhooks',   'path' => '/admin/webhooks', 'key' => 'webhooks', 'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
             ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => \Portal\Auth\Capability::MANAGE_SPEAKERS],
             ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],

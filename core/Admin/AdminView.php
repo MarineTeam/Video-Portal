@@ -41,6 +41,7 @@ final class AdminView
             'analytics'     => $this->analytics($data),
             'announcements' => $this->announcements($data),
             'webhooks'      => $this->webhooks($data),
+            'live'          => $this->live($data),
             'speakers'      => $this->speakers($data),
             'users'       => $this->users($data),
             'permissions' => $this->permissions($data),
@@ -2025,6 +2026,169 @@ final class AdminView
     }
 
     // --------------------------------------------------------- announcements
+
+    /**
+     * Live streams.
+     *
+     * The whole screen leans on one thing being clear: this site does not host
+     * the stream. Every provider it ships with is video-on-demand, so a live
+     * stream here is somebody else's player with a schedule and a place on the
+     * site around it — and an admin who expects to press "go live" and start
+     * broadcasting needs to find that out on this page rather than at ten to
+     * eleven on a Sunday.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function live(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $videoOptions = '<option value="">No recording yet</option>';
+        foreach ((array) ($data['videos'] ?? []) as $video) {
+            $videoOptions .= sprintf(
+                '<option value="%d">%s</option>',
+                $video->id,
+                e($video->title)
+            );
+        }
+
+        $rows = '';
+        foreach ((array) ($data['streams'] ?? []) as $stream) {
+            $rows .= $this->liveRow($stream, $token, $videoOptions);
+        }
+
+        if ($rows === '') {
+            $rows = '<p class="muted">No streams yet.</p>';
+        }
+
+        $hours = \Portal\Content\LiveStreamPolicy::MAX_UNENDED_HOURS;
+
+        return <<<HTML
+        <h1>Live</h1>
+
+        <p class="muted"><strong>This site does not host the stream.</strong> Every video provider it
+           works with is on-demand, so a live stream here is the player from wherever you are actually
+           broadcasting — YouTube, Vimeo, your own server — with a schedule and a page on this site
+           around it.</p>
+
+        <p class="muted small">Paste the EMBED address, not the page you watch on. A watch page cannot
+           be framed, and the result is an empty rectangle with the explanation only in the browser
+           console.</p>
+
+        <p class="muted small">Going live needs nothing to run: a stream is on when its start time has
+           passed, so it appears on time even on a morning nobody has visited the site. A stream with
+           no end time stops saying "live" after {$hours} hours, because a badge that has been up for
+           three weeks is one nobody believes on the week it is true.</p>
+
+        {$rows}
+
+        <h2>Add a stream</h2>
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+
+          <fieldset>
+            <legend>Details</legend>
+            <label>Title <input type="text" name="title" required></label>
+            <label>Embed address <input type="url" name="embed_url"
+                                        placeholder="https://www.youtube.com/embed/…" required></label>
+            <label>Description <textarea name="description" rows="3"></textarea></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>When</legend>
+            <label>Starts <input type="datetime-local" name="starts_at"></label>
+            <label>Ends <input type="datetime-local" name="ends_at"></label>
+            <p class="muted small">Leave the end blank if you do not know. You can mark it as ended at
+               any time, and that beats whatever the schedule says.</p>
+            <label class="checkbox"><input type="checkbox" name="member_only" value="1"> Members only</label>
+          </fieldset>
+
+          <button class="btn" name="action" value="create">Add stream</button>
+        </form>
+        HTML;
+    }
+
+    /** @param array<string, mixed> $stream */
+    private function liveRow(array $stream, string $token, string $videoOptions): string
+    {
+        $id = (int) $stream['id'];
+
+        $state = match ((string) $stream['state']) {
+            \Portal\Content\LiveStreamPolicy::LIVE => '<span class="pill bad">Live now</span>',
+            \Portal\Content\LiveStreamPolicy::ENDED => '<span class="pill">Ended</span>',
+            default => '<span class="pill ok">Scheduled</span>',
+        };
+
+        $forInput = static function (mixed $value): string {
+            if ($value === null || $value === '') {
+                return '';
+            }
+            try {
+                return (new \DateTimeImmutable((string) $value))->format('Y-m-d\TH:i');
+            } catch (\Throwable) {
+                return '';
+            }
+        };
+
+        $title = $this->attr((string) $stream['title']);
+        $embed = $this->attr((string) $stream['embed_url']);
+        $description = e((string) ($stream['description'] ?? ''));
+        $starts = $this->attr($forInput($stream['starts_at']));
+        $ends = $this->attr($forInput($stream['ends_at']));
+
+        $published = (int) $stream['is_published'] === 1 ? ' checked' : '';
+        $members = (int) $stream['member_only'] === 1 ? ' checked' : '';
+
+        $selectedVideo = (int) ($stream['video_id'] ?? 0);
+        $options = $selectedVideo > 0
+            ? str_replace(
+                'value="' . $selectedVideo . '"',
+                'value="' . $selectedVideo . '" selected',
+                $videoOptions
+            )
+            : $videoOptions;
+
+        // "End it now" and "put it back" are the same button in two states.
+        // Ending is one click and streams are ended by mistake mid-service,
+        // where having no way back costs the rest of the broadcast.
+        $endButton = $stream['ended_at'] === null
+            ? '<button name="action" value="end" class="btn tiny secondary">Mark as ended</button>'
+            : '<button name="action" value="resume" class="btn tiny">Put it back on</button>';
+
+        $url = e((string) $stream['url']);
+
+        return <<<HTML
+        <div class="panel">
+          <h3>{$title} {$state}</h3>
+          <p class="muted small"><a href="{$url}">{$url}</a></p>
+
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <input type="hidden" name="id" value="{$id}">
+
+            <label>Title <input type="text" name="title" value="{$title}"></label>
+            <label>Embed address <input type="url" name="embed_url" value="{$embed}"></label>
+            <label>Description <textarea name="description" rows="2">{$description}</textarea></label>
+            <label>Starts <input type="datetime-local" name="starts_at" value="{$starts}"></label>
+            <label>Ends <input type="datetime-local" name="ends_at" value="{$ends}"></label>
+
+            <label>Recording <select name="video_id">{$options}</select></label>
+            <p class="muted small">Once this is set, the stream's page sends people to the recording
+               instead — which is where they look afterwards.</p>
+
+            <label class="checkbox"><input type="checkbox" name="is_published" value="1"{$published}> Published</label>
+            <label class="checkbox"><input type="checkbox" name="member_only" value="1"{$members}> Members only</label>
+
+            <div class="actions">
+              <button class="btn" name="action" value="update">Save</button>
+              {$endButton}
+              <button name="action" value="delete" class="btn tiny danger"
+                      onclick="return confirm('Remove this stream?')">Remove</button>
+            </div>
+          </form>
+        </div>
+        HTML;
+    }
 
     /**
      * Webhook endpoints, and how their deliveries have been going.
