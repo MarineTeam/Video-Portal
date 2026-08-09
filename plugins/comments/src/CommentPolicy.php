@@ -137,4 +137,89 @@ final class CommentPolicy
     {
         return [self::STATUS_APPROVED, self::STATUS_SPAM, self::STATUS_REMOVED];
     }
+
+    // ------------------------------------------------------------- editing
+
+    /**
+     * How long an author may change their own words.
+     *
+     * Fifteen minutes covers the reason people actually want this — a typo, a
+     * sentence that came out wrong, a name spelled incorrectly — and stops
+     * short of the reason not to allow it, which is rewriting a comment other
+     * people have already replied to. After the window it stands, and the
+     * moderator queue is the way to have it removed.
+     */
+    public const EDIT_WINDOW_SECONDS = 900;
+
+    /**
+     * May this person still edit this comment?
+     *
+     * Authorship is compared on the EMAIL rather than the user id, the same
+     * choice the newcomer rule makes: somebody whose account was deleted and
+     * recreated is still the same person, and this is not a permission that
+     * grants anything beyond their own words.
+     *
+     * A removed or spam comment cannot be edited. Editing one would be a way
+     * to slip past a moderator's decision by keeping the row and replacing
+     * everything in it.
+     */
+    public static function canEdit(
+        string $authorEmail,
+        string $viewerEmail,
+        string $status,
+        string $createdAt,
+        ?int $now = null
+    ): bool {
+        if ($viewerEmail === '' || strcasecmp($authorEmail, $viewerEmail) !== 0) {
+            return false;
+        }
+
+        if ($status !== self::STATUS_APPROVED && $status !== self::STATUS_PENDING) {
+            return false;
+        }
+
+        $created = strtotime($createdAt);
+
+        if ($created === false) {
+            // A timestamp that cannot be read is not one to grant a window
+            // from. Fails closed, which here costs an edit and nothing else.
+            return false;
+        }
+
+        return ($now ?? time()) - $created <= self::EDIT_WINDOW_SECONDS;
+    }
+
+    /**
+     * What status an edited comment should have.
+     *
+     * The same decision a NEW comment would get, which closes the obvious
+     * bypass: post something harmless, wait for it to be approved, then edit it
+     * into whatever you actually wanted to say. Re-running the rule means an
+     * established voice keeps their comment visible while a newcomer's goes
+     * back to the queue, and obvious spam is caught either way — the same
+     * answers the site already gives, applied to the same text.
+     */
+    public static function statusAfterEdit(
+        string $moderationMode,
+        int $approvedCount,
+        string $body
+    ): string {
+        return self::initialStatus($moderationMode, $approvedCount, $body);
+    }
+
+    /**
+     * May this person remove their own comment?
+     *
+     * No time limit, unlike editing. The two are different acts: an edit
+     * changes what a reply is answering, so it has to stop; a deletion leaves a
+     * tombstone where the comment had replies, so the thread still reads. And
+     * somebody who wants their own words off a public page should not be told
+     * they are fourteen minutes too late.
+     */
+    public static function canDelete(string $authorEmail, string $viewerEmail, string $status): bool
+    {
+        return $viewerEmail !== ''
+            && strcasecmp($authorEmail, $viewerEmail) === 0
+            && ($status === self::STATUS_APPROVED || $status === self::STATUS_PENDING);
+    }
 }

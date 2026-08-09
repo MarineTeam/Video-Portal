@@ -26,14 +26,17 @@ final class CommentView
         string $formHtml,
         string $notice = '',
         string $reportAction = '',
-        string $csrfField = ''
+        string $csrfField = '',
+        string $viewerEmail = '',
+        array $pagination = [],
+        string $videoSlug = ''
     ): string {
-        $count = self::countAll($comments);
+        $count = (int) ($pagination['total'] ?? self::countAll($comments));
         $heading = $count === 1 ? '1 comment' : $count . ' comments';
 
         $items = '';
         foreach ($comments as $comment) {
-            $items .= self::one($comment, false, $reportAction, $csrfField);
+            $items .= self::one($comment, false, $reportAction, $csrfField, $viewerEmail);
         }
 
         if ($items === '') {
@@ -45,6 +48,7 @@ final class CommentView
             : '<p class="comment-notice">' . e($notice) . '</p>';
 
         $css = self::css();
+        $pager = self::pager($pagination, $videoSlug);
 
         return <<<HTML
         <section class="comments" aria-labelledby="comments-heading" id="comments">
@@ -53,6 +57,7 @@ final class CommentView
           {$noticeHtml}
           {$formHtml}
           <div class="comment-list">{$items}</div>
+          {$pager}
         </section>
         HTML;
     }
@@ -62,7 +67,8 @@ final class CommentView
         array $comment,
         bool $isReply,
         string $reportAction = '',
-        string $csrfField = ''
+        string $csrfField = '',
+        string $viewerEmail = ''
     ): string {
         $id = (int) $comment['id'];
 
@@ -79,7 +85,7 @@ final class CommentView
 
         $replies = '';
         foreach ((array) ($comment['replies'] ?? []) as $reply) {
-            $replies .= self::one($reply, true, $reportAction, $csrfField);
+            $replies .= self::one($reply, true, $reportAction, $csrfField, $viewerEmail);
         }
 
         $replyBlock = $replies === '' ? '' : '<div class="comment-replies">' . $replies . '</div>';
@@ -112,16 +118,131 @@ final class CommentView
             }
         }
 
+        /*
+         * The author's own controls.
+         *
+         * The decision is made HERE only about what to show. Both routes check
+         * again for themselves, because a button that is merely absent is not
+         * a permission — anybody can post the form without ever seeing it.
+         */
+        if (empty($comment['removed']) && $viewerEmail !== '' && isset($comment['authorEmail'])) {
+            $mine = strcasecmp((string) $comment['authorEmail'], $viewerEmail) === 0;
+
+            $canEdit = $mine && CommentPolicy::canEdit(
+                (string) $comment['authorEmail'],
+                $viewerEmail,
+                (string) $comment['status'],
+                (string) $comment['createdAt']
+            );
+
+            if ($mine && CommentPolicy::canDelete(
+                (string) $comment['authorEmail'],
+                $viewerEmail,
+                (string) $comment['status']
+            )) {
+                $actions .= sprintf(
+                    '<form method="post" action="/comments/delete" class="comment-report">%s
+                       <input type="hidden" name="comment_id" value="%d">
+                       <button type="submit" class="comment-reply-btn"
+                               onclick="return confirm(\'Delete your comment?\')">Delete</button>
+                     </form>',
+                    $csrfField,
+                    $id
+                );
+            }
+        }
+
         $when = self::when((string) $comment['createdAt']);
+
+        /*
+         * Said out loud when the words have changed. A comment rewritten under
+         * three replies is a different thing from the one they answered, and a
+         * reader has no other way to tell.
+         */
+        $edited = empty($comment['edited']) ? '' : ' <span class="muted">(edited)</span>';
+
+        /*
+         * The edit box, inside a <details>.
+         *
+         * No JavaScript at all. A button plus a hidden form needs a script to
+         * connect them, and when the script does not run the button silently
+         * does nothing — which is worse than no button. <details> is the same
+         * interaction, built in, and it works in a browser with scripting
+         * switched off and in a reader that never had any.
+         */
+        $editForm = '';
+        if (!empty($canEdit)) {
+            $editForm = sprintf(
+                '<details class="comment-edit">
+                   <summary>Edit</summary>
+                   <form method="post" action="/comments/edit">%s
+                     <input type="hidden" name="comment_id" value="%d">
+                     <label class="visually-hidden" for="comment-edit-body-%d">Edit your comment</label>
+                     <textarea id="comment-edit-body-%d" name="body" rows="4">%s</textarea>
+                     <button type="submit" class="btn tiny">Save</button>
+                   </form>
+                 </details>',
+                $csrfField,
+                $id,
+                $id,
+                $id,
+                e((string) $comment['body'])
+            );
+        }
 
         return <<<HTML
         <article class="comment" id="comment-{$id}">
-          <p class="comment-meta"><strong>{$author}</strong> <span class="muted">{$when}</span></p>
+          <p class="comment-meta"><strong>{$author}</strong> <span class="muted">{$when}</span>{$edited}</p>
           {$body}
+          {$editForm}
           <p class="comment-actions">{$actions}</p>
           {$replyBlock}
         </article>
         HTML;
+    }
+
+    /**
+     * Page links, when there is more than one page.
+     *
+     * Plain links carrying `?comments=N#comments`, so the browser's back button
+     * works and a page of a thread can be linked to. A JavaScript pager would
+     * be smoother and would make page two unreachable to anybody the script
+     * failed for — including a search engine, which is the only way the older
+     * half of a long thread ever gets found.
+     *
+     * @param array{page?: int, pages?: int, total?: int} $pagination
+     */
+    private static function pager(array $pagination, string $videoSlug): string
+    {
+        $page = (int) ($pagination['page'] ?? 1);
+        $pages = (int) ($pagination['pages'] ?? 1);
+
+        if ($pages <= 1) {
+            return '';
+        }
+
+        $base = $videoSlug === '' ? '' : '/watch/' . rawurlencode($videoSlug);
+
+        $link = static fn (int $to, string $label): string => sprintf(
+            '<a class="comment-page" href="%s?comments=%d#comments">%s</a>',
+            e($base),
+            $to,
+            e($label)
+        );
+
+        $out = '';
+
+        if ($page > 1) {
+            $out .= $link($page - 1, 'Newer');
+        }
+
+        $out .= sprintf('<span class="muted small">Page %d of %d</span>', $page, $pages);
+
+        if ($page < $pages) {
+            $out .= $link($page + 1, 'Older');
+        }
+
+        return '<nav class="comment-pager" aria-label="Comment pages">' . $out . '</nav>';
     }
 
     /**

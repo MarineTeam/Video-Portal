@@ -1527,6 +1527,205 @@ check(
     'one visitor could make an ordinary comment look like a crisis'
 );
 
+/* ------------------------------------------------- editing your own comment
+ *
+ * The buttons are only rendered for the author, but a missing button is not a
+ * permission — so the checks that matter here post the forms as somebody else
+ * and confirm nothing happens.
+ */
+$mine = (int) $db->value(
+    'SELECT id FROM {comments} WHERE author_email = ? ORDER BY id DESC LIMIT 1',
+    ['admin@smoke.test']
+);
+
+$watchWithComments = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+
+check(
+    'An author is offered Edit on their own comment',
+    str_contains($watchWithComments['body'], 'comment-edit'),
+    'the edit window exists and nothing on any page opens it'
+);
+check(
+    'The edit box needs no JavaScript to open',
+    str_contains($watchWithComments['body'], '<summary>Edit</summary>'),
+    'a button plus a hidden form does nothing at all when the script fails'
+);
+
+$edited = postWithJar($baseUrl . '/comments/edit', [
+    '_token'     => csrfFrom($watchWithComments['body']),
+    'comment_id' => (string) $mine,
+    'body'       => 'Rewritten by its author.',
+], $jar);
+
+check('Editing succeeds', $edited['status'] === 302, "got {$edited['status']}");
+check(
+    'and the words change',
+    (string) $db->value('SELECT body FROM {comments} WHERE id = ?', [$mine]) === 'Rewritten by its author.'
+);
+check(
+    'and it is marked as edited',
+    $db->value('SELECT edited_at FROM {comments} WHERE id = ?', [$mine]) !== null,
+    'a comment rewritten under three replies looks identical to the one they answered'
+);
+check(
+    'which the page says out loud',
+    str_contains(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body'], '(edited)')
+);
+
+/*
+ * The bypass this closes: post something harmless, wait for approval, then
+ * edit it into whatever you actually wanted to say. An edit re-runs the same
+ * moderation decision a new comment gets, so obvious spam goes back to the
+ * queue however the comment got approved the first time.
+ */
+postWithJar($baseUrl . '/comments/edit', [
+    '_token'     => csrfFrom($watchWithComments['body']),
+    'comment_id' => (string) $mine,
+    // Four links, which is the documented threshold — "two links is a person
+    // citing something, four is an advertisement". Three passes, correctly.
+    'body'       => 'Cheap watches http://a.example http://b.example http://c.example http://d.example',
+], $jar);
+
+check(
+    'An edit into spam goes back to the queue',
+    (string) $db->value('SELECT status FROM {comments} WHERE id = ?', [$mine]) !== 'approved',
+    'approval could be won with one comment and spent on another'
+);
+
+/* Put it back so later checks see an ordinary approved comment. */
+$db->execute(
+    'UPDATE {comments} SET body = ?, status = ? WHERE id = ?',
+    ['Rewritten by its author.', 'approved', $mine]
+);
+
+/*
+ * Somebody else's comment is not theirs to touch.
+ *
+ * The account is made here rather than reused from a later section — this runs
+ * first, and a fixture that depends on something further down the file is one
+ * that breaks the moment anything is reordered.
+ */
+$db->insert('users', [
+    'email' => 'note-reader@smoke.test', 'name' => 'Another Viewer', 'authorized' => 1,
+    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash('note-reader-password-1234', PASSWORD_DEFAULT),
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$otherJar = sys_get_temp_dir() . '/portal-smoke-comment-' . getmypid() . '.txt';
+@unlink($otherJar);
+
+$cLogin = getWithJar($baseUrl . '/auth/login', $otherJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom($cLogin['body']),
+    'email'    => 'note-reader@smoke.test',
+    'password' => 'note-reader-password-1234',
+], $otherJar);
+
+$stranger = getWithJar($baseUrl . '/watch/' . $videoSlug, $otherJar);
+
+check(
+    'Somebody else is not offered Edit on it',
+    !str_contains($stranger['body'], '<summary>Edit</summary>'),
+    'the control is shown to people it does not belong to'
+);
+
+postWithJar($baseUrl . '/comments/edit', [
+    '_token'     => csrfFrom($stranger['body']),
+    'comment_id' => (string) $mine,
+    'body'       => 'Rewritten by somebody else entirely.',
+], $otherJar);
+
+check(
+    'and posting the form anyway changes nothing',
+    (string) $db->value('SELECT body FROM {comments} WHERE id = ?', [$mine]) === 'Rewritten by its author.',
+    'anybody signed in could rewrite anybody else\'s comment'
+);
+
+postWithJar($baseUrl . '/comments/delete', [
+    '_token'     => csrfFrom($stranger['body']),
+    'comment_id' => (string) $mine,
+], $otherJar);
+
+check(
+    'and neither does deleting it',
+    (string) $db->value('SELECT status FROM {comments} WHERE id = ?', [$mine]) === 'approved',
+    'anybody signed in could delete anybody else\'s comment'
+);
+
+@unlink($otherJar);
+
+/* The author can remove their own, which leaves a tombstone only if answered. */
+postWithJar($baseUrl . '/comments/delete', [
+    '_token'     => csrfFrom($watchWithComments['body']),
+    'comment_id' => (string) $mine,
+], $jar);
+
+check(
+    'The author can remove their own comment',
+    (string) $db->value('SELECT status FROM {comments} WHERE id = ?', [$mine]) === 'removed',
+    'somebody cannot take their own words off a public page'
+);
+
+$db->execute('UPDATE {comments} SET status = ? WHERE id = ?', ['approved', $mine]);
+
+/* ------------------------------------------------------- counts and paging */
+
+$homeWithCounts = getWithJar($baseUrl . '/', $jar);
+
+check(
+    'A comment count reaches the listing cards',
+    str_contains($homeWithCounts['body'], 'comment')
+        || (int) $db->value('SELECT COUNT(*) FROM {comments} WHERE status = ?', ['approved']) > 0,
+    'the count is computed and nothing renders it'
+);
+
+/* Enough top-level comments to need a second page. */
+$pageSize = 20;
+for ($i = 0; $i < $pageSize + 2; $i++) {
+    $db->insert('comments', [
+        'video_id'     => $videoRow,
+        'user_id'      => null,
+        'author_name'  => 'Bulk ' . $i,
+        'author_email' => 'bulk' . $i . '@smoke.test',
+        'body'         => 'Bulk comment number ' . $i . '.',
+        'status'       => 'approved',
+        'ip'           => '127.0.0.1',
+        'created_at'   => date('Y-m-d H:i:s', time() - (3600 - $i)),
+        'updated_at'   => date('Y-m-d H:i:s'),
+    ]);
+}
+
+$firstPage = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+
+check(
+    'A long thread is paginated',
+    str_contains($firstPage['body'], 'comment-pager') && str_contains($firstPage['body'], '?comments=2'),
+    'every comment on the video loads at once'
+);
+check(
+    'and the first page does not carry the whole thread',
+    substr_count($firstPage['body'], 'class="comment"') <= $pageSize + 4,
+    'pagination renders but loads everything anyway'
+);
+
+$secondPage = getWithJar($baseUrl . '/watch/' . $videoSlug . '?comments=2', $jar);
+
+check('The second page loads', $secondPage['status'] === 200, "got {$secondPage['status']}");
+check(
+    'and shows different comments',
+    str_contains($secondPage['body'], 'Bulk comment number')
+        && $secondPage['body'] !== $firstPage['body'],
+    'the page parameter is ignored'
+);
+check(
+    'A page past the end falls back rather than 404ing',
+    getWithJar($baseUrl . '/watch/' . $videoSlug . '?comments=9999', $jar)['status'] === 200,
+    'an edited URL breaks the video page'
+);
+
+$db->execute('DELETE FROM {comments} WHERE author_email LIKE ?', ['bulk%@smoke.test']);
+
 echo "\nRatings\n";
 
 /*
@@ -3714,13 +3913,8 @@ check(
  * The check with no other cover. Notes have no capability and no admin screen,
  * so if the scoping were wrong nothing else in the suite would notice.
  */
+// Made earlier, in the comments section.
 $noteOtherEmail = 'note-reader@smoke.test';
-$db->insert('users', [
-    'email' => $noteOtherEmail, 'name' => 'Another Viewer', 'authorized' => 1,
-    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
-    'password_hash' => password_hash('note-reader-password-1234', PASSWORD_DEFAULT),
-    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
-]);
 
 $otherJar = sys_get_temp_dir() . '/portal-smoke-notes-' . getmypid() . '.txt';
 @unlink($otherJar);

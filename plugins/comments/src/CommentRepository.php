@@ -32,12 +32,82 @@ final class CommentRepository
      *
      * @return list<array<string, mixed>> top-level comments, each with 'replies'
      */
-    public function thread(int $videoId, bool $includeHidden = false): array
+    /** Top-level comments per page. Replies always travel with their parent. */
+    public const PER_PAGE = 20;
+
+    /**
+     * One page of the thread.
+     *
+     * Paginated on TOP-LEVEL comments only, and replies come with whichever
+     * parent they belong to however many there are. A page boundary drawn
+     * through a conversation would put answers on one page and the question on
+     * another, which is not a shorter page — it is an unreadable one.
+     *
+     * The first query asks only for the ids on this page, so a video with two
+     * thousand comments loads twenty parents and their replies rather than all
+     * two thousand rows. That was the whole problem: the original version
+     * selected every comment on the video and filtered in PHP, which is fine
+     * for the first year and is a memory limit afterwards.
+     *
+     * @return array{comments: list<array<string, mixed>>, page: int, pages: int, total: int}
+     */
+    public function page(int $videoId, int $page = 1, bool $includeHidden = false): array
     {
-        $rows = $this->db->all(
-            'SELECT * FROM {comments} WHERE video_id = ? ORDER BY created_at ASC',
+        $total = (int) $this->db->value(
+            'SELECT COUNT(*) FROM {comments}
+              WHERE video_id = ? AND parent_id IS NULL'
+              . ($includeHidden ? '' : ' AND status IN (\'approved\', \'removed\')'),
             [$videoId]
         );
+
+        $pages = max(1, (int) ceil($total / self::PER_PAGE));
+        $page = max(1, min($page, $pages));
+
+        $parents = $this->db->all(
+            'SELECT id FROM {comments}
+              WHERE video_id = ? AND parent_id IS NULL'
+              . ($includeHidden ? '' : ' AND status IN (\'approved\', \'removed\')') . '
+              ORDER BY created_at ASC, id ASC
+              LIMIT ' . self::PER_PAGE . ' OFFSET ' . (($page - 1) * self::PER_PAGE),
+            [$videoId]
+        );
+
+        $ids = array_map(static fn (array $row): int => (int) $row['id'], $parents);
+
+        return [
+            'comments' => $ids === [] ? [] : $this->thread($videoId, $includeHidden, $ids),
+            'page'     => $page,
+            'pages'    => $pages,
+            'total'    => $total,
+        ];
+    }
+
+    /**
+     * @param list<int>|null $parentIds when given, only these top-level
+     *                                  comments and their replies are loaded
+     */
+    public function thread(int $videoId, bool $includeHidden = false, ?array $parentIds = null): array
+    {
+        if ($parentIds === []) {
+            return [];
+        }
+
+        if ($parentIds === null) {
+            $rows = $this->db->all(
+                'SELECT * FROM {comments} WHERE video_id = ? ORDER BY created_at ASC',
+                [$videoId]
+            );
+        } else {
+            $placeholders = implode(',', array_fill(0, count($parentIds), '?'));
+
+            $rows = $this->db->all(
+                'SELECT * FROM {comments}
+                  WHERE video_id = ?
+                    AND (id IN (' . $placeholders . ') OR parent_id IN (' . $placeholders . '))
+                  ORDER BY created_at ASC',
+                [$videoId, ...$parentIds, ...$parentIds]
+            );
+        }
 
         $replyCounts = [];
         foreach ($rows as $row) {
@@ -65,6 +135,14 @@ final class CommentRepository
                 'status'    => $status,
                 'createdAt' => (string) $row['created_at'],
                 'removed'   => $status === CommentPolicy::STATUS_REMOVED,
+                /*
+                 * The author's address travels with the comment so the view can
+                 * decide whether to offer Edit — and is never rendered. It is
+                 * the one field here that must not reach a page: an address
+                 * shown beside a comment is an address a spammer harvests.
+                 */
+                'authorEmail' => (string) $row['author_email'],
+                'edited'    => $row['edited_at'] !== null,
                 'replies'   => [],
             ];
 
@@ -91,6 +169,62 @@ final class CommentRepository
             'SELECT COUNT(*) FROM {comments} WHERE video_id = ? AND status = ?',
             [$videoId, CommentPolicy::STATUS_APPROVED]
         );
+    }
+
+    /**
+     * Visible counts for a whole listing at once.
+     *
+     * Batched, because the alternative is a query per card — the mistake the
+     * batched thumbnail modes exist to avoid, and one that would land on the
+     * homepage of every site with this plugin on.
+     *
+     * @param  list<int> $videoIds
+     * @return array<int, int> video id => count, omitting videos with none
+     */
+    public function countsFor(array $videoIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $videoIds))));
+
+        if ($ids === []) {
+            return [];
+        }
+
+        $rows = $this->db->all(
+            'SELECT video_id, COUNT(*) AS total FROM {comments}
+              WHERE status = ? AND video_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')
+              GROUP BY video_id',
+            [CommentPolicy::STATUS_APPROVED, ...$ids]
+        );
+
+        $counts = [];
+        foreach ($rows as $row) {
+            $counts[(int) $row['video_id']] = (int) $row['total'];
+        }
+
+        return $counts;
+    }
+
+    /**
+     * How long the moderation queue has been waiting.
+     *
+     * The oldest pending comment, which is the number that says whether a queue
+     * is being worked or merely exists. A count alone does not: three comments
+     * posted this morning and three from March look identical.
+     *
+     * @return array{count: int, oldest: ?string}
+     */
+    public function queueAge(): array
+    {
+        $row = $this->db->first(
+            'SELECT COUNT(*) AS total, MIN(created_at) AS oldest
+               FROM {comments} WHERE status = ?',
+            [CommentPolicy::STATUS_PENDING]
+        );
+
+        return [
+            'count'  => (int) ($row['total'] ?? 0),
+            'oldest' => $row['oldest'] ?? null,
+        ];
     }
 
     /**
@@ -196,6 +330,31 @@ final class CommentRepository
         do_action('comment_posted', $id, $videoId, $status, $authorName);
 
         return ['id' => $id, 'status' => $status];
+    }
+
+    /** @return array<string, mixed>|null */
+    public function find(int $commentId): ?array
+    {
+        return $this->db->first('SELECT * FROM {comments} WHERE id = ?', [$commentId]);
+    }
+
+    /**
+     * Replace the words of a comment, and re-decide whether it is visible.
+     *
+     * The status is passed in rather than preserved, because an edit re-runs
+     * the same moderation decision a new comment gets — see
+     * CommentPolicy::statusAfterEdit. Keeping the old status would let somebody
+     * post something harmless, wait for approval, and then edit it into
+     * whatever they actually wanted to say.
+     */
+    public function edit(int $commentId, string $body, string $status): void
+    {
+        $this->db->execute(
+            'UPDATE {comments}
+                SET body = ?, status = ?, edited_at = NOW(), updated_at = NOW()
+              WHERE id = ?',
+            [$body, $status, $commentId]
+        );
     }
 
     public function setStatus(int $commentId, string $status): void

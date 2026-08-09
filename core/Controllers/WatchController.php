@@ -89,6 +89,9 @@ final class WatchController extends Controller
                 'title' => $video->title,
                 'video' => [
                     'id'          => $video->id,
+                    // Carried so a plugin rendering under the video can build a
+                    // link back to this page — the comments pager needs one.
+                    'slug'        => $video->slug,
                     'title'       => $video->title,
                     'description' => $video->description,
                     'embedUrl'    => $embedUrl,
