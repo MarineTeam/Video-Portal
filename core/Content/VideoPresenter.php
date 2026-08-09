@@ -53,6 +53,13 @@ final class VideoPresenter
                 'duration'       => $video->duration,
                 'status'         => $video->status,
                 'encodeProgress' => $video->encodeProgress,
+                /*
+                 * A premiere is listed before it plays, so a card has to say
+                 * so. Carried as a date rather than a boolean because a badge
+                 * reading "Premiering" without saying when is an invitation to
+                 * click something that will not play.
+                 */
+                'premiereAt'     => $video->isPremiering() ? $video->publishedAt : null,
             ];
         }
 

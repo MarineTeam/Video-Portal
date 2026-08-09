@@ -8,6 +8,7 @@ use Portal\Admin\AdminView;
 use Portal\Auth\Capability;
 use Portal\Auth\UserRepository;
 use Portal\Content\CategoryRepository;
+use Portal\Content\RevisionRepository;
 use Portal\Content\ThumbnailPolicy;
 use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
@@ -123,7 +124,104 @@ final class AdminController extends Controller
             'series'         => $this->seriesRepo()->all(true),
             'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
-        ]);
+            'transcript'     => $this->transcriptSummary($video->id),
+            'chapters'       => $this->chapterText($video->id),
+            'assets'         => $this->attachments($video->id),
+            'captions'       => $this->captions($video),
+            'captionsSupported' => $this->captionProvider() !== null,
+            'scripture'      => $this->scriptureForEdit($video->id),
+        ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
+    }
+
+    /**
+     * The history panel's data for one subject.
+     *
+     * Wrapped because on the request that applies migration 0008 the table does
+     * not exist yet, and an edit screen that 500s because a history panel could
+     * not load is a worse outcome than one without the panel.
+     *
+     * @return array{revisions: list<array<string, mixed>>, revisionDifferences: array<int, mixed>}
+     */
+    /**
+     * The transcript summary for the edit screen, or null.
+     *
+     * Wrapped for the same reason as the revision panel: on the request that
+     * applies migration 0009 the table does not exist yet, and an edit screen
+     * that 500s because of a summary line is worse than one without it.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function transcriptSummary(int $videoId): ?array
+    {
+        try {
+            return $this->transcripts()->find($videoId);
+        } catch (Throwable $e) {
+            error_log('Could not read the transcript: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * The chapter list as text, in the shape it was typed.
+     *
+     * So changing one title does not mean rebuilding the list. Wrapped for the
+     * same reason as the other two panels: on the request that applies
+     * migration 0010 the table does not exist yet.
+     */
+    /**
+     * A video's attachments.
+     *
+     * Wrapped like the other panels: on the request that applies migration
+     * 0012 the table does not exist yet.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function attachments(int $videoId): array
+    {
+        try {
+            return $this->container->get(\Portal\Content\AssetRepository::class)->forVideo($videoId);
+        } catch (Throwable $e) {
+            error_log('Could not read the attachments: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    private function chapterText(int $videoId): string
+    {
+        try {
+            return \Portal\Content\ChapterParser::toText(
+                $this->container->get(\Portal\Content\ChapterRepository::class)->forVideo($videoId)
+            );
+        } catch (Throwable $e) {
+            error_log('Could not read the chapters: ' . $e->getMessage());
+
+            return '';
+        }
+    }
+
+    private function revisionPanel(string $subjectType, int $subjectId): array
+    {
+        try {
+            $repo = $this->revisions();
+            $revisions = $repo->forSubject($subjectType, $subjectId);
+
+            $differences = [];
+            foreach ($revisions as $revision) {
+                $differences[(int) $revision['id']] = $repo->differences(
+                    $subjectType,
+                    $subjectId,
+                    (array) $revision['data']
+                );
+            }
+
+            return ['revisions' => $revisions, 'revisionDifferences' => $differences];
+        } catch (Throwable $e) {
+            error_log('Could not load the revision history: ' . $e->getMessage());
+
+            return ['revisions' => [], 'revisionDifferences' => []];
+        }
     }
 
     public function updateVideo(Request $request): Response
@@ -143,10 +241,43 @@ final class AdminController extends Controller
 
         $action = $request->input('action') ?? 'save';
 
+        /*
+         * A rejected value comes back as a message on the form, not as a 400.
+         *
+         * Every other admin screen here already did this; the video save did
+         * not, so a mistyped date or a backwards schedule threw the editor onto
+         * an error page with their other changes lost. The repository is still
+         * the thing that refuses — this only decides how the refusal is shown.
+         */
+        try {
+            return $this->saveVideo($request, $videos, $video, $id, $action);
+        } catch (HttpException $e) {
+            /*
+             * Only a bad value. A 403 has to stay a 403 — turning "you may not
+             * publish" into a flash message would make a refused action look
+             * like a failed one, and the capability checks in this switch are
+             * the point of them being there.
+             */
+            if ($e->status !== 400) {
+                throw $e;
+            }
+
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    private function saveVideo(
+        Request $request,
+        VideoRepository $videos,
+        \Portal\Content\Video $video,
+        int $id,
+        string $action
+    ): Response {
         switch ($action) {
             case 'delete':
                 $videos->softDelete($id);
                 Audit::log($this->db(), $this->user()?->email, 'video.delete', 'video', (string) $id, $video->title);
+                do_action('video_deleted', $id, $video->title);
                 return $this->back($request, 'Video moved to trash.');
 
             case 'publish':
@@ -161,28 +292,159 @@ final class AdminController extends Controller
                 Audit::log($this->db(), $this->user()?->email, 'video.unpublish', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video unpublished.');
 
+            case 'restore-revision':
+                return $this->restoreRevision($request, RevisionRepository::VIDEO, $id);
+
+            case 'attach':
+                return $this->attachFile($request, $id);
+
+            case 'detach':
+                $this->container
+                    ->get(\Portal\Content\AssetRepository::class)
+                    ->delete((int) ($request->input('asset') ?? 0));
+
+                Audit::log($this->db(), $this->user()?->email, 'asset.delete', 'video', (string) $id);
+
+                return $this->back($request, 'Attachment removed.');
+
+            case 'transcript':
+                return $this->saveTranscript($request, $id);
+
+            case 'caption':
+                return $this->saveCaption($request, $video);
+
+            case 'caption-delete':
+                return $this->deleteCaption($request, $video);
+
+            case 'chapters':
+                $submitted = trim((string) ($request->input('chapters') ?? ''));
+                $chapters = \Portal\Content\ChapterParser::parse($submitted);
+
+                /*
+                 * Checked BEFORE the write, not after.
+                 *
+                 * An empty box is a legitimate answer — that is how somebody
+                 * removes chapters. Text that produced nothing is a format
+                 * mistake, and the first version of this refused it with a
+                 * message after having already replaced the list with the
+                 * empty one. The message was right and the damage was done:
+                 * one mistyped save silently wiped a real list.
+                 */
+                if ($chapters === [] && $submitted !== '') {
+                    return $this->back(
+                        $request,
+                        'No chapters could be read from that, so nothing was changed. Each line needs a timestamp first, like "2:15 The reading".',
+                        'error'
+                    );
+                }
+
+                $stored = $this->container
+                    ->get(\Portal\Content\ChapterRepository::class)
+                    ->replace($id, $chapters);
+
+                Audit::log($this->db(), $this->user()?->email, 'chapters.save', 'video', (string) $id, (string) $stored);
+
+                return $this->back($request, $stored === 0
+                    ? 'Chapters cleared.'
+                    : sprintf('Saved %d chapter(s).', $stored));
+
+            case 'transcript-delete':
+                $this->transcripts()->delete($id);
+                Audit::log($this->db(), $this->user()?->email, 'transcript.delete', 'video', (string) $id);
+                return $this->back($request, 'Transcript removed.');
+
             default:
+                /*
+                 * Snapshot before the write, so the newest revision is the
+                 * state you can go back TO rather than the one you are about
+                 * to be in. Recorded here rather than in the repository
+                 * because this is where a HUMAN edit happens — the provider
+                 * sync also calls update(), and burying one editorial change
+                 * under a hundred machine writes would make the history
+                 * useless for the thing it exists to do.
+                 */
+                $this->revisions()->record(RevisionRepository::VIDEO, $id, $this->user()?->email ?? '');
+
+                /*
+                 * Absent and empty are different answers.
+                 *
+                 * A field the form did not send means "leave this alone"; a
+                 * field sent empty means "clear it". Collapsing the two —
+                 * which this did — makes any POST carrying a subset of the
+                 * form silently destroy everything it left out. A smoke check
+                 * that saved a thumbnail setting detached the video from its
+                 * series and its speaker, and nothing said so.
+                 *
+                 * The real edit form always submits every select, so this was
+                 * invisible from the browser. It is still wrong: a plugin
+                 * screen, a future partial form, or a bulk action would each
+                 * hit it, and the loss looks like the data was never there.
+                 */
+                $whole = $request->input('_whole_form') !== null;
+
+                $seriesRaw = $request->input('series_id');
+                $speakerRaw = $request->input('speaker_id');
+
                 $videos->update($id, [
                     'title'          => $request->input('title') ?? $video->title,
-                    'description'    => $request->input('description'),
+                    'description'    => $request->input('description') === null
+                        ? $video->description
+                        : $request->input('description'),
                     'watermark_mode' => $request->input('watermark_mode') ?? $video->watermarkMode,
                     'thumbnail_mode' => $request->input('thumbnail_mode') ?? $video->thumbnailMode,
-                    // Zero means "none", which has to be expressible — so these
-                    // are normalised to null rather than left as 0, which no
+                    // Zero means "none", which has to be expressible — so an
+                    // empty selection becomes null rather than 0, which no
                     // series or speaker will ever have as an id.
-                    'series_id'      => ($s = (int) ($request->input('series_id') ?? 0)) > 0 ? $s : null,
-                    'speaker_id'     => ($p = (int) ($request->input('speaker_id') ?? 0)) > 0 ? $p : null,
-                    // Unchecked checkboxes are simply absent from a POST, so
-                    // presence is the value. Reading these with ?? would make
-                    // every flag impossible to turn back off.
-                    'member_only'    => $request->input('member_only') !== null,
-                    'hidden'         => $request->input('hidden') !== null,
+                    'published_at'   => $request->input('published_at') === null
+                        ? $video->publishedAt
+                        : $request->input('published_at'),
+                    'unpublish_at'   => $request->input('unpublish_at') === null
+                        ? $video->unpublishAt
+                        : $request->input('unpublish_at'),
+                    'series_id'      => $seriesRaw === null
+                        ? $video->seriesId
+                        : (($s = (int) $seriesRaw) > 0 ? $s : null),
+                    'speaker_id'     => $speakerRaw === null
+                        ? $video->speakerId
+                        : (($p = (int) $speakerRaw) > 0 ? $p : null),
+                    /*
+                     * Checkboxes and multi-selects are the cases where absent
+                     * and empty genuinely cannot be told apart: a browser sends
+                     * nothing for an unchecked box and nothing for a category
+                     * list with none ticked.
+                     *
+                     * So the form declares itself complete with a hidden field.
+                     * Present, presence is the value and unticking really does
+                     * clear. Missing, these are left alone — which is what a
+                     * partial POST means everywhere else in this handler, and
+                     * the only reading under which "save the thumbnail mode"
+                     * cannot also mean "make this public and uncategorised".
+                     */
+                    'member_only'    => $whole ? $request->input('member_only') !== null : $video->memberOnly,
+                    'hidden'         => $whole ? $request->input('hidden') !== null : $video->hidden,
+                    'premiere'       => $whole ? $request->input('premiere') !== null : $video->premiere,
+                    'featured'       => $whole ? $request->input('featured') !== null : $video->featured,
+                    'pinned'         => $whole ? $request->input('pinned') !== null : $video->pinned,
                 ]);
 
-                $categoryIds = array_map('intval', $request->inputArray('categories'));
-                $videos->setCategories($id, $categoryIds);
+                if ($whole) {
+                    $categoryIds = array_map('intval', $request->inputArray('categories'));
+                    $videos->setCategories($id, $categoryIds);
+                }
 
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
+
+                /*
+                 * Fired here rather than in the repository, for the same reason
+                 * the revision snapshot is taken here: this is where a HUMAN
+                 * edit happens. The provider sync calls update() too, and an
+                 * integration woken a hundred times an hour by a routine
+                 * encoding-status refresh would be turned off within a day.
+                 */
+                do_action('video_updated', $id, $video->title);
+
+                $this->saveScripture($request, $id);
+
                 return $this->back($request, 'Video saved.');
         }
     }
@@ -386,6 +648,7 @@ final class AdminController extends Controller
         'timezone',
         'watermark_default',
         'members_thumbnail_default',
+        'require_verified_email',
         'geo_enabled',
         'admin_geo_enabled',
     ];
@@ -708,7 +971,11 @@ final class AdminController extends Controller
                     Audit::log($this->db(), $this->user()?->email, 'series.delete', 'series', (string) $id);
                     return $this->back($request, 'Series deleted. Its videos were kept.');
 
+                case 'restore-revision':
+                    return $this->restoreRevision($request, RevisionRepository::SERIES, $id);
+
                 case 'update':
+                    $this->revisions()->record(RevisionRepository::SERIES, $id, $this->user()?->email ?? '');
                     $repo->update($id, [
                         'title'        => $request->input('title'),
                         'slug'         => $request->input('slug'),
@@ -719,6 +986,7 @@ final class AdminController extends Controller
                         'member_only'  => $request->input('member_only') !== null,
                         'hidden'       => $request->input('hidden') !== null,
                         'featured'     => $request->input('featured') !== null,
+                        'sequential'   => $request->input('sequential') !== null,
                     ]);
                     Audit::log($this->db(), $this->user()?->email, 'series.update', 'series', (string) $id);
                     return $this->back($request, 'Series saved.');
@@ -748,6 +1016,1065 @@ final class AdminController extends Controller
         } catch (HttpException $e) {
             return $this->back($request, $e->getMessage(), 'error');
         }
+    }
+
+    // ------------------------------------------------------------ playlists
+
+    public function playlists(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        return $this->admin('playlists', [
+            'playlists' => $this->playlistRepo()->all(true),
+        ]);
+    }
+
+    /** @param array<string, string> $params */
+    public function editPlaylist(Request $request, array $params): Response
+    {
+        $this->require(Capability::MANAGE_SERIES);
+
+        $playlist = $this->playlistRepo()->find((int) ($params['id'] ?? 0));
+        if ($playlist === null) {
+            throw HttpException::notFound('That playlist does not exist.');
+        }
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        /*
+         * Unlike a series, a playlist does not own its videos, so there is no
+         * "unassigned" pool to offer — every video in the library is a
+         * candidate, including ones already on other playlists. The chosen ones
+         * are listed separately and in order, because that order is the whole
+         * point of the screen.
+         */
+        $chosen = $this->playlistRepo()->orderedVideoIds($playlist->id);
+
+        return $this->admin('playlist-edit', [
+            'playlist'  => $playlist,
+            'items'     => $this->playlistRepo()->videos($playlist->id, true, true),
+            'chosenIds' => $chosen,
+            'available' => $videos->query(['includeUnpublished' => true, 'includeHidden' => true,
+                                           'includeMemberOnly' => true], 1, 100)['items'],
+        ]);
+    }
+
+    public function savePlaylist(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SERIES);
+
+        $repo = $this->playlistRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'playlist.delete', 'playlist', (string) $id);
+                    return $this->back($request, 'Playlist deleted. Its videos were kept.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'        => $request->input('title'),
+                        'slug'         => $request->input('slug'),
+                        'description'  => $request->input('description'),
+                        // Absent means unchecked; see updateVideo().
+                        'is_published' => $request->input('is_published') !== null,
+                        'member_only'  => $request->input('member_only') !== null,
+                        'hidden'       => $request->input('hidden') !== null,
+                        'featured'     => $request->input('featured') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'playlist.update', 'playlist', (string) $id);
+                    return $this->back($request, 'Playlist saved.');
+
+                case 'items':
+                    $repo->setVideos($id, array_map('intval', $request->inputArray('videos')));
+                    Audit::log($this->db(), $this->user()?->email, 'playlist.items', 'playlist', (string) $id);
+                    return $this->back($request, 'Playlist updated.');
+
+                case 'up':
+                case 'down':
+                    // The playlist id travels with the move. Without it the
+                    // neighbour lookup would find whichever row in any playlist
+                    // held the adjacent position.
+                    $repo->move($id, (int) ($request->input('video') ?? 0), $action === 'up' ? -1 : 1);
+                    return $this->back($request, '');
+
+                default:
+                    $created = $repo->create(['title' => $request->input('title')]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'playlist.create',
+                        'playlist',
+                        (string) $created->id,
+                        $created->title
+                    );
+                    return $this->redirect('/admin/playlists/' . $created->id);
+            }
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    private function playlistRepo(): \Portal\Content\PlaylistRepository
+    {
+        return $this->container->get(\Portal\Content\PlaylistRepository::class);
+    }
+
+    // ------------------------------------------------------------ analytics
+
+    /**
+     * What got watched.
+     *
+     * Governed by VIEW_ANALYTICS, which has existed since Phase 1, is granted
+     * to editors, and until now decided nothing but whether somebody could see
+     * the ratings plugin's leaderboard.
+     */
+    public function analytics(Request $request): Response
+    {
+        $this->require(Capability::VIEW_ANALYTICS);
+
+        $days = \Portal\Content\ViewRepository::sanitizePeriod($request->query('days'));
+
+        try {
+            $views = $this->container->get(\Portal\Content\ViewRepository::class);
+
+            return $this->admin('analytics', [
+                'days'    => $days,
+                'summary' => $views->summary($days),
+                'top'     => $views->topVideos($days),
+            ]);
+        } catch (Throwable $e) {
+            // Before migration 0011 has run. An empty screen beats a 500.
+            error_log('Could not read view counts: ' . $e->getMessage());
+
+            return $this->admin('analytics', [
+                'days'    => $days,
+                'summary' => ['views' => 0, 'completions' => 0],
+                'top'     => [],
+            ]);
+        }
+    }
+
+    /**
+     * The view figures as a spreadsheet.
+     *
+     * Daily rows rather than the totals on the screen: an export exists to let
+     * somebody do what the screen cannot, and a day cannot be recovered from a
+     * total.
+     *
+     * Behind VIEW_ANALYTICS, the same capability as the screen. Not stricter —
+     * this is the same information in a different shape, and a download that
+     * needed a second permission would be one nobody could explain.
+     */
+    public function exportAnalytics(Request $request): Response
+    {
+        $this->require(Capability::VIEW_ANALYTICS);
+
+        $days = \Portal\Content\ViewRepository::sanitizePeriod($request->query('days'));
+
+        try {
+            $rows = $this->container->get(\Portal\Content\ViewRepository::class)->dailyRows($days);
+        } catch (Throwable $e) {
+            error_log('Could not export view counts: ' . $e->getMessage());
+            $rows = [];
+        }
+
+        $csv = \Portal\Support\Csv::document(
+            ['Date', 'Video', 'Address', 'Views', 'Finished'],
+            array_map(
+                static fn (array $row): array => [
+                    $row['day'],
+                    $row['title'],
+                    '/watch/' . $row['slug'],
+                    $row['views'],
+                    $row['completions'],
+                ],
+                $rows
+            )
+        );
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'analytics.export',
+            'analytics',
+            (string) $days,
+            (string) count($rows)
+        );
+
+        return Response::text($csv)
+            ->header('Content-Type', 'text/csv; charset=utf-8')
+            ->header(
+                'Content-Disposition',
+                'attachment; filename="' . \Portal\Support\Csv::filename('views-' . $days . '-days') . '"'
+            )
+            // The browser must not decide this is HTML. A CSV that sniffs as
+            // HTML is a page rendered from content editors typed.
+            ->header('X-Content-Type-Options', 'nosniff')
+            ->private();
+    }
+
+    // ------------------------------------------------------------- homepage
+
+    public function homeRows(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        return $this->admin('home-rows', [
+            'rows'       => $this->homeRowRepo()->all(true),
+            'categories' => $this->container->get(CategoryRepository::class)->all(true),
+            'series'     => $this->seriesRepo()->all(true),
+            'playlists'  => $this->playlistRepo()->all(true),
+        ]);
+    }
+
+    public function saveHomeRow(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->homeRowRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'home_row.delete', 'home_row', (string) $id);
+                    return $this->back($request, 'Row removed.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'       => $request->input('title'),
+                        'source_type' => $request->input('source_type'),
+                        // The picker for the chosen source. One field per kind
+                        // rather than one shared one, because a single select
+                        // holding ids from three tables cannot say which table
+                        // a number came from.
+                        'source_id'   => $request->input('source_' . ($request->input('source_type') ?? '')),
+                        'max_items'   => $request->input('max_items'),
+                        'is_active'   => $request->input('is_active') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'home_row.update', 'home_row', (string) $id);
+                    return $this->back($request, 'Row saved.');
+
+                case 'up':
+                case 'down':
+                    $repo->move($id, $action === 'up' ? -1 : 1);
+                    return $this->back($request, '');
+
+                default:
+                    $source = (string) ($request->input('source_type') ?? '');
+                    $created = $repo->create([
+                        'title'       => $request->input('title'),
+                        'source_type' => $source,
+                        'source_id'   => $request->input('source_' . $source),
+                        'max_items'   => $request->input('max_items'),
+                    ]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'home_row.create',
+                        'home_row',
+                        (string) $created->id
+                    );
+                    return $this->back($request, 'Row added.');
+            }
+        } catch (HttpException $e) {
+            if ($e->status !== 400) {
+                throw $e;
+            }
+
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    /**
+     * How many people have subscribed.
+     *
+     * Wrapped, because on the one request that applies migration 0007 the
+     * table does not exist yet and the settings screen is more important than
+     * the number on it.
+     */
+    private function subscriberCount(): int
+    {
+        try {
+            return $this->container->get(\Portal\Content\SubscriptionRepository::class)->count();
+        } catch (Throwable) {
+            return 0;
+        }
+    }
+
+    private function revisions(): RevisionRepository
+    {
+        return $this->container->get(RevisionRepository::class);
+    }
+
+    /**
+     * Attach a file to a video.
+     *
+     * The upload is checked before anything is read: PHP's own error code
+     * first, then that it genuinely arrived as an upload, then the size, then
+     * the extension against the allowlist. Reading a 500MB temp file to
+     * discover it is too large is how a shared host runs out of memory.
+     */
+    private function attachFile(Request $request, int $videoId): Response
+    {
+        $upload = $_FILES['attachment'] ?? null;
+
+        if (!is_array($upload) || (int) ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            return $this->back($request, 'Choose a file to attach.', 'error');
+        }
+
+        $error = (int) $upload['error'];
+
+        if ($error !== UPLOAD_ERR_OK) {
+            /*
+             * INI_SIZE and FORM_SIZE are the common ones and they mean the same
+             * thing to the person: it was too big. Naming the limit is more use
+             * than naming the constant, since the host's limit may be lower
+             * than ours and there is nothing here that can change it.
+             */
+            return $this->back($request, match ($error) {
+                UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => sprintf(
+                    'That file is larger than this server accepts. The limit here is %s, and your host may set a lower one.',
+                    \Portal\Content\AssetPolicy::formatSize(\Portal\Content\AssetPolicy::MAX_BYTES)
+                ),
+                UPLOAD_ERR_PARTIAL => 'The upload was interrupted. Try again.',
+                default            => 'That file could not be uploaded.',
+            }, 'error');
+        }
+
+        $temporary = (string) ($upload['tmp_name'] ?? '');
+
+        if (!is_uploaded_file($temporary)) {
+            return $this->back($request, 'That file could not be uploaded.', 'error');
+        }
+
+        $name = (string) ($upload['name'] ?? '');
+
+        if (!\Portal\Content\AssetPolicy::isAllowed($name)) {
+            return $this->back(
+                $request,
+                'That kind of file cannot be attached. Documents, images, and audio only.',
+                'error'
+            );
+        }
+
+        try {
+            $stored = $this->container
+                ->get(\Portal\Content\AssetRepository::class)
+                ->store($videoId, $temporary, $name, $this->user()?->email ?? '');
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'asset.create',
+            'video',
+            (string) $videoId,
+            (string) $stored['original_name']
+        );
+
+        return $this->back($request, 'Attached ' . $stored['original_name'] . '.');
+    }
+
+    private function transcripts(): \Portal\Content\TranscriptRepository
+    {
+        return $this->container->get(\Portal\Content\TranscriptRepository::class);
+    }
+
+    /**
+     * Import a transcript, from an uploaded file or pasted text.
+     *
+     * Both, because both are how people have it: a .vtt from a captioning
+     * service, or text copied out of a transcription tool. Offering only one
+     * means the other person converts a file by hand or does not bother.
+     *
+     * The parse happens before anything is stored and the count is reported
+     * back. A file that produced two cues out of an expected four hundred is a
+     * broken import, and the number is the only way anybody finds out — the
+     * panel would otherwise just look short.
+     */
+    private function saveTranscript(Request $request, int $videoId): Response
+    {
+        $raw = (string) ($request->input('transcript') ?? '');
+
+        $upload = $_FILES['transcript_file'] ?? null;
+
+        if (is_array($upload)
+            && (int) ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK
+            && is_uploaded_file((string) $upload['tmp_name'])) {
+            /*
+             * A ceiling before reading. A subtitle file is measured in
+             * kilobytes; anything past a few megabytes is not one, and reading
+             * it to find that out is how a shared host runs out of memory.
+             */
+            if ((int) ($upload['size'] ?? 0) > 8 * 1024 * 1024) {
+                return $this->back($request, 'That file is too large to be a transcript.', 'error');
+            }
+
+            $contents = file_get_contents((string) $upload['tmp_name']);
+
+            if ($contents !== false) {
+                // The file wins when both are given: somebody who attached one
+                // meant the file, and the textarea may still hold the previous
+                // transcript the form rendered.
+                $raw = $contents;
+            }
+        }
+
+        if (trim($raw) === '') {
+            return $this->back($request, 'There was nothing to import.', 'error');
+        }
+
+        $cues = \Portal\Content\TranscriptParser::parse($raw);
+
+        if ($cues === []) {
+            return $this->back(
+                $request,
+                'No timed lines could be read from that. It needs to be WebVTT or SubRip.',
+                'error'
+            );
+        }
+
+        $stored = $this->transcripts()->replace(
+            $videoId,
+            $cues,
+            trim((string) ($request->input('transcript_source') ?? ''))
+        );
+
+        Audit::log($this->db(), $this->user()?->email, 'transcript.import', 'video', (string) $videoId, (string) $stored);
+
+        return $this->back($request, sprintf('Imported %d line(s).', $stored));
+    }
+
+    private function scripture(): \Portal\Content\ScriptureRepository
+    {
+        return $this->container->get(\Portal\Content\ScriptureRepository::class);
+    }
+
+    /**
+     * What the edit screen shows: the manual field's contents, and what the
+     * description contributed, separately.
+     *
+     * Separately because they behave differently, and a single merged list
+     * would make an editor think they could delete a parsed reference by
+     * clearing the box.
+     *
+     * @return array{manual: string, parsed: list<string>}
+     */
+    private function scriptureForEdit(int $videoId): array
+    {
+        try {
+            $manual = [];
+            $parsed = [];
+
+            foreach ($this->scripture()->forVideo($videoId) as $row) {
+                $formatted = \Portal\Content\ScriptureParser::format([
+                    'book'       => (string) $row['book'],
+                    'chapter'    => (int) $row['chapter'],
+                    'verse'      => $row['verse'] === null ? null : (int) $row['verse'],
+                    'endChapter' => (int) $row['end_chapter'],
+                    'endVerse'   => $row['end_verse'] === null ? null : (int) $row['end_verse'],
+                ]);
+
+                if ((string) $row['source'] === 'manual') {
+                    $manual[] = $formatted;
+                } else {
+                    $parsed[] = $formatted;
+                }
+            }
+
+            return ['manual' => implode('; ', $manual), 'parsed' => $parsed];
+        } catch (Throwable $e) {
+            // On the request that applies migration 0014 the table does not
+            // exist yet, and an edit screen that 500s over a panel is worse
+            // than one without it.
+            error_log('Portal: could not read scripture references: ' . $e->getMessage());
+
+            return ['manual' => '', 'parsed' => []];
+        }
+    }
+
+    /**
+     * Keep a video's scripture references in step with the edit.
+     *
+     * Two sources with one rule each, so neither can quietly undo the other:
+     *
+     *   manual  whatever is in the scripture field, replaced wholesale. Empty
+     *           the box and the manual references go, which is how somebody
+     *           removes one.
+     *   parsed  re-read from the description on every save, because the
+     *           description is the thing that just changed.
+     *
+     * A re-scan never touches manual references and an editor's list is never
+     * extended by the description, which is the only arrangement where an
+     * editor's correction survives the next edit somebody else makes.
+     *
+     * Absent means leave alone, as everywhere else in this handler — a POST
+     * that does not mention scripture must not clear it.
+     */
+    private function saveScripture(Request $request, int $videoId): void
+    {
+        try {
+            $scripture = $this->scripture();
+
+            $typed = $request->input('scripture');
+
+            if ($typed !== null) {
+                $scripture->replace(
+                    $videoId,
+                    \Portal\Content\ScriptureParser::parse((string) $typed),
+                    'manual'
+                );
+            }
+
+            $description = $request->input('description');
+
+            if ($description !== null) {
+                $scripture->replace(
+                    $videoId,
+                    \Portal\Content\ScriptureParser::parse((string) $description),
+                    'parsed'
+                );
+                $scripture->markScanned($videoId);
+            }
+        } catch (Throwable $e) {
+            /*
+             * Never fatal. On the request that applies this migration the table
+             * does not exist yet, and losing an index entry is a smaller
+             * failure than an editor's save appearing to have been refused when
+             * the video was in fact written.
+             */
+            error_log('Portal: could not update scripture references: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * The provider, if it can carry captions.
+     *
+     * Null is a normal answer and every caller handles it: a provider without
+     * caption support is not a misconfiguration, it is a provider whose player
+     * has no caption menu. The panel disappears rather than offering an upload
+     * that could not work.
+     */
+    private function captionProvider(): ?\Portal\Video\SupportsCaptions
+    {
+        try {
+            $provider = $this->container->get(\Portal\Video\VideoProvider::class);
+        } catch (Throwable $e) {
+            // An unconfigured provider is the normal state of a fresh install.
+            error_log('Could not resolve the video provider: ' . $e->getMessage());
+
+            return null;
+        }
+
+        return $provider instanceof \Portal\Video\SupportsCaptions ? $provider : null;
+    }
+
+    /**
+     * Caption tracks for the edit screen.
+     *
+     * @return list<array{language: string, label: string}>
+     */
+    private function captions(\Portal\Content\Video $video): array
+    {
+        $provider = $this->captionProvider();
+
+        return $provider === null ? [] : $provider->listCaptions($video->providerId);
+    }
+
+    /**
+     * Send a caption track to the provider.
+     *
+     * Two sources, for the same reason the transcript importer has two: a
+     * captioning service hands you a .vtt or an .srt, and somebody who already
+     * imported a transcript here should not have to go and find the file
+     * again. The transcript path costs sub-second timing — the cues were
+     * stored at second precision because a transcript panel seeks to the
+     * second — and the form says so rather than letting somebody discover it
+     * as captions that feel half a beat early.
+     */
+    private function saveCaption(Request $request, \Portal\Content\Video $video): Response
+    {
+        $provider = $this->captionProvider();
+
+        if ($provider === null) {
+            return $this->back($request, 'This video provider cannot store captions.', 'error');
+        }
+
+        $language = \Portal\Content\CaptionFile::language(
+            (string) ($request->input('caption_language') ?? '')
+        );
+
+        if ($language === null) {
+            return $this->back(
+                $request,
+                'That is not a language code. Use something like "en", "es", or "pt-br".',
+                'error'
+            );
+        }
+
+        $vtt = $this->captionSource($request, $video);
+
+        if ($vtt === null) {
+            return $this->back(
+                $request,
+                'No timed lines could be read from that. A caption file has to be WebVTT or SubRip.',
+                'error'
+            );
+        }
+
+        $label = \Portal\Content\CaptionFile::label(
+            (string) ($request->input('caption_label') ?? ''),
+            $language
+        );
+
+        try {
+            $provider->uploadCaption($video->providerId, $language, $label, $vtt);
+        } catch (HttpException $e) {
+            /*
+             * A flash rather than an error page.
+             *
+             * Everything on this screen reports failure in the same place, and
+             * a provider having a bad afternoon is the most ordinary failure
+             * here — the one thing an editor must be able to do about it is try
+             * again, which a 502 with the form gone does not help with.
+             */
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'caption.upload',
+            'video',
+            (string) $video->id,
+            $language
+        );
+
+        /*
+         * The cue count is the only feedback there is. The captions now live at
+         * the provider and nothing here can look inside them again, so a file
+         * that yielded four cues out of four hundred has to be visible at the
+         * moment it is uploaded or not at all.
+         */
+        return $this->back($request, sprintf(
+            'Uploaded %d caption line(s) in %s.',
+            \Portal\Content\CaptionFile::cueCount($vtt),
+            $label
+        ));
+    }
+
+    /**
+     * The WebVTT to upload, from whichever source was given.
+     *
+     * The file wins over the transcript when both are offered: somebody who
+     * attached one meant the file, and it is the source with real timings.
+     */
+    private function captionSource(Request $request, \Portal\Content\Video $video): ?string
+    {
+        $upload = $_FILES['caption_file'] ?? null;
+
+        if (is_array($upload)
+            && (int) ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK
+            && is_uploaded_file((string) $upload['tmp_name'])) {
+            // Checked before reading. Finding out a 900MB upload was not a
+            // caption file by loading it is how a shared host runs out of
+            // memory.
+            if ((int) ($upload['size'] ?? 0) > \Portal\Content\CaptionFile::MAX_BYTES) {
+                return null;
+            }
+
+            $contents = file_get_contents((string) $upload['tmp_name']);
+
+            return $contents === false ? null : \Portal\Content\CaptionFile::toVtt($contents);
+        }
+
+        if ((string) ($request->input('caption_from_transcript') ?? '') === '') {
+            return null;
+        }
+
+        return \Portal\Content\CaptionFile::fromTranscriptCues(
+            $this->transcripts()->cues($video->id)
+        );
+    }
+
+    private function deleteCaption(Request $request, \Portal\Content\Video $video): Response
+    {
+        $provider = $this->captionProvider();
+
+        if ($provider === null) {
+            return $this->back($request, 'This video provider cannot store captions.', 'error');
+        }
+
+        $language = \Portal\Content\CaptionFile::language(
+            (string) ($request->input('caption_language') ?? '')
+        );
+
+        if ($language === null) {
+            return $this->back($request, 'That is not a language code.', 'error');
+        }
+
+        try {
+            $provider->deleteCaption($video->providerId, $language);
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'caption.delete',
+            'video',
+            (string) $video->id,
+            $language
+        );
+
+        return $this->back($request, 'Captions removed.');
+    }
+
+    /**
+     * Put a previous version back.
+     *
+     * Applied through the ordinary update path, so every validation rule still
+     * runs — a revision from before a slug became unavailable is corrected
+     * rather than written blindly. And the restore is itself snapshotted
+     * first, so undoing an undo is possible.
+     */
+    private function restoreRevision(Request $request, string $subjectType, int $subjectId): Response
+    {
+        $revision = $this->revisions()->find((int) ($request->input('revision') ?? 0));
+
+        if ($revision === null
+            || $revision['subjectType'] !== $subjectType
+            || $revision['subjectId'] !== $subjectId) {
+            // A revision id that belongs to something else is a tampered form.
+            // Nothing useful to say to it.
+            return $this->back($request, 'That version is not available.', 'error');
+        }
+
+        $this->revisions()->record($subjectType, $subjectId, $this->user()?->email ?? '');
+
+        $repository = match ($subjectType) {
+            RevisionRepository::VIDEO    => $this->container->get(VideoRepository::class),
+            RevisionRepository::CATEGORY => $this->container->get(CategoryRepository::class),
+            RevisionRepository::SERIES   => $this->seriesRepo(),
+            RevisionRepository::PLAYLIST => $this->playlistRepo(),
+            default                      => null,
+        };
+
+        if ($repository === null) {
+            return $this->back($request, 'That version is not available.', 'error');
+        }
+
+        $repository->update($subjectId, $revision['data']);
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            $subjectType . '.restore',
+            $subjectType,
+            (string) $subjectId,
+            'revision ' . $revision['id']
+        );
+
+        return $this->back($request, 'Restored that version.');
+    }
+
+    private function homeRowRepo(): \Portal\Content\HomeRowRepository
+    {
+        return $this->container->get(\Portal\Content\HomeRowRepository::class);
+    }
+
+    // --------------------------------------------------------- announcements
+
+    public function announcementsScreen(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        return $this->admin('announcements', [
+            'announcements' => $this->announcementRepo()->all(),
+        ]);
+    }
+
+    // ------------------------------------------------------------------- live
+
+    private function liveRepo(): \Portal\Content\LiveStreamRepository
+    {
+        return $this->container->get(\Portal\Content\LiveStreamRepository::class);
+    }
+
+    public function liveScreen(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        return $this->admin('live', [
+            'streams' => $this->liveRepo()->all(),
+            // Only ready videos, so a recording cannot be attached to something
+            // that is still encoding and would 404 for everybody who followed
+            // the redirect.
+            'videos'  => $this->container->get(VideoRepository::class)->query([], 1, 100)['items'],
+        ]);
+    }
+
+    public function saveLive(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        $repo = $this->liveRepo();
+        $action = (string) ($request->input('action') ?? 'create');
+        $id = (int) ($request->input('id') ?? 0);
+
+        switch ($action) {
+            case 'delete':
+                $repo->delete($id);
+                Audit::log($this->db(), $this->user()?->email, 'live.delete', 'live', (string) $id);
+                return $this->back($request, 'Stream removed.');
+
+            case 'end':
+                $repo->end($id);
+                Audit::log($this->db(), $this->user()?->email, 'live.end', 'live', (string) $id);
+                return $this->back($request, 'Marked as ended.');
+
+            case 'resume':
+                $repo->resume($id);
+                Audit::log($this->db(), $this->user()?->email, 'live.resume', 'live', (string) $id);
+                return $this->back($request, 'Back on. Its schedule decides again.');
+
+            case 'update':
+                $reason = \Portal\Content\LiveStreamPolicy::rejectionReason(
+                    (string) ($request->input('embed_url') ?? '')
+                );
+
+                if ($reason !== null) {
+                    return $this->back($request, $reason, 'error');
+                }
+
+                $repo->update($id, [
+                    'title'        => $request->input('title'),
+                    'description'  => $request->input('description'),
+                    'embed_url'    => $request->input('embed_url'),
+                    'starts_at'    => $request->input('starts_at'),
+                    'ends_at'      => $request->input('ends_at'),
+                    'video_id'     => $request->input('video_id'),
+                    'is_published' => $request->input('is_published') !== null,
+                    'member_only'  => $request->input('member_only') !== null,
+                ]);
+
+                Audit::log($this->db(), $this->user()?->email, 'live.update', 'live', (string) $id);
+
+                return $this->back($request, $this->liveAdvice($request));
+
+            default:
+                $reason = \Portal\Content\LiveStreamPolicy::rejectionReason(
+                    (string) ($request->input('embed_url') ?? '')
+                );
+
+                if ($reason !== null) {
+                    return $this->back($request, $reason, 'error');
+                }
+
+                $new = $repo->create([
+                    'title'        => $request->input('title'),
+                    'description'  => $request->input('description'),
+                    'embed_url'    => $request->input('embed_url'),
+                    'starts_at'    => $request->input('starts_at'),
+                    'ends_at'      => $request->input('ends_at'),
+                    'is_published' => true,
+                    'member_only'  => $request->input('member_only') !== null,
+                ]);
+
+                Audit::log($this->db(), $this->user()?->email, 'live.create', 'live', (string) $new);
+
+                return $this->back($request, $this->liveAdvice($request));
+        }
+    }
+
+    /**
+     * A saved message that mentions the commonest mistake, if it applies.
+     *
+     * Pasting the page you are watching rather than the embed produces a frame
+     * the other site refuses to render — visible only as an empty rectangle,
+     * with the explanation in a console nobody has open. Saying so at the
+     * moment of saving is the only point where it is cheap to fix.
+     */
+    private function liveAdvice(Request $request): string
+    {
+        $warning = \Portal\Content\LiveStreamPolicy::embedWarning(
+            (string) ($request->input('embed_url') ?? '')
+        );
+
+        return $warning === null ? 'Stream saved.' : 'Stream saved. ' . $warning;
+    }
+
+    // ---------------------------------------------------------------- webhooks
+
+    private function webhookRepo(): \Portal\Content\WebhookRepository
+    {
+        return $this->container->get(\Portal\Content\WebhookRepository::class);
+    }
+
+    public function webhooksScreen(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->webhookRepo();
+        $endpoints = $repo->all();
+
+        // The delivery history is loaded per endpoint rather than as one join,
+        // because a site with two endpoints is the normal case and the join
+        // would be written for a site with fifty.
+        $deliveries = [];
+        foreach ($endpoints as $endpoint) {
+            $deliveries[(int) $endpoint['id']] = $repo->recentDeliveries((int) $endpoint['id'], 10);
+        }
+
+        return $this->admin('webhooks', [
+            'webhooks'   => $endpoints,
+            'deliveries' => $deliveries,
+            'pending'    => $repo->pendingCount(),
+            'events'     => \Portal\Content\WebhookPolicy::events(),
+            // The secret is shown once, on the request that created it, and
+            // never again — it is in the database, so this is convenience
+            // rather than secrecy, but a page that reprints every secret on
+            // every visit is one more place for them to be seen.
+            'newSecret'  => $request->query('secret') ?? '',
+        ]);
+    }
+
+    public function saveWebhook(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->webhookRepo();
+        $action = (string) ($request->input('action') ?? 'create');
+        $id = (int) ($request->input('id') ?? 0);
+
+        switch ($action) {
+            case 'delete':
+                $repo->delete($id);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.delete', 'webhook', (string) $id);
+                return $this->back($request, 'Endpoint removed.');
+
+            case 'disable':
+                $repo->setActive($id, false);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.disable', 'webhook', (string) $id);
+                return $this->back($request, 'Endpoint switched off.');
+
+            case 'enable':
+                $repo->setActive($id, true);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.enable', 'webhook', (string) $id);
+                return $this->back($request, 'Endpoint switched on. Its failure count has been reset.');
+
+            case 'rotate':
+                $secret = $repo->rotateSecret($id);
+                Audit::log($this->db(), $this->user()?->email, 'webhook.rotate', 'webhook', (string) $id);
+                // Through the URL so it survives the redirect. It is a fresh
+                // secret for an endpoint nothing has been signed with yet.
+                return $this->redirect('/admin/webhooks?secret=' . rawurlencode($secret));
+
+            default:
+                $url = trim((string) ($request->input('url') ?? ''));
+
+                $reason = \Portal\Content\WebhookPolicy::rejectionReason(
+                    $url,
+                    $this->config()->bool('webhook_allow_private_addresses', false)
+                );
+
+                if ($reason !== null) {
+                    return $this->back($request, $reason, 'error');
+                }
+
+                $new = $repo->create(
+                    $url,
+                    \Portal\Content\WebhookPolicy::normalizeEvents($request->inputArray('events')),
+                    (string) ($request->input('description') ?? '')
+                );
+
+                $row = $repo->find($new);
+
+                Audit::log($this->db(), $this->user()?->email, 'webhook.create', 'webhook', (string) $new, $url);
+
+                return $this->redirect(
+                    '/admin/webhooks?secret=' . rawurlencode((string) ($row['secret'] ?? ''))
+                );
+        }
+    }
+
+    public function saveAnnouncement(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $repo = $this->announcementRepo();
+        $action = $request->input('action') ?? 'create';
+        $id = (int) ($request->input('id') ?? 0);
+
+        try {
+            switch ($action) {
+                case 'delete':
+                    $repo->delete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'announcement.delete', 'announcement', (string) $id);
+                    return $this->back($request, 'Announcement removed.');
+
+                case 'update':
+                    $repo->update($id, [
+                        'title'       => $request->input('title'),
+                        'body'        => $request->input('body'),
+                        'level'       => $request->input('level'),
+                        'audience'    => $request->input('audience'),
+                        'starts_at'   => $request->input('starts_at'),
+                        'ends_at'     => $request->input('ends_at'),
+                        // Absent means unchecked; the form is always complete.
+                        'dismissible' => $request->input('dismissible') !== null,
+                        'is_active'   => $request->input('is_active') !== null,
+                    ]);
+                    Audit::log($this->db(), $this->user()?->email, 'announcement.update', 'announcement', (string) $id);
+                    return $this->back($request, 'Announcement saved.');
+
+                default:
+                    $created = $repo->create([
+                        'title'       => $request->input('title'),
+                        'body'        => $request->input('body'),
+                        'level'       => $request->input('level'),
+                        'audience'    => $request->input('audience'),
+                        'starts_at'   => $request->input('starts_at'),
+                        'ends_at'     => $request->input('ends_at'),
+                        'dismissible' => $request->input('dismissible') !== null,
+                    ]);
+                    Audit::log(
+                        $this->db(),
+                        $this->user()?->email,
+                        'announcement.create',
+                        'announcement',
+                        (string) $created->id
+                    );
+                    return $this->back($request, 'Announcement added.');
+            }
+        } catch (HttpException $e) {
+            if ($e->status !== 400) {
+                throw $e;
+            }
+
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+    }
+
+    private function announcementRepo(): \Portal\Content\AnnouncementRepository
+    {
+        return $this->container->get(\Portal\Content\AnnouncementRepository::class);
     }
 
     // ------------------------------------------------------------- speakers
@@ -905,7 +2232,11 @@ final class AdminController extends Controller
                     Audit::log($this->db(), $this->user()?->email, 'category.delete', 'category', (string) $id);
                     return $this->back($request, 'Category deleted. Its videos were not removed.');
 
+                case 'restore-revision':
+                    return $this->restoreRevision($request, RevisionRepository::CATEGORY, $id);
+
                 case 'update':
+                    $this->revisions()->record(RevisionRepository::CATEGORY, $id, $this->user()?->email ?? '');
                     $categories->update($id, [
                         'name'           => $request->input('name'),
                         'slug'           => $request->input('slug'),
@@ -1290,7 +2621,21 @@ final class AdminController extends Controller
                 'site_name' => $this->config()->setting('site_name', 'Video Portal'),
                 'timezone'  => $this->config()->setting('timezone', 'UTC'),
                 'members_thumbnail_default' => $this->config()->setting('members_thumbnail_default', '0'),
+                'allow_indexing'      => $this->config()->setting('allow_indexing', '0'),
+                'podcast_author'      => $this->config()->setting('podcast_author', ''),
+                'podcast_owner_name'  => $this->config()->setting('podcast_owner_name', ''),
+                'podcast_owner_email' => $this->config()->setting('podcast_owner_email', ''),
+                'podcast_image_url'   => $this->config()->setting('podcast_image_url', ''),
+                'podcast_category'    => $this->config()->setting('podcast_category', 'Religion & Spirituality'),
+                'podcast_explicit'    => $this->config()->setting('podcast_explicit', '0'),
+                // Default '1': the box is opt-out, because a subscribe form
+                // that nobody switched on is a feature nobody knows exists.
+                'subscriptions_enabled' => $this->config()->setting('subscriptions_enabled', '1'),
+                // Default '0': enforcing this is a decision with real lockout
+                // risk, so it belongs to whoever owns the site.
+                'require_verified_email' => $this->config()->setting('require_verified_email', '0'),
             ],
+            'subscriberCount' => $this->subscriberCount(),
             'cronJobs' => $cron->jobs(),
             'baseUrl'  => $this->config()->baseUrl(),
             // Geo lists are shown read-only: they live in config.php on
@@ -1325,6 +2670,16 @@ final class AdminController extends Controller
             // Absent means unchecked, so this cannot be read with ?? — that
             // would make the setting impossible to turn back off.
             'members_thumbnail_default' => $request->input('members_thumbnail_default') !== null ? '1' : '0',
+            'allow_indexing'   => $request->input('allow_indexing') !== null ? '1' : '0',
+            'podcast_explicit' => $request->input('podcast_explicit') !== null ? '1' : '0',
+
+            'podcast_author'      => trim($request->input('podcast_author') ?? ''),
+            'podcast_owner_name'  => trim($request->input('podcast_owner_name') ?? ''),
+            'podcast_owner_email' => trim($request->input('podcast_owner_email') ?? ''),
+            'podcast_image_url'   => trim($request->input('podcast_image_url') ?? ''),
+            'podcast_category'    => trim($request->input('podcast_category') ?? ''),
+            'subscriptions_enabled' => $request->input('subscriptions_enabled') !== null ? '1' : '0',
+            'require_verified_email' => $request->input('require_verified_email') !== null ? '1' : '0',
         ]);
         Audit::log($this->db(), $this->user()?->email, 'settings.update');
 

@@ -48,6 +48,43 @@ final class PluginContext
         return $this->db;
     }
 
+    /**
+     * The signed-in user, or null.
+     *
+     * Wrapped rather than left to the container so a plugin does not have to
+     * know which class to ask for, and so "not signed in" and "no session on
+     * this request" arrive as the same answer instead of an exception.
+     */
+    public function user(): ?\Portal\Auth\User
+    {
+        try {
+            return \Portal\Container::instance()->get(\Portal\Auth\Guard::class)->user();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The CSRF field for a form this plugin renders.
+     *
+     * Offered as ready-made HTML rather than a raw token, because a token an
+     * author has to place themselves is one they can forget to place — and a
+     * plugin form without it appears to work perfectly.
+     */
+    public function csrfField(): string
+    {
+        return \Portal\Support\Csrf::field(\Portal\Container::instance()->get(\Portal\Auth\Session::class));
+    }
+
+    /** Throws 419 unless the request carries this session's token. */
+    public function verifyCsrf(\Portal\Http\Request $request): void
+    {
+        \Portal\Support\Csrf::verify(
+            \Portal\Container::instance()->get(\Portal\Auth\Session::class),
+            $request
+        );
+    }
+
     /** Absolute path to a file inside this plugin. */
     public function path(string $relative = ''): string
     {

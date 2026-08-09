@@ -30,10 +30,30 @@ $documentTitle = $title !== '' ? "{$title} — {$siteName}" : $siteName;
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><?= e($documentTitle) ?></title>
 
-<?php /* Private by default: nothing here should end up in a search index. */ ?>
-<meta name="robots" content="noindex, nofollow">
+<?php
+/*
+ * Private by default. Settings → "Let search engines index this site" is the
+ * one deliberate act that changes it, and it governs robots.txt and
+ * sitemap.xml at the same time so the three can never disagree.
+ */
+$allowIndexing ??= false;
+?>
+<meta name="robots" content="<?= $allowIndexing ? 'index, follow' : 'noindex, nofollow' ?>">
 
 <link rel="stylesheet" href="<?= e($assetsUrl) ?>/theme.css">
+
+<?php
+/*
+ * Feed discovery. Browsers and podcast apps look for these; they are how
+ * somebody subscribes without being told a URL. Both feeds carry public
+ * content only, whatever the indexing setting says — a person who pastes the
+ * address into a podcast app is not a crawler.
+ */
+?>
+<link rel="alternate" type="application/rss+xml"
+      title="<?= e($siteName) ?> — latest" href="/feed">
+<link rel="alternate" type="application/rss+xml"
+      title="<?= e($siteName) ?> — podcast" href="/podcast">
 
 <?php
 /*
@@ -74,6 +94,46 @@ do_action('head');
     </nav>
   </div>
 </header>
+
+<?php
+/*
+ * Announcements.
+ *
+ * Above the content and inside <main>'s wrap, so they line up with the page
+ * rather than spanning the window. Dismissal is a form post — no JavaScript —
+ * so it works everywhere and the server is what remembers, via a cookie.
+ */
+$announcements ??= [];
+?>
+<?php if ($announcements !== []): ?>
+  <div class="wrap">
+    <?php foreach ($announcements as $announcement): ?>
+      <div class="announcement is-<?= e($announcement['level']) ?>" role="status">
+        <div>
+          <?php if ($announcement['title'] !== ''): ?>
+            <strong><?= e($announcement['title']) ?></strong>
+          <?php endif ?>
+          <?php
+          /*
+           * nl2br(e()) rather than raw HTML. An announcement is written by an
+           * administrator, but an administrator account is exactly what an
+           * attacker would want in order to get stored markup onto every
+           * viewer's page — including the sign-in page.
+           */
+          ?>
+          <span><?= nl2br(e($announcement['body'])) ?></span>
+        </div>
+
+        <?php if (!empty($announcement['dismissible'])): ?>
+          <form method="post" action="/announcements/dismiss" class="announcement-dismiss">
+            <input type="hidden" name="id" value="<?= (int) $announcement['id'] ?>">
+            <button type="submit" aria-label="Dismiss this message">&times;</button>
+          </form>
+        <?php endif ?>
+      </div>
+    <?php endforeach ?>
+  </div>
+<?php endif ?>
 
 <main>
   <div class="wrap">

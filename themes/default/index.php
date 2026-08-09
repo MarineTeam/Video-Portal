@@ -23,8 +23,18 @@ $activeCategory ??= '';
 $thumbnailsAvailable ??= true;
 $pagination ??= ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null];
 
+$homeRows ??= [];
+
 $showDuration = ($theme ?? null)?->setting('show-duration') !== '0';
-$showContinue = apply_filters('show_continue_watching', $continueWatching !== []);
+
+/*
+ * With curated rows configured, continue-watching is one of them and appears
+ * wherever it was placed. Showing it here as well would print it twice.
+ */
+$showContinue = apply_filters(
+    'show_continue_watching',
+    $homeRows === [] && $continueWatching !== []
+);
 
 echo $template->partial('header', get_defined_vars());
 ?>
@@ -45,7 +55,15 @@ echo $template->partial('header', get_defined_vars());
   </section>
 <?php endif ?>
 
-<form class="toolbar" method="get" action="/" role="search">
+<?php
+/*
+ * Aimed at /search rather than back at this page. Searching from here used to
+ * reload the library with a filter applied, which meant the narrowing controls
+ * and the matching series and speakers were unreachable from the one place
+ * everybody starts.
+ */
+?>
+<form class="toolbar" method="get" action="/search" role="search">
   <div class="field">
     <label class="visually-hidden" for="q">Search videos</label>
     <input type="search" id="q" name="q" value="<?= e($searchTerm) ?>"
@@ -68,9 +86,76 @@ echo $template->partial('header', get_defined_vars());
   <noscript><button class="btn secondary" type="submit">Search</button></noscript>
 </form>
 
+<?php
+/*
+ * Playlists. Only shown when there are some, so a site that does not use them
+ * never sees an empty heading.
+ */
+$playlists ??= [];
+?>
+<?php if ($playlists !== []): ?>
+  <section aria-labelledby="playlists-heading" style="margin-bottom:2.5rem">
+    <h2 class="section-title" id="playlists-heading">Playlists</h2>
+    <div class="chips">
+      <?php foreach ($playlists as $playlist): ?>
+        <a class="chip" href="<?= e($playlist['url']) ?>">
+          <?= e($playlist['title']) ?>
+          <?php if (!empty($playlist['count'])): ?>
+            <span style="opacity:.6"> · <?= (int) $playlist['count'] ?></span>
+          <?php endif ?>
+        </a>
+      <?php endforeach ?>
+    </div>
+  </section>
+<?php endif ?>
+
 <?php do_action('before_video_list') ?>
 
-<?php if ($videos === []): ?>
+<?php
+/*
+ * Curated rows, when somebody has arranged them.
+ *
+ * They replace the flat listing rather than sitting above it — a homepage that
+ * shows three curated rows and then every video again is not a curated
+ * homepage. With no rows configured this block renders nothing and the listing
+ * below is exactly what it always was.
+ */
+?>
+<?php if ($homeRows !== []): ?>
+  <?php foreach ($homeRows as $index => $row): ?>
+    <?php $rowId = 'home-row-' . $index; ?>
+    <section aria-labelledby="<?= e($rowId) ?>" style="margin-bottom:2.5rem">
+      <h2 class="section-title" id="<?= e($rowId) ?>">
+        <?= e($row['title']) ?>
+        <?php if (!empty($row['url'])): ?>
+          <a class="card-meta" href="<?= e($row['url']) ?>" style="margin-left:auto">See all</a>
+        <?php endif ?>
+      </h2>
+
+      <?php if (!$thumbnailsAvailable): ?>
+        <ul class="title-list">
+          <?php foreach ($row['videos'] as $video): ?>
+            <li>
+              <a href="<?= e($video['url']) ?>">
+                <span><?= e($video['title']) ?></span>
+                <?php if (!empty($video['duration'])): ?>
+                  <span class="dur"><?= e(\Portal\Support\Str::duration((int) $video['duration'])) ?></span>
+                <?php endif ?>
+              </a>
+            </li>
+          <?php endforeach ?>
+        </ul>
+      <?php else: ?>
+        <div class="video-grid">
+          <?php foreach ($row['videos'] as $video): ?>
+            <?= $template->partial('video-card', ['video' => $video, 'showDuration' => $showDuration]) ?>
+          <?php endforeach ?>
+        </div>
+      <?php endif ?>
+    </section>
+  <?php endforeach ?>
+
+<?php elseif ($videos === []): ?>
   <div class="empty">
     <?php if ($searchTerm !== ''): ?>
       Nothing matched “<?= e($searchTerm) ?>”.
@@ -110,7 +195,18 @@ echo $template->partial('header', get_defined_vars());
 
 <?php do_action('after_video_list') ?>
 
-<?php if (($pagination['pages'] ?? 1) > 1): ?>
+<?php if (!empty($subscribeEnabled)): ?>
+  <?= $template->partial('subscribe', get_defined_vars()) ?>
+<?php endif ?>
+
+<?php
+/*
+ * No pagination under curated rows. The rows are a front page, not page one of
+ * a list, and a "Next" button there would lead somewhere with a completely
+ * different shape.
+ */
+?>
+<?php if ($homeRows === [] && ($pagination['pages'] ?? 1) > 1): ?>
   <nav class="pagination" aria-label="Pagination">
     <?php if (!empty($pagination['prevUrl'])): ?>
       <a class="btn secondary" href="<?= e($pagination['prevUrl']) ?>" rel="prev">Previous</a>

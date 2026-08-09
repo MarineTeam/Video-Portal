@@ -69,12 +69,30 @@ final class VideoRepository
         $perPage = max(1, min(100, $perPage));
         $offset = ($page - 1) * $perPage;
 
+        /*
+         * Two orderings, chosen by whether anybody searched.
+         *
+         * A browsing listing is curated — pinned first, then the order an
+         * editor arranged. A search result is not: putting a pinned video above
+         * an exact title match means the site argues with the person using it.
+         * Relevance leads, and the curated order survives underneath it as the
+         * tiebreak, so equally relevant results still come back in a sensible
+         * arrangement rather than by row id.
+         */
+        $order = $where['score'] === ''
+            ? 'v.pinned DESC, v.position ASC, COALESCE(v.published_at, v.created_at) DESC, v.id DESC'
+            : 'relevance DESC, v.pinned DESC, COALESCE(v.published_at, v.created_at) DESC, v.id DESC';
+
+        $select = $where['score'] === ''
+            ? 'v.*'
+            : "v.*, ({$where['score']}) AS relevance";
+
         $rows = $this->db->all(
-            "SELECT DISTINCT v.* FROM {videos} v {$where['join']}
+            "SELECT DISTINCT {$select} FROM {videos} v {$where['join']}
               WHERE {$where['sql']}
-              ORDER BY v.pinned DESC, v.position ASC, COALESCE(v.published_at, v.created_at) DESC, v.id DESC
+              ORDER BY {$order}
               LIMIT {$perPage} OFFSET {$offset}",
-            $params
+            [...$where['scoreParams'], ...$params]
         );
 
         return [
@@ -85,13 +103,15 @@ final class VideoRepository
 
     /**
      * @param array<string, mixed> $filters
-     * @return array{0: array{sql: string, join: string}, 1: list<mixed>}
+     * @return array{0: array{sql: string, join: string, score: string, scoreParams: list<mixed>}, 1: list<mixed>}
      */
     private function buildWhere(array $filters): array
     {
         $conditions = ['v.deleted_at IS NULL'];
         $params = [];
         $join = '';
+        $score = '';
+        $scoreParams = [];
 
         // Processing and failed videos are excluded by default: a player that
         // cannot start reads as a broken site, not as "not ready yet".
@@ -100,10 +120,55 @@ final class VideoRepository
         }
         if (empty($filters['includeUnpublished'])) {
             $conditions[] = 'v.is_published = 1';
-            $conditions[] = '(v.published_at IS NULL OR v.published_at <= NOW())';
+
+            /*
+             * The schedule window, evaluated here rather than by a job that
+             * flips a flag. Cron is optional on the hosts this ships to and the
+             * built-in pseudo-cron only fires on traffic, so a scheduled video
+             * on a quiet site would appear late or not at all. A comparison
+             * cannot be late.
+             *
+             * A premiere is the exception at the near end: it is listed before
+             * its date so people know it is coming, and the watch page refuses
+             * to play it. The far end has no exception — an expired video is
+             * gone for everybody.
+             */
+            $conditions[] = empty($filters['includePremieres'])
+                ? '(v.published_at IS NULL OR v.published_at <= NOW())'
+                : '(v.published_at IS NULL OR v.published_at <= NOW() OR v.premiere = 1)';
+
+            $conditions[] = '(v.unpublish_at IS NULL OR v.unpublish_at > NOW())';
         }
         if (empty($filters['includeHidden'])) {
             $conditions[] = 'v.hidden = 0';
+        }
+
+        /*
+         * Restrict to a set of ids somebody else worked out.
+         *
+         * How the scripture pages list videos: that index answers "which videos
+         * touch Romans 8" and then hands the ids here, so the listing goes
+         * through the same visibility rules, the same presenter and the same
+         * pagination as every other one. Building a second listing query beside
+         * this one would be a second place for the members-only rules to be
+         * wrong, and only one of them would get fixed.
+         *
+         * An EMPTY array is a real answer meaning "nothing matched", and it has
+         * to produce no rows rather than being ignored — the natural bug here
+         * is an empty IN () that either is a syntax error or silently drops the
+         * filter and lists the whole library.
+         */
+        if (isset($filters['ids']) && is_array($filters['ids'])) {
+            $ids = array_values(array_unique(array_filter(array_map('intval', $filters['ids']))));
+
+            if ($ids === []) {
+                $conditions[] = '1 = 0';
+            } else {
+                $conditions[] = 'v.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+                foreach ($ids as $id) {
+                    $params[] = $id;
+                }
+            }
         }
         if (empty($filters['includeMemberOnly'])) {
             $conditions[] = 'v.member_only = 0';
@@ -128,20 +193,129 @@ final class VideoRepository
             $params[] = (int) $filters['seriesId'];
         }
 
+        // The featured flag has existed on videos since Phase 1 and nothing
+        // ever filtered on it. A homepage row is its first consumer.
+        if (!empty($filters['featured'])) {
+            $conditions[] = 'v.featured = 1';
+        }
+
         if (!empty($filters['speakerId'])) {
             $conditions[] = 'v.speaker_id = ?';
             $params[] = (int) $filters['speakerId'];
         }
 
+        // Published between two dates. Compared against the effective date the
+        // listing sorts by, so a filter and the order it filters agree.
+        if (!empty($filters['from'])) {
+            $conditions[] = 'COALESCE(v.published_at, v.created_at) >= ?';
+            $params[] = (string) $filters['from'];
+        }
+        if (!empty($filters['to'])) {
+            $conditions[] = 'COALESCE(v.published_at, v.created_at) <= ?';
+            $params[] = (string) $filters['to'];
+        }
+
         if (!empty($filters['search'])) {
-            $term = '%' . $this->db->escapeLike(trim((string) $filters['search'])) . '%';
-            $conditions[] = '(v.title LIKE ? OR v.description LIKE ?)';
-            $params[] = $term;
-            $params[] = $term;
+            $terms = SearchQuery::terms((string) $filters['search']);
+
+            if ($terms === []) {
+                // Punctuation only, or quotes with nothing between them. The
+                // previous behaviour — a LIKE on the raw string — would have
+                // matched every video containing a double quote, which is not
+                // what anybody meant.
+                $conditions[] = '1 = 0';
+            } else {
+                /*
+                 * Speaker and series are joined rather than sub-queried because
+                 * both are at most one row per video, so nothing multiplies.
+                 * Categories are many, so they stay an EXISTS: an extra join
+                 * there would duplicate a video once per category and the
+                 * DISTINCT would then have to fight the score column.
+                 */
+                /*
+                 * Transcripts are joined rather than sub-queried for the same
+                 * reason as speakers: one row per video at most. The body is a
+                 * MEDIUMTEXT, so this is the one join here that carries real
+                 * weight — worth it, because the alternative is an EXISTS
+                 * evaluated once per term per row.
+                 */
+                $join .= ' LEFT JOIN {speakers} sp ON sp.id = v.speaker_id'
+                       . ' LEFT JOIN {series} se ON se.id = v.series_id'
+                       . ' LEFT JOIN {transcripts} tr ON tr.video_id = v.id';
+
+                $categoryExists =
+                    'EXISTS (SELECT 1 FROM {video_categories} vcs
+                               JOIN {categories} cs ON cs.id = vcs.category_id
+                              WHERE vcs.video_id = v.id AND LOWER(cs.name) LIKE ?)';
+
+                $parts = [];
+
+                /*
+                 * The whole query as typed, matching the title exactly. Scored
+                 * once rather than per term, mirroring SearchQuery::score().
+                 */
+                $parts[] = '(CASE WHEN LOWER(v.title) = ? THEN ' . SearchQuery::WEIGHT_TITLE_EXACT . ' ELSE 0 END)';
+                $scoreParams[] = mb_strtolower(implode(' ', $terms));
+
+                foreach ($terms as $term) {
+                    $escaped = $this->db->escapeLike($term);
+                    $prefix = $escaped . '%';
+                    $contains = '%' . $escaped . '%';
+
+                    /*
+                     * Every term must match SOMETHING, but not the same
+                     * something. "grace romans" should find a video titled
+                     * "Romans 8" in a series called "Grace Abounding" — and a
+                     * single LIKE on the raw string, which is what this used to
+                     * be, finds nothing the moment anybody types two words.
+                     */
+                    $conditions[] = '(LOWER(v.title) LIKE ?
+                        OR LOWER(v.description) LIKE ?
+                        OR LOWER(sp.name) LIKE ?
+                        OR LOWER(se.title) LIKE ?
+                        OR LOWER(tr.body) LIKE ?
+                        OR ' . $categoryExists . ')';
+
+                    array_push($params, $contains, $contains, $contains, $contains, $contains, $contains);
+
+                    $parts[] = '(CASE
+                        WHEN LOWER(v.title) LIKE ? THEN ' . SearchQuery::WEIGHT_TITLE_PREFIX . '
+                        WHEN LOWER(v.title) LIKE ? THEN ' . SearchQuery::WEIGHT_TITLE . '
+                        ELSE 0 END)';
+                    array_push($scoreParams, $prefix, $contains);
+
+                    $parts[] = '(CASE WHEN LOWER(sp.name) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_SPEAKER . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN LOWER(se.title) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_SERIES . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN ' . $categoryExists . ' THEN '
+                        . SearchQuery::WEIGHT_CATEGORY . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN LOWER(v.description) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_DESCRIPTION . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+
+                    $parts[] = '(CASE WHEN LOWER(tr.body) LIKE ? THEN '
+                        . SearchQuery::WEIGHT_TRANSCRIPT . ' ELSE 0 END)';
+                    $scoreParams[] = $contains;
+                }
+
+                $score = implode(' + ', $parts);
+            }
         }
 
         return [
-            ['sql' => implode(' AND ', $conditions), 'join' => $join],
+            [
+                'sql'         => implode(' AND ', $conditions),
+                'join'        => $join,
+                'score'       => $score,
+                'scoreParams' => $scoreParams,
+            ],
             $params,
         ];
     }
@@ -373,10 +547,35 @@ final class VideoRepository
             }
         }
 
-        foreach (['description', 'recorded_at', 'published_at'] as $key) {
+        if (array_key_exists('description', $attributes)) {
+            $fields['description'] = $attributes['description'];
+        }
+
+        /*
+         * Dates are normalised on the way in, and an unusable one is refused
+         * rather than stored.
+         *
+         * These decide when content appears and disappears, so a value the
+         * comparison cannot read is not a cosmetic problem: it either publishes
+         * something early or hides it forever, and both look like a bug in the
+         * schedule rather than a typo in a field.
+         */
+        foreach (['recorded_at', 'published_at', 'unpublish_at'] as $key) {
             if (array_key_exists($key, $attributes)) {
-                $fields[$key] = $attributes[$key];
+                $fields[$key] = $this->normalizeDate($attributes[$key], $key);
             }
+        }
+
+        /*
+         * An end date before the start date is a window that never opens. It is
+         * always a mistake, and silently accepting it produces a video that
+         * simply never appears with nothing on screen to explain why.
+         */
+        $start = $fields['published_at'] ?? $video->publishedAt;
+        $end = $fields['unpublish_at'] ?? $video->unpublishAt;
+
+        if ($start !== null && $end !== null && $end <= $start) {
+            throw HttpException::badRequest('The end date has to be after the publication date.');
         }
 
         foreach (['speaker_id', 'series_id', 'series_position', 'position'] as $key) {
@@ -385,7 +584,7 @@ final class VideoRepository
             }
         }
 
-        foreach (['is_published', 'member_only', 'hidden', 'featured', 'pinned'] as $key) {
+        foreach (['is_published', 'member_only', 'hidden', 'featured', 'pinned', 'premiere'] as $key) {
             if (array_key_exists($key, $attributes)) {
                 $fields[$key] = (int) (bool) $attributes[$key];
             }
@@ -607,6 +806,34 @@ final class VideoRepository
     }
 
     // ------------------------------------------------------------- internals
+
+    /**
+     * A date the schedule can actually compare, or null.
+     *
+     * Accepts what a browser's datetime-local input sends ("2026-03-04T09:05")
+     * as well as ordinary SQL datetimes, and stores one canonical form. An
+     * empty string means "clear it" — a person emptying the field is saying
+     * there is no date, not asking for the epoch.
+     */
+    private function normalizeDate(mixed $value, string $field): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return null;
+        }
+
+        try {
+            return (new \DateTimeImmutable($raw))->format('Y-m-d H:i:s');
+        } catch (\Throwable) {
+            throw HttpException::badRequest(
+                sprintf('"%s" is not a date this can use.', $raw)
+            );
+        }
+    }
 
     public function uniqueSlug(string $desired, ?int $ignoreId = null): string
     {

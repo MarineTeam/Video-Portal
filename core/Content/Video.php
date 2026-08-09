@@ -46,6 +46,8 @@ final class Video
         public readonly string $watermarkMode = 'default',
         public readonly string $thumbnailMode = 'default',
         public readonly ?string $publishedAt = null,
+        public readonly ?string $unpublishAt = null,
+        public readonly bool $premiere = false,
         public readonly ?string $recordedAt = null,
         public readonly ?string $providerCreatedAt = null,
     ) {
@@ -84,6 +86,8 @@ final class Video
             watermarkMode:        (string) ($row['watermark_mode'] ?? 'default'),
             thumbnailMode:        (string) ($row['thumbnail_mode'] ?? 'default'),
             publishedAt:          $nullableString('published_at'),
+            unpublishAt:          $nullableString('unpublish_at'),
+            premiere:             (bool) ($row['premiere'] ?? false),
             recordedAt:           $nullableString('recorded_at'),
             providerCreatedAt:    $nullableString('provider_created_at'),
         );
@@ -103,12 +107,82 @@ final class Video
      */
     public function isVisible(): bool
     {
-        return $this->isReady() && $this->isPublished && !$this->hidden;
+        return $this->isReady()
+            && $this->isPublished
+            && !$this->hidden
+            && !$this->isScheduled()
+            && !$this->hasExpired();
     }
 
     public function isPublic(): bool
     {
         return $this->isVisible() && !$this->memberOnly;
+    }
+
+    /**
+     * Is its publication date still in the future?
+     *
+     * Evaluated here and in SQL rather than by a job that flips a flag. A cron
+     * job is optional on the hosts this ships to and the built-in pseudo-cron
+     * only fires on traffic, so a scheduled video on a quiet site would appear
+     * late or not at all. A comparison cannot be late.
+     */
+    public function isScheduled(?int $now = null): bool
+    {
+        if ($this->publishedAt === null) {
+            return false;
+        }
+
+        return $this->timestamp($this->publishedAt) > ($now ?? time());
+    }
+
+    /** Has its end date passed? */
+    public function hasExpired(?int $now = null): bool
+    {
+        if ($this->unpublishAt === null) {
+            return false;
+        }
+
+        return $this->timestamp($this->unpublishAt) <= ($now ?? time());
+    }
+
+    /**
+     * Should this be announced before it plays?
+     *
+     * A premiere is listed with its date and still refuses to play, which is
+     * the difference between "we have not published this" and "this is coming
+     * on Sunday". Only true while the date is still ahead: afterwards it is an
+     * ordinary published video, and nothing has to clear the flag.
+     */
+    public function isPremiering(?int $now = null): bool
+    {
+        return $this->premiere
+            && $this->isPublished
+            && !$this->hidden
+            && $this->isScheduled($now)
+            && !$this->hasExpired($now);
+    }
+
+    /**
+     * An unparseable date reads as the epoch.
+     *
+     * Which means the two callers fail in opposite directions: a corrupt
+     * publication date is treated as already past, and a corrupt end date as
+     * already reached. That asymmetry is deliberate and neither answer is
+     * arbitrary — an unreadable end date hides the video, which is recoverable
+     * by clearing the field, while an unreadable start date showing it is the
+     * same outcome as having no start date at all. Throwing would let one bad
+     * row take down a whole listing.
+     *
+     * The forms validate, so this only ever fires on a value written by hand.
+     */
+    private function timestamp(string $value): int
+    {
+        try {
+            return (new \DateTimeImmutable($value))->getTimestamp();
+        } catch (\Throwable) {
+            return 0;
+        }
     }
 
     public function url(): string

@@ -458,6 +458,11 @@ final class ShareRepository
             // Tracking must never block playback.
             error_log('Portal: could not record a share view: ' . $e->getMessage());
         }
+
+        // Named in the Phase-1 plan and never fired until something needed it.
+        // After the write and outside the try, so a listener cannot prevent
+        // the count being recorded and a failed count still reports the view.
+        do_action('share_viewed', $id);
     }
 
     /**

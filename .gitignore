@@ -18,6 +18,10 @@
 !/plugins/.gitkeep
 !/plugins/watermark/
 !/plugins/geo/
+!/plugins/comments/
+!/plugins/ratings/
+!/plugins/query-monitor/
+!/plugins/push/
 /themes/*
 !/themes/default/
 !/themes/.gitkeep

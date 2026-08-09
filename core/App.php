@@ -107,6 +107,13 @@ final class App
         $themes = $this->container->get(ThemeManager::class);
         $themes->boot();
 
+        /*
+         * After plugins load, so an event a plugin fires — comment_posted —
+         * has a listener by the time it can happen, and so a plugin could add
+         * its own event ahead of this if it wanted one.
+         */
+        \Portal\Content\WebhookEvents::register();
+
         do_action('init', $this);
 
         $this->registerRoutes();
@@ -160,6 +167,65 @@ final class App
             => new SeriesRepository($c->get(Db::class)));
         $c->singleton(SpeakerRepository::class, static fn (Container $c): SpeakerRepository
             => new SpeakerRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\PlaylistRepository::class, static fn (Container $c): \Portal\Content\PlaylistRepository
+            => new \Portal\Content\PlaylistRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\SavedVideoRepository::class, static fn (Container $c): \Portal\Content\SavedVideoRepository
+            => new \Portal\Content\SavedVideoRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\AnnouncementRepository::class, static fn (Container $c): \Portal\Content\AnnouncementRepository
+            => new \Portal\Content\AnnouncementRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\RevisionRepository::class, static fn (Container $c): \Portal\Content\RevisionRepository
+            => new \Portal\Content\RevisionRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\TranscriptRepository::class, static fn (Container $c): \Portal\Content\TranscriptRepository
+            => new \Portal\Content\TranscriptRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\ChapterRepository::class, static fn (Container $c): \Portal\Content\ChapterRepository
+            => new \Portal\Content\ChapterRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\ViewRepository::class, static fn (Container $c): \Portal\Content\ViewRepository
+            => new \Portal\Content\ViewRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\AssetRepository::class, static fn (Container $c): \Portal\Content\AssetRepository
+            // Outside the document root on purpose — see the migration.
+            => new \Portal\Content\AssetRepository($c->get(Db::class), PORTAL_STORAGE));
+        $c->singleton(\Portal\Content\NoteRepository::class, static fn (Container $c): \Portal\Content\NoteRepository
+            => new \Portal\Content\NoteRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\LiveStreamRepository::class, static fn (Container $c): \Portal\Content\LiveStreamRepository
+            => new \Portal\Content\LiveStreamRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\ScriptureRepository::class, static fn (Container $c): \Portal\Content\ScriptureRepository
+            => new \Portal\Content\ScriptureRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\WebhookRepository::class, static fn (Container $c): \Portal\Content\WebhookRepository
+            => new \Portal\Content\WebhookRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\WebhookDispatcher::class, static fn (Container $c): \Portal\Content\WebhookDispatcher
+            => new \Portal\Content\WebhookDispatcher(
+                $c->get(\Portal\Content\WebhookRepository::class),
+                /*
+                 * The escape hatch lives in config.php, never in the settings
+                 * table — the same rule the geo country lists follow, for a
+                 * sharper reason. This switch turns off the check that stops
+                 * the server being pointed at its own network, so an admin
+                 * screen that could flip it would be an admin screen that
+                 * could disable the protection from the web.
+                 */
+                $c->get(\Portal\Config::class)->bool('webhook_allow_private_addresses', false),
+            ));
+        $c->singleton(\Portal\Content\SubscriptionRepository::class, static fn (Container $c): \Portal\Content\SubscriptionRepository
+            => new \Portal\Content\SubscriptionRepository(
+                $c->get(Db::class),
+                $c->get(CategoryRepository::class),
+            ));
+        $c->singleton(\Portal\Content\Notifier::class, static fn (Container $c): \Portal\Content\Notifier
+            => new \Portal\Content\Notifier(
+                $c->get(Db::class),
+                $c->get(Config::class),
+                $c->get(\Portal\Content\SubscriptionRepository::class),
+                $c->get(VideoRepository::class),
+                $c->get(\Portal\Mail\MailProvider::class),
+            ));
+        $c->singleton(\Portal\Content\HomeRowRepository::class, static fn (Container $c): \Portal\Content\HomeRowRepository
+            => new \Portal\Content\HomeRowRepository(
+                $c->get(Db::class),
+                $c->get(VideoRepository::class),
+                $c->get(CategoryRepository::class),
+                $c->get(SeriesRepository::class),
+                $c->get(\Portal\Content\PlaylistRepository::class),
+            ));
         $c->singleton(VideoRepository::class, static fn (Container $c): VideoRepository => new VideoRepository(
             $c->get(Db::class),
             $c->get(CategoryRepository::class),
@@ -245,6 +311,17 @@ final class App
             $migrator = new Migrator($db);
             if ($migrator->coreNeedsMigration()) {
                 $migrator->migrateCore();
+
+                /*
+                 * A migration is the only moment the deployed code is known to
+                 * have changed, which makes it the right place to notice that
+                 * a job this version defines has no row on this database. Core
+                 * job rows had only ever been written by the installer, so a
+                 * site installed before a job existed never got one — and a
+                 * job with no row is never due, so it does nothing, silently,
+                 * forever.
+                 */
+                (new \Portal\Support\Cron($db, $this))->ensureCoreJobs();
             }
         } catch (Throwable $e) {
             // Not fatal on its own — the request may not touch the new tables.

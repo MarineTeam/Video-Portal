@@ -110,6 +110,29 @@ abstract class Controller
                 'isAdmin' => $this->container->get(\Portal\Auth\Capabilities::class)->canSeeAdmin($user),
             ],
             'nav' => apply_filters('site_nav', $this->defaultNav()),
+            /*
+             * Whether search engines may index the public pages.
+             *
+             * Off by default, which is what the theme has always hardcoded.
+             * This is a portal with private sharing built into it, so turning
+             * a site public is a decision its owner makes deliberately — not
+             * something that happens because a sitemap route shipped.
+             */
+            'allowIndexing' => $this->config()->settingBool('allow_indexing', false),
+            'announcements' => $this->announcements(),
+
+            /*
+             * The subscribe form's defaults, shared rather than repeated in
+             * four listing actions. Each one overrides the scope; nothing has
+             * to remember to supply the token or check the switch.
+             *
+             * `$data + $shared` means anything the action set wins, so an
+             * override is a one-line addition where the page is built.
+             */
+            'subscribeEnabled' => $this->config()->settingBool('subscriptions_enabled', true),
+            'subscribeScope'   => 'site',
+            'subscribeScopeId' => null,
+            'subscribeLabel'   => 'new videos',
         ];
 
         $html = $themes->loader()->render($candidates, $data + $shared);
@@ -128,12 +151,106 @@ abstract class Controller
      * navigation led to a 404. Add entries here when the route lands, not
      * when it is planned.
      */
+    /**
+     * The banners this visitor should see, minus the ones they have dismissed.
+     *
+     * Dismissal lives in a cookie, not the database. A row per viewer per
+     * banner would be a write on a GET — from anonymous visitors, on a shared
+     * host — to remember something that stops mattering when the announcement
+     * ends. The cost is that dismissing does not follow somebody to another
+     * browser, which is the right trade for a notice measured in days.
+     *
+     * @return list<array{id: int, title: string, body: string, level: string, dismissible: bool}>
+     */
+    protected function announcements(): array
+    {
+        try {
+            /** @var \Portal\Content\AnnouncementRepository $repo */
+            $repo = $this->container->get(\Portal\Content\AnnouncementRepository::class);
+
+            $user = $this->user();
+            $showing = $repo->showing(
+                $user !== null && ($user->isAdmin() || $user->authorized),
+                $user !== null && $this->container->get(\Portal\Auth\Capabilities::class)->canSeeAdmin($user),
+            );
+
+            $dismissed = $this->dismissedAnnouncements();
+
+            $out = [];
+            foreach ($showing as $announcement) {
+                if ($announcement->dismissible && in_array($announcement->id, $dismissed, true)) {
+                    continue;
+                }
+
+                $out[] = [
+                    'id'          => $announcement->id,
+                    'title'       => $announcement->title,
+                    'body'        => $announcement->body,
+                    'level'       => $announcement->level,
+                    'dismissible' => $announcement->dismissible,
+                ];
+            }
+
+            return $out;
+        } catch (\Throwable $e) {
+            // Before migration 0006 has run, or if anything else goes wrong: a
+            // banner is never worth failing a page over.
+            error_log('Could not load announcements: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
+     * The ids in the dismissal cookie.
+     *
+     * Read defensively — it is a value a visitor controls, so it is capped and
+     * anything unrecognised is ignored rather than trusted.
+     *
+     * @return list<int>
+     */
+    private function dismissedAnnouncements(): array
+    {
+        $raw = $_COOKIE['portal_dismissed'] ?? '';
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $ids = [];
+        foreach (explode(',', $raw) as $part) {
+            $id = (int) trim($part);
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+            if (count($ids) >= 50) {
+                break;
+            }
+        }
+
+        return $ids;
+    }
+
     protected function defaultNav(): array
     {
-        /** @var list<array{label: string, href: string}> */
-        return apply_filters('default_nav', [
+        $items = [
             ['label' => 'Library', 'href' => '/'],
-        ]);
+            ['label' => 'Search',  'href' => '/search'],
+        ];
+
+        /*
+         * Saved is offered only to somebody who could actually open it. The
+         * route is behind auth.authorized, so linking it unconditionally would
+         * put a permanent trip to the sign-in page in the navigation for every
+         * visitor — and, worse, in front of accounts that are signed in but not
+         * yet approved, for whom it would bounce with no explanation.
+         */
+        $user = $this->user();
+        if ($user !== null && ($user->isAdmin() || $user->authorized)) {
+            $items[] = ['label' => 'Saved', 'href' => '/saved'];
+        }
+
+        /** @var list<array{label: string, href: string}> */
+        return apply_filters('default_nav', $items);
     }
 
     /**
@@ -144,16 +261,7 @@ abstract class Controller
      */
     protected function csrfToken(): string
     {
-        /** @var \Portal\Auth\Session $session */
-        $session = $this->container->get(\Portal\Auth\Session::class);
-
-        $token = $session->get('csrf');
-        if (!is_string($token) || $token === '') {
-            $token = \Portal\Support\Crypto::token(16);
-            $session->put('csrf', $token);
-        }
-
-        return $token;
+        return \Portal\Support\Csrf::token($this->container->get(\Portal\Auth\Session::class));
     }
 
     /**
@@ -165,11 +273,7 @@ abstract class Controller
      */
     protected function verifyCsrf(Request $request): void
     {
-        $submitted = (string) ($request->post['_token'] ?? $request->header('x-csrf-token') ?? '');
-
-        if ($submitted === '' || !\Portal\Support\Crypto::verify($this->csrfToken(), $submitted)) {
-            throw new HttpException(419, 'This form has expired. Reload the page and try again.');
-        }
+        \Portal\Support\Csrf::verify($this->container->get(\Portal\Auth\Session::class), $request);
     }
 
     /**
@@ -188,6 +292,12 @@ abstract class Controller
             ['label' => 'Videos',     'path' => '/admin/videos',        'key' => 'videos',        'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
             ['label' => 'Categories', 'path' => '/admin/categories',    'key' => 'categories',    'cap' => \Portal\Auth\Capability::MANAGE_CATEGORIES],
             ['label' => 'Series',     'path' => '/admin/series',        'key' => 'series',        'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
+            ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
+            ['label' => 'Homepage',   'path' => '/admin/homepage',      'key' => 'home-rows',     'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
+            ['label' => 'Analytics',  'path' => '/admin/analytics',     'key' => 'analytics',     'cap' => \Portal\Auth\Capability::VIEW_ANALYTICS],
+            ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
+            ['label' => 'Live',       'path' => '/admin/live', 'key' => 'live', 'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
+            ['label' => 'Webhooks',   'path' => '/admin/webhooks', 'key' => 'webhooks', 'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
             ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => \Portal\Auth\Capability::MANAGE_SPEAKERS],
             ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],
             ['label' => 'Groups',     'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => \Portal\Auth\Capability::MANAGE_VIEWERS],

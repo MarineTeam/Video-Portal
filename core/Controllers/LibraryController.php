@@ -6,7 +6,11 @@ namespace Portal\Controllers;
 
 use Portal\Auth\Capability;
 use Portal\Content\CategoryRepository;
+use Portal\Content\HomeRowRepository;
+use Portal\Content\PlaylistRepository;
+use Portal\Content\SavedVideoRepository;
 use Portal\Content\SeriesRepository;
+use Portal\Content\SubscriptionRepository;
 use Portal\Content\SpeakerRepository;
 use Portal\Content\Video;
 use Portal\Content\VideoPresenter;
@@ -30,6 +34,14 @@ final class LibraryController extends Controller
 
         $result = $this->videos()->query($this->visibilityFilters(['search' => $search]), $page, $this->perPage());
 
+        /*
+         * Curated rows replace the plain listing, but only on the first page
+         * and only when nobody is searching. Both of those are requests for a
+         * specific list, and answering them with somebody's arrangement of the
+         * front page would ignore what was asked.
+         */
+        $rows = ($search === '' && $page === 1) ? $this->homeRows() : [];
+
         return $this->view(['index'], [
             'title'               => $search !== '' ? "Search: {$search}" : 'Library',
             'videos'              => $this->present($result['items']),
@@ -37,10 +49,76 @@ final class LibraryController extends Controller
             'categories'          => $this->categoryChips(),
             'searchTerm'          => $search,
             'activeCategory'      => '',
+            'playlists'           => $this->playlistChips(),
+            'homeRows'            => $rows,
             'thumbnailsAvailable' => $this->thumbnailsAvailable(),
             'pagination'          => $this->paginate($result['total'], $page, $request),
             'flash'               => $this->flash(),
         ]);
+    }
+
+    /**
+     * The curated homepage, or an empty list when nobody has curated one.
+     *
+     * Empty is the important case: it is what every existing install looks
+     * like, and it has to keep the arrangement those sites already have rather
+     * than turning the front page blank because a new table is empty.
+     *
+     * @return list<array{title: string, url: ?string, videos: list<array<string, mixed>>}>
+     */
+    private function homeRows(): array
+    {
+        try {
+            /** @var HomeRowRepository $repo */
+            $repo = $this->container->get(HomeRowRepository::class);
+
+            if (!$repo->isConfigured()) {
+                return [];
+            }
+
+            $filters = $this->visibilityFilters([]);
+            $out = [];
+
+            foreach ($repo->all() as $row) {
+                /*
+                 * Continue-watching is the one row the repository cannot fill:
+                 * only the controller knows who is asking. It is also the one
+                 * row that is empty for a stranger, and dropping it then is
+                 * correct — a heading over nothing is worse than one row less.
+                 */
+                if ($row->isPersonal()) {
+                    $watching = $this->continueWatching();
+                    if ($watching !== []) {
+                        $out[] = [
+                            'title'  => $row->title !== '' ? $row->title : 'Continue watching',
+                            'url'    => null,
+                            'videos' => $watching,
+                        ];
+                    }
+                    continue;
+                }
+
+                $resolved = $repo->resolve($row, $filters);
+                if ($resolved === null) {
+                    continue;
+                }
+
+                $out[] = [
+                    'title'  => $resolved['title'],
+                    'url'    => $resolved['url'],
+                    'videos' => $this->present($resolved['videos']),
+                ];
+            }
+
+            return $out;
+        } catch (Throwable $e) {
+            // Before migration 0005 has run — on the one request that applies
+            // it — the table may not exist. The library matters more than the
+            // arrangement.
+            error_log('Could not build the homepage rows: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /** @param array<string, string> $params */
@@ -96,6 +174,9 @@ final class LibraryController extends Controller
             [
                 'title'               => $category->name,
                 'heading'             => $category->name,
+                'subscribeScope'      => SubscriptionRepository::CATEGORY,
+                'subscribeScopeId'    => $category->id,
+                'subscribeLabel'      => 'new videos in ' . $category->name,
                 'description'         => $category->description,
                 'videos'              => $this->present($result['items']),
                 'children'            => $children,
@@ -137,6 +218,9 @@ final class LibraryController extends Controller
             [
                 'title'               => $series->title,
                 'heading'             => $series->title,
+                'subscribeScope'      => SubscriptionRepository::SERIES,
+                'subscribeScopeId'    => $series->id,
+                'subscribeLabel'      => 'new episodes of ' . $series->title,
                 'description'         => $series->description,
                 'videos'              => $this->present($videos),
                 'children'            => [],
@@ -183,6 +267,9 @@ final class LibraryController extends Controller
             [
                 'title'               => $speaker->name,
                 'heading'             => $speaker->name,
+                'subscribeScope'      => SubscriptionRepository::SPEAKER,
+                'subscribeScopeId'    => $speaker->id,
+                'subscribeLabel'      => 'new videos from ' . $speaker->name,
                 'description'         => $speaker->bio,
                 'videos'              => $this->present($result['items']),
                 'children'            => [],
@@ -192,9 +279,548 @@ final class LibraryController extends Controller
         );
     }
 
+    /**
+     * Hide one announcement for this browser.
+     *
+     * Deliberately without a CSRF token, which is a decision rather than an
+     * omission. The state this changes is a cookie that hides a public notice;
+     * an attacker who forges this has caused a victim to stop seeing a banner
+     * they could restore by clearing their cookies. Requiring a token would
+     * mean every anonymous page had to carry a session-bound one purely so a
+     * notice could be dismissed, which buys nothing.
+     *
+     * Nothing else on this site accepts a POST without a token.
+     */
+    public function dismissAnnouncement(Request $request): Response
+    {
+        $id = (int) ($request->input('id') ?? 0);
+
+        if ($id > 0) {
+            $existing = [];
+            $raw = $_COOKIE['portal_dismissed'] ?? '';
+
+            if (is_string($raw) && $raw !== '') {
+                foreach (explode(',', $raw) as $part) {
+                    $value = (int) trim($part);
+                    if ($value > 0) {
+                        $existing[] = $value;
+                    }
+                }
+            }
+
+            $existing[] = $id;
+
+            /*
+             * Capped, and the newest kept. Without a limit this cookie grows
+             * with every announcement the site ever makes and is sent on every
+             * request forever — including to the CDN.
+             */
+            $existing = array_slice(array_values(array_unique($existing)), -50);
+
+            setcookie('portal_dismissed', implode(',', $existing), [
+                'expires'  => time() + 86400 * 180,
+                'path'     => '/',
+                'httponly' => true,
+                'samesite' => 'Lax',
+                'secure'   => $request->isSecure(),
+            ]);
+        }
+
+        return $this->back($request);
+    }
+
+    /**
+     * A playlist, in the order somebody arranged it.
+     *
+     * @param array<string, string> $params
+     */
+    public function playlist(Request $request, array $params): Response
+    {
+        /** @var PlaylistRepository $repo */
+        $repo = $this->container->get(PlaylistRepository::class);
+
+        $slug = $params['slug'] ?? '';
+        $playlist = $repo->findBySlug($slug);
+
+        if ($playlist === null) {
+            // Honour an address from before a rename.
+            $aliased = $repo->findByAlias($slug);
+            if ($aliased !== null) {
+                return Response::redirect($this->config()->url($aliased->url()), 301);
+            }
+            throw HttpException::notFound('There is no playlist at that address.');
+        }
+
+        if (!$this->canSee($playlist->isPublished, $playlist->memberOnly, $playlist->hidden)) {
+            throw HttpException::notFound('There is no playlist at that address.');
+        }
+
+        $videos = $repo->videos(
+            $playlist->id,
+            $this->guard()->can(Capability::MANAGE_VIDEOS),
+            $this->canWatch()
+        );
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('playlist', ['slug' => $playlist->slug]),
+            [
+                'title'               => $playlist->title,
+                'heading'             => $playlist->title,
+                'description'         => $playlist->description,
+                'videos'              => $this->present($videos),
+                'children'            => [],
+                'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+                'pagination'          => ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null],
+            ]
+        );
+    }
+
+    /**
+     * Everything this viewer has saved.
+     *
+     * Behind auth.authorized rather than merely auth: the page lists videos,
+     * and somebody whose account has not been approved cannot see the library
+     * either. Two lists on one page rather than two pages, because "did I
+     * favourite this or save it for later" is a question nobody should have to
+     * answer by visiting two addresses.
+     */
+    /**
+     * Everything one person has written, in one place they can print.
+     */
+    public function notes(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return Response::redirect($this->config()->url('/auth/login'));
+        }
+
+        $notes = $this->container->get(\Portal\Content\NoteRepository::class)->forUser($user->id);
+
+        return $this->view(['notes', 'index'], [
+            'title'   => 'My notes',
+            'heading' => 'My notes',
+            'notes'   => $notes,
+        ]);
+    }
+
+    /**
+     * Save a note.
+     *
+     * Scoped to the signed-in account in the only way that matters: the user id
+     * comes from the session and is never read from the request. A videoId is
+     * accepted because a note belongs to a video; whose note it is, is not
+     * something the browser gets a say in.
+     */
+    public function saveNote(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return $this->json(['saved' => false], 401);
+        }
+
+        $payload = $request->json();
+        $videoId = (int) ($payload['videoId'] ?? 0);
+
+        if ($videoId <= 0) {
+            return $this->json(['saved' => false], 400);
+        }
+
+        /*
+         * The video has to be one this person can actually watch. Without the
+         * check, a note is a place to confirm that a members-only video exists
+         * by seeing whether writing about it succeeds.
+         */
+        $video = $this->videos()->find($videoId);
+
+        if ($video === null || !$video->isVisible() || ($video->memberOnly && !$this->canWatch())) {
+            return $this->json(['saved' => false], 404);
+        }
+
+        $stored = $this->container->get(\Portal\Content\NoteRepository::class)->save(
+            $user->id,
+            $videoId,
+            (string) ($payload['body'] ?? '')
+        );
+
+        return $this->json(['saved' => true, 'stored' => $stored]);
+    }
+
+    public function saved(Request $request): Response
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return Response::redirect($this->config()->url('/auth/login'));
+        }
+
+        /** @var SavedVideoRepository $saved */
+        $saved = $this->container->get(SavedVideoRepository::class);
+
+        $canWatch = $this->canWatch();
+
+        return $this->view(['saved', 'archive', 'index'], [
+            'title'               => 'Saved',
+            'heading'             => 'Saved',
+            'description'         => null,
+            'favorites'           => $this->present(
+                $saved->videos($user->id, SavedVideoRepository::FAVORITE, $canWatch)
+            ),
+            'watchLater'          => $this->present(
+                $saved->videos($user->id, SavedVideoRepository::WATCH_LATER, $canWatch)
+            ),
+            // archive.php renders $videos; the saved template renders the two
+            // lists above. Both are supplied so a theme without a saved.php
+            // still shows something rather than an empty page.
+            'videos'              => $this->present(
+                $saved->videos($user->id, SavedVideoRepository::FAVORITE, $canWatch)
+            ),
+            'children'            => [],
+            'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+            'pagination'          => ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null],
+            'flash'               => $this->flash(),
+        ]);
+    }
+
+    /**
+     * Save or unsave a video.
+     *
+     * One route and one button for both directions. A separate "unsave" URL
+     * would double the surface for no gain, and the toggle is resolved in the
+     * database so two tabs cannot leave it in a state neither person asked for.
+     */
+    public function toggleSaved(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+
+        $user = $this->user();
+        if ($user === null) {
+            return Response::redirect($this->config()->url('/auth/login'));
+        }
+
+        $list = SavedVideoRepository::sanitizeList($request->input('list'));
+        $videoId = (int) ($request->input('video') ?? 0);
+
+        // Looked up rather than taken from the form: a redirect target a
+        // visitor controls is an open redirect waiting to happen.
+        $video = $videoId > 0 ? $this->videos()->find($videoId) : null;
+
+        if ($list === null || $video === null) {
+            return Response::redirect($this->config()->url('/'));
+        }
+
+        /** @var SavedVideoRepository $saved */
+        $saved = $this->container->get(SavedVideoRepository::class);
+        $nowSaved = $saved->toggle($user->id, $video->id, $list);
+
+        $label = $list === SavedVideoRepository::FAVORITE ? 'favourites' : 'watch later';
+
+        /*
+         * back() returns them to the page they came from, so saving from a
+         * listing does not throw away where they were reading. It sanitises the
+         * referer through the same helper the auth flow uses rather than
+         * trusting a form field, which is how a "return to" parameter becomes
+         * an open redirect.
+         */
+        return $this->back(
+            $request,
+            $nowSaved ? "Added to your {$label}." : "Removed from your {$label}."
+        );
+    }
+
+    /**
+     * The search page.
+     *
+     * No longer index() under another name. Searching and browsing want
+     * different orderings, different filters, and — the part index() could
+     * never do — matching series and speakers surfaced above the videos,
+     * because somebody typing a series name wants the series page and not
+     * twelve of its episodes scattered through a ranking.
+     */
+    /**
+     * What is on, and what is coming.
+     *
+     * @param array<string, string> $params
+     */
+    public function live(Request $request, array $params = []): Response
+    {
+        $repo = $this->container->get(\Portal\Content\LiveStreamRepository::class);
+        $canWatch = $this->canWatch();
+
+        $slug = (string) ($params['slug'] ?? '');
+
+        if ($slug !== '') {
+            $stream = $repo->findBySlug($slug);
+
+            if ($stream === null || (int) $stream['is_published'] !== 1) {
+                throw HttpException::notFound('There is no stream at that address.');
+            }
+
+            if ((int) $stream['member_only'] === 1 && !$canWatch) {
+                // A 404 rather than a 403, as everywhere else: telling somebody
+                // that a members-only thing exists is itself a leak.
+                throw HttpException::notFound('There is no stream at that address.');
+            }
+
+            /*
+             * Once there is a recording, the stream page hands over to it. The
+             * archive is where somebody looks afterwards, and a page that says
+             * "this ended" beside a recording nobody linked is a dead end.
+             */
+            if ($stream['video_id'] !== null) {
+                $video = $this->videos()->find((int) $stream['video_id']);
+
+                if ($video !== null && $video->isVisible()) {
+                    return Response::redirect($this->config()->url('/watch/' . $video->slug), 302);
+                }
+            }
+
+            return $this->view(
+                $this->themeManager()->loader()->hierarchy('live-stream', ['slug' => $slug]),
+                [
+                    'title'   => (string) $stream['title'],
+                    'heading' => (string) $stream['title'],
+                    'stream'  => $stream,
+                    /*
+                     * The embed URL is only handed to the template when the
+                     * stream is actually on. Before it starts there is nothing
+                     * to watch, and a frame loaded early is a request to
+                     * somebody else's server on behalf of every visitor who
+                     * opened the page hours beforehand.
+                     */
+                    'embedUrl' => $stream['state'] === \Portal\Content\LiveStreamPolicy::LIVE
+                        ? (string) $stream['embed_url']
+                        : '',
+                ]
+            );
+        }
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('live', []),
+            [
+                'title'    => 'Live',
+                'heading'  => 'Live',
+                'streams'  => $repo->upcoming($canWatch),
+            ]
+        );
+    }
+
+    /**
+     * Every book with something under it.
+     *
+     * Only books in use. A page listing all seventy-three with sixty-eight of
+     * them empty buries the five worth clicking, and a visitor cannot tell an
+     * empty book from a broken link until they have tried it.
+     */
+    public function scriptureIndex(Request $request): Response
+    {
+        $repo = $this->container->get(\Portal\Content\ScriptureRepository::class);
+
+        $books = [];
+        foreach ($repo->booksInUse() as $row) {
+            $slug = (string) $row['book'];
+
+            $books[] = [
+                'slug'       => $slug,
+                'name'       => \Portal\Content\ScriptureBooks::name($slug) ?? $slug,
+                'testament'  => \Portal\Content\ScriptureBooks::testament($slug) ?? '',
+                'videos'     => (int) $row['videos'],
+                'url'        => '/scripture/' . $slug,
+            ];
+        }
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('scripture', []),
+            [
+                'title'   => 'Scripture',
+                'heading' => 'Browse by passage',
+                'books'   => $books,
+            ]
+        );
+    }
+
+    /**
+     * One book, or one chapter of it.
+     *
+     * @param array<string, string> $params
+     */
+    public function scriptureBook(Request $request, array $params): Response
+    {
+        $book = (string) ($params['book'] ?? '');
+
+        if (!\Portal\Content\ScriptureBooks::exists($book)) {
+            throw HttpException::notFound('There is no book at that address.');
+        }
+
+        $repo = $this->container->get(\Portal\Content\ScriptureRepository::class);
+        $name = \Portal\Content\ScriptureBooks::name($book) ?? $book;
+
+        $chapter = isset($params['chapter']) ? (int) $params['chapter'] : null;
+
+        if ($chapter !== null
+            && ($chapter < 1 || $chapter > \Portal\Content\ScriptureBooks::chapters($book))) {
+            // A chapter the book does not have is a 404 rather than an empty
+            // page: the address is wrong, and saying "nothing here" implies it
+            // might have something later.
+            throw HttpException::notFound('That chapter does not exist.');
+        }
+
+        /*
+         * The ids come from the scripture index; the VIDEOS come from the
+         * ordinary listing query, so this page gets the same visibility rules,
+         * presenter and thumbnail handling as everything else. An empty list of
+         * ids is a real answer and produces an empty page, not the whole
+         * library.
+         */
+        $ids = $repo->videoIds($book, $chapter);
+
+        $result = $this->videos()->query([
+            'ids'               => $ids,
+            'includeMemberOnly' => $this->canWatch(),
+            'includePremieres'  => true,
+        ], 1, 100);
+
+        /*
+         * Chapters go out as `children`, which is the shape archive.php already
+         * renders as a strip of chips. A template of its own would be a second
+         * listing layout to keep in step with the first, and a theme author who
+         * restyled archive.php would find this page ignoring them.
+         */
+        $chapters = [];
+        foreach ($repo->chaptersInUse($book) as $number => $count) {
+            $chapters[] = [
+                'name'  => (string) $number,
+                'slug'  => (string) $number,
+                'count' => $count,
+                'url'   => '/scripture/' . $book . '/' . $number,
+            ];
+        }
+
+        $heading = $chapter === null ? $name : $name . ' ' . $chapter;
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('scripture-book', ['slug' => $book]),
+            [
+                'title'               => $heading,
+                'heading'             => $heading,
+                'book'                => ['slug' => $book, 'name' => $name],
+                'chapter'             => $chapter,
+                'description'         => $chapter === null
+                    ? null
+                    : 'Everything touching ' . $name . ' ' . $chapter . '.',
+                'videos'              => $this->present($result['items']),
+                'children'            => $chapters,
+                'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+                'pagination'          => ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null],
+            ]
+        );
+    }
+
     public function search(Request $request): Response
     {
-        return $this->index($request);
+        $term = trim($request->query('q') ?? '');
+        $page = max(1, (int) ($request->query('page') ?? 1));
+
+        $filters = $this->searchFilters($request);
+
+        $result = $this->videos()->query(
+            $this->visibilityFilters(['search' => $term] + $filters),
+            $page,
+            $this->perPage()
+        );
+
+        /** @var SeriesRepository $series */
+        $series = $this->container->get(SeriesRepository::class);
+        /** @var SpeakerRepository $speakers */
+        $speakers = $this->container->get(SpeakerRepository::class);
+
+        $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+
+        return $this->view(['search', 'archive', 'index'], [
+            'title'               => $term === '' ? 'Search' : "Search: {$term}",
+            'videos'              => $this->present($result['items']),
+            'continueWatching'    => [],
+            'categories'          => $this->categoryChips(),
+            'searchTerm'          => $term,
+            'activeCategory'      => '',
+            'matchedSeries'       => $term === '' ? [] : array_map(
+                static fn ($item): array => [
+                    'title' => $item->title,
+                    'url'   => $item->url(),
+                    'count' => $item->videoCount,
+                ],
+                $series->search($term, 5, $canManage)
+            ),
+            'matchedSpeakers'     => $term === '' ? [] : array_map(
+                static fn ($item): array => [
+                    'name'  => $item->name,
+                    'url'   => $item->url(),
+                    'count' => $item->videoCount,
+                ],
+                $speakers->search($term, 5)
+            ),
+            'seriesOptions'       => $this->filterOptions($series->all($canManage), 'title'),
+            'speakerOptions'      => $this->filterOptions($speakers->all(), 'name'),
+            'activeFilters'       => $filters,
+            'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+            'pagination'          => $this->paginate($result['total'], $page, $request),
+            'total'               => $result['total'],
+            'flash'               => $this->flash(),
+        ]);
+    }
+
+    /**
+     * The narrowing controls, read from the query string.
+     *
+     * Each one is validated into the shape the repository expects rather than
+     * passed through: `from=drop table` reaching a date comparison would be
+     * bound safely and still produce a confusing empty page, and a year is the
+     * only granularity the form offers.
+     *
+     * @return array<string, mixed>
+     */
+    private function searchFilters(Request $request): array
+    {
+        $filters = [];
+
+        $seriesId = (int) ($request->query('series') ?? 0);
+        if ($seriesId > 0) {
+            $filters['seriesId'] = $seriesId;
+        }
+
+        $speakerId = (int) ($request->query('speaker') ?? 0);
+        if ($speakerId > 0) {
+            $filters['speakerId'] = $speakerId;
+        }
+
+        // Years, not dates. A date picker on a sermon archive is precision
+        // nobody wants to supply, and "2024" is how people actually remember
+        // when something was said.
+        $year = (int) ($request->query('year') ?? 0);
+        if ($year >= 1900 && $year <= (int) date('Y') + 1) {
+            $filters['from'] = sprintf('%04d-01-01 00:00:00', $year);
+            $filters['to'] = sprintf('%04d-12-31 23:59:59', $year);
+            $filters['year'] = $year;
+        }
+
+        return $filters;
+    }
+
+    /**
+     * @param  list<object> $items
+     * @return list<array{id: int, label: string}>
+     */
+    private function filterOptions(array $items, string $labelProperty): array
+    {
+        $out = [];
+        foreach ($items as $item) {
+            $out[] = [
+                'id'    => (int) $item->id,
+                'label' => (string) $item->{$labelProperty},
+            ];
+        }
+
+        return $out;
     }
 
     // -------------------------------------------------------------- helpers
@@ -217,6 +843,18 @@ final class LibraryController extends Controller
     private function visibilityFilters(array $filters): array
     {
         $user = $this->user();
+
+        /*
+         * Premieres appear in listings before their date, which is the whole
+         * point of marking one. Ordinary scheduled videos still do not — being
+         * invisible until publication is what scheduling means, and a premiere
+         * is the deliberate exception an editor asked for.
+         *
+         * Not applied to feeds, which build their own filters: an episode
+         * announced in a podcast feed before it can be downloaded is an
+         * episode every client reports as broken.
+         */
+        $filters['includePremieres'] = true;
 
         if ($user !== null && ($user->isAdmin() || $user->authorized)) {
             $filters['includeMemberOnly'] = true;
@@ -364,6 +1002,48 @@ final class LibraryController extends Controller
         }
 
         return $chips;
+    }
+
+    /**
+     * Published playlists, for the library page.
+     *
+     * Without this there is no way to reach a playlist except by knowing its
+     * address — the exact "built but unreachable" shape this project has hit
+     * five times already. Members-only ones are left out for visitors who could
+     * not open them, because a link that 404s is worse than no link.
+     *
+     * @return list<array{title: string, url: string, count: int}>
+     */
+    private function playlistChips(): array
+    {
+        try {
+            /** @var PlaylistRepository $repo */
+            $repo = $this->container->get(PlaylistRepository::class);
+
+            $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+            $canWatch = $this->canWatch();
+
+            $chips = [];
+            foreach ($repo->all($canManage) as $playlist) {
+                if ($playlist->memberOnly && !$canWatch) {
+                    continue;
+                }
+                $chips[] = [
+                    'title' => $playlist->title,
+                    'url'   => $playlist->url(),
+                    'count' => $playlist->videoCount,
+                ];
+            }
+
+            return $chips;
+        } catch (Throwable $e) {
+            // Before migration 0003 has run — during an upgrade, on the one
+            // request that applies it — the table may not exist yet. The
+            // library is more important than the row of chips.
+            error_log('Could not load playlists: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     private function videoProvider(): ?VideoProvider

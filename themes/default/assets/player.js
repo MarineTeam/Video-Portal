@@ -23,6 +23,11 @@
   var videoId = parseInt(data.dataset.videoId || '0', 10);
   var resumeAt = parseInt(data.dataset.resumeAt || '0', 10);
 
+  /* A moment somebody asked for explicitly, from a ?t= link. It beats resume:
+     they clicked a chapter or a transcript line, and putting them back where
+     they left off instead would ignore what they asked for. */
+  var startAt = parseInt(data.dataset.startAt || '0', 10);
+
   if (!videoId) {
     return;
   }
@@ -31,6 +36,19 @@
   var position = 0;
   var lastSaved = 0;
   var hasResumed = false;
+
+  /* Where the player has got to, for anything else on the page that needs it.
+     Read-only and a function rather than a value, so a caller cannot hold a
+     stale number — the note-taking panel asks at the moment somebody presses a
+     button, which is the only moment the answer is worth anything.
+
+     Deliberately the only thing this file exposes. A player that published its
+     whole state would be a player every theme started reaching into. */
+  window.portalPlayer = {
+    position: function () {
+      return Math.floor(position);
+    }
+  };
 
   /* Save at most every 10 seconds. The player reports position several times a
      second; posting each one would be thousands of writes per view. */
@@ -111,10 +129,22 @@
 
       /* Seek once, on the first position report — waiting for `ready` alone is
          not enough, because the player will not accept a seek until it has
-         actually loaded something. */
-      if (!hasResumed && resumeAt > 5 && duration > 0 && resumeAt < duration * 0.95) {
-        hasResumed = true;
-        send('setCurrentTime', resumeAt);
+         actually loaded something.
+
+         The guards differ by intent. A RESUME is a guess, so it is skipped for
+         the first few seconds (not worth it) and near the end (they finished);
+         being wrong there is an annoyance the viewer did not ask for. An
+         explicit ?t= is a request, so the only thing that can stop it is the
+         moment being past the end. */
+      if (!hasResumed && duration > 0) {
+        var wanted = startAt > 0
+          ? (startAt < duration ? startAt : 0)
+          : (resumeAt > 5 && resumeAt < duration * 0.95 ? resumeAt : 0);
+
+        if (wanted > 0) {
+          hasResumed = true;
+          send('setCurrentTime', wanted);
+        }
       }
 
       save(false);
@@ -134,6 +164,50 @@
 
     if (message.method === 'getDuration') {
       duration = message.value || 0;
+    }
+  });
+
+  /*
+   * Chapter and transcript links seek in place.
+   *
+   * They are ordinary links to ?t=seconds, so with scripting off they still
+   * work — the page reloads and the player starts at that moment, because the
+   * server reads the same parameter. This only removes the reload.
+   *
+   * Delegated from the document so it covers a transcript panel that has not
+   * been opened yet, and reads the target out of the href rather than a data
+   * attribute so there is one place the moment is written.
+   */
+  document.addEventListener('click', function (event) {
+    var link = event.target.closest('.chapter-list a, .transcript-time');
+
+    if (!link) {
+      return;
+    }
+
+    var match = /[?&]t=(\d+)/.exec(link.getAttribute('href') || '');
+
+    if (!match) {
+      return;
+    }
+
+    var seconds = parseInt(match[1], 10);
+
+    /* Only once the player has told us something. Before that a seek is
+       silently dropped, and letting the link navigate is the honest fallback
+       — the reload lands in the right place. */
+    if (!duration) {
+      return;
+    }
+
+    event.preventDefault();
+    send('setCurrentTime', seconds);
+    send('play');
+
+    /* So the address bar matches what is playing and the page stays
+       shareable, without adding a history entry per chapter clicked. */
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', link.getAttribute('href'));
     }
   });
 
