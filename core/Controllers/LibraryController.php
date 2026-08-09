@@ -384,6 +384,69 @@ final class LibraryController extends Controller
      * favourite this or save it for later" is a question nobody should have to
      * answer by visiting two addresses.
      */
+    /**
+     * Everything one person has written, in one place they can print.
+     */
+    public function notes(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return Response::redirect($this->config()->url('/auth/login'));
+        }
+
+        $notes = $this->container->get(\Portal\Content\NoteRepository::class)->forUser($user->id);
+
+        return $this->view(['notes', 'index'], [
+            'title'   => 'My notes',
+            'heading' => 'My notes',
+            'notes'   => $notes,
+        ]);
+    }
+
+    /**
+     * Save a note.
+     *
+     * Scoped to the signed-in account in the only way that matters: the user id
+     * comes from the session and is never read from the request. A videoId is
+     * accepted because a note belongs to a video; whose note it is, is not
+     * something the browser gets a say in.
+     */
+    public function saveNote(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return $this->json(['saved' => false], 401);
+        }
+
+        $payload = $request->json();
+        $videoId = (int) ($payload['videoId'] ?? 0);
+
+        if ($videoId <= 0) {
+            return $this->json(['saved' => false], 400);
+        }
+
+        /*
+         * The video has to be one this person can actually watch. Without the
+         * check, a note is a place to confirm that a members-only video exists
+         * by seeing whether writing about it succeeds.
+         */
+        $video = $this->videos()->find($videoId);
+
+        if ($video === null || !$video->isVisible() || ($video->memberOnly && !$this->canWatch())) {
+            return $this->json(['saved' => false], 404);
+        }
+
+        $stored = $this->container->get(\Portal\Content\NoteRepository::class)->save(
+            $user->id,
+            $videoId,
+            (string) ($payload['body'] ?? '')
+        );
+
+        return $this->json(['saved' => true, 'stored' => $stored]);
+    }
+
     public function saved(Request $request): Response
     {
         $user = $this->user();

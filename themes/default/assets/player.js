@@ -37,6 +37,19 @@
   var lastSaved = 0;
   var hasResumed = false;
 
+  /* Where the player has got to, for anything else on the page that needs it.
+     Read-only and a function rather than a value, so a caller cannot hold a
+     stale number — the note-taking panel asks at the moment somebody presses a
+     button, which is the only moment the answer is worth anything.
+
+     Deliberately the only thing this file exposes. A player that published its
+     whole state would be a player every theme started reaching into. */
+  window.portalPlayer = {
+    position: function () {
+      return Math.floor(position);
+    }
+  };
+
   /* Save at most every 10 seconds. The player reports position several times a
      second; posting each one would be thousands of writes per view. */
   var SAVE_INTERVAL = 10;

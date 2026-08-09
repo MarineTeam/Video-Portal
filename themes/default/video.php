@@ -195,7 +195,105 @@ $chapters ??= [];
  * whole reason for indexing them.
  */
 $scripture ??= [];
+
+/*
+ * Notes.
+ *
+ * Private to whoever wrote them — nobody else on this site can read them, and
+ * there is no screen anywhere that lists other people's. Said on the panel
+ * rather than only in the migration, because somebody deciding whether to write
+ * something down during a service is deciding it right there.
+ */
+$note ??= '';
 ?>
+
+<?php if (!empty($video['embedUrl'])): ?>
+  <section class="notes" aria-labelledby="notes-heading">
+    <h2 class="section-title" id="notes-heading">My notes</h2>
+    <p class="muted small">
+      Only you can read these. They save as you type, and they are all together
+      on <a href="/notes">your notes page</a>.
+    </p>
+
+    <p>
+      <button type="button" id="note-timestamp" class="btn tiny secondary">
+        Add the current time
+      </button>
+      <span id="note-status" class="muted small" role="status" aria-live="polite"></span>
+    </p>
+
+    <label class="visually-hidden" for="note-body">Notes on this video</label>
+    <textarea id="note-body" rows="8" data-video="<?= (int) ($video['id'] ?? 0) ?>"
+              placeholder="Anything worth keeping."><?= e($note) ?></textarea>
+  </section>
+
+  <script>
+  (function () {
+    var box = document.getElementById('note-body');
+    var status = document.getElementById('note-status');
+    var stamp = document.getElementById('note-timestamp');
+    if (!box) { return; }
+
+    var videoId = parseInt(box.dataset.video || '0', 10);
+    var timer = null;
+    var lastSaved = box.value;
+
+    function save() {
+      if (box.value === lastSaved) { return; }
+      var body = box.value;
+
+      fetch('/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoId: videoId, body: body })
+      }).then(function (response) {
+        if (!response.ok) { throw new Error('refused'); }
+        lastSaved = body;
+        status.textContent = 'Saved';
+      }).catch(function () {
+        /* Said out loud. A note that silently failed to save is the worst
+           outcome here: somebody keeps typing, trusting it. */
+        status.textContent = 'Not saved — check your connection';
+      });
+    }
+
+    /* Debounced, not per keystroke: this is a page somebody types a paragraph
+       into, and a request per character is thousands of writes per service. */
+    box.addEventListener('input', function () {
+      status.textContent = '';
+      if (timer) { clearTimeout(timer); }
+      timer = setTimeout(save, 1500);
+    });
+
+    /* And on the way out, in the cases where the timer will not fire. pagehide
+       covers what beforeunload does not, notably on iOS. */
+    window.addEventListener('pagehide', save);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') { save(); }
+    });
+
+    if (stamp) {
+      stamp.addEventListener('click', function () {
+        /* Asked at the moment of the click rather than tracked, so the number
+           cannot be stale. Absent player, absent button behaviour: this degrades
+           to doing nothing rather than inserting a wrong time. */
+        if (!window.portalPlayer) { return; }
+
+        var at = window.portalPlayer.position();
+        var text = Math.floor(at / 60) + ':' + ('0' + (at % 60)).slice(-2);
+
+        var prefix = box.value === '' || box.value.slice(-1) === '\n' ? '' : '\n';
+        box.value += prefix + text + ' ';
+        box.focus();
+
+        if (timer) { clearTimeout(timer); }
+        timer = setTimeout(save, 1500);
+      });
+    }
+  })();
+  </script>
+<?php endif ?>
+
 <?php if ($scripture !== []): ?>
   <section class="scripture" aria-labelledby="scripture-heading">
     <h2 class="section-title" id="scripture-heading">Scripture</h2>

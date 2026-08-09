@@ -126,6 +126,8 @@ final class Routes
 
         // Saved videos. Approved-only for the same reason /watch is: the pages
         // list content, and an unapproved account cannot see the library either.
+        $router->get('/notes', [LibraryController::class, 'notes'], ['auth.authorized']);
+        $router->post('/notes', [LibraryController::class, 'saveNote'], ['auth.authorized']);
         $router->get('/saved', [LibraryController::class, 'saved'], ['auth.authorized']);
         $router->post('/saved', [LibraryController::class, 'toggleSaved'], ['auth.authorized']);
 

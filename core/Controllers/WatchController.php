@@ -132,6 +132,7 @@ final class WatchController extends Controller
                 'attachments' => $this->attachments($video->id),
                 'chapters'   => $this->chapters($video->id),
                 'scripture'  => $this->scriptureLinks($video->id),
+                'note'       => $this->note($video->id),
                 'transcript' => $this->transcriptCues($video->id),
                 'savedLists' => $this->savedLists($video->id),
                 'saveAction' => '/saved',
@@ -332,6 +333,34 @@ final class WatchController extends Controller
             error_log('Could not read the scripture references: ' . $e->getMessage());
 
             return [];
+        }
+    }
+
+    /**
+     * This viewer's own note on this video, if they have written one.
+     *
+     * Scoped to the session's user, which is the only access control notes
+     * have — there is no capability that grants reading somebody else's, and no
+     * screen anywhere that lists them.
+     */
+    private function note(int $videoId): string
+    {
+        $user = $this->guard()->user();
+
+        if ($user === null) {
+            return '';
+        }
+
+        try {
+            return $this->container
+                ->get(\Portal\Content\NoteRepository::class)
+                ->body($user->id, $videoId);
+        } catch (Throwable $e) {
+            // On the request that applies migration 0017 the table is not there
+            // yet, and losing the panel is better than losing the page.
+            error_log('Could not read the note: ' . $e->getMessage());
+
+            return '';
         }
     }
 

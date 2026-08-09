@@ -3605,6 +3605,115 @@ check(
     'the switch only goes one way'
 );
 
+/* ------------------------------------------------------------------- notes
+ *
+ * The reachability half — a panel on the watch page and a page that collects
+ * what it wrote — plus the one claim that has no other check: a note belongs to
+ * exactly one account, and there is no way to reach somebody else's.
+ */
+echo "\nNotes\n";
+
+$watchForNotes = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+
+check(
+    'The watch page offers a notes box',
+    str_contains($watchForNotes['body'], 'id="note-body"'),
+    'the table exists and nothing can write to it'
+);
+check(
+    'It says who can read them',
+    str_contains($watchForNotes['body'], 'Only you can read these'),
+    'somebody deciding whether to write something down is deciding it right there'
+);
+check(
+    'and offers to stamp the current time',
+    str_contains($watchForNotes['body'], 'id="note-timestamp"'),
+    'a sermon notes box with no timestamps is a textarea'
+);
+
+$noteSaved = postJsonWithJar($baseUrl . '/notes', [
+    'videoId' => $videoRow,
+    'body'    => "12:30 The second point\nWorth coming back to.",
+], $jar);
+
+check('Saving a note succeeds', $noteSaved['status'] === 200, "got {$noteSaved['status']}");
+check(
+    'and it is stored against the right account',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {video_notes} WHERE video_id = ? AND user_id = (SELECT id FROM {users} WHERE email = ?)',
+        [$videoRow, 'admin@smoke.test']
+    ) === 1
+);
+
+$notesPage = getWithJar($baseUrl . '/notes', $jar);
+check('The notes page renders', $notesPage['status'] === 200, "got {$notesPage['status']}");
+check('It shows what was written', str_contains($notesPage['body'], 'Worth coming back to.'));
+check(
+    'and links back to the video',
+    str_contains($notesPage['body'], '/watch/' . $videoSlug),
+    'a note nobody can trace back to its video is half a note'
+);
+
+/* Saving again replaces rather than accumulating. */
+postJsonWithJar($baseUrl . '/notes', ['videoId' => $videoRow, 'body' => 'Rewritten.'], $jar);
+
+check(
+    'Saving again replaces the note',
+    (int) $db->value('SELECT COUNT(*) FROM {video_notes} WHERE video_id = ?', [$videoRow]) === 1
+        && str_contains(getWithJar($baseUrl . '/notes', $jar)['body'], 'Rewritten.'),
+    'the autosave is accumulating rows'
+);
+
+/*
+ * The check with no other cover. Notes have no capability and no admin screen,
+ * so if the scoping were wrong nothing else in the suite would notice.
+ */
+$noteOtherEmail = 'note-reader@smoke.test';
+$db->insert('users', [
+    'email' => $noteOtherEmail, 'name' => 'Another Viewer', 'authorized' => 1,
+    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash('note-reader-password-1234', PASSWORD_DEFAULT),
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$otherJar = sys_get_temp_dir() . '/portal-smoke-notes-' . getmypid() . '.txt';
+@unlink($otherJar);
+
+$noteLogin = getWithJar($baseUrl . '/auth/login', $otherJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom($noteLogin['body']),
+    'email'    => $noteOtherEmail,
+    'password' => 'note-reader-password-1234',
+], $otherJar);
+
+check(
+    'Another account sees none of it',
+    !str_contains(getWithJar($baseUrl . '/notes', $otherJar)['body'], 'Rewritten.'),
+    'notes are readable by somebody who did not write them'
+);
+check(
+    'and the box on the same video is empty for them',
+    !str_contains(getWithJar($baseUrl . '/watch/' . $videoSlug, $otherJar)['body'], 'Rewritten.'),
+    'the watch page hands one person another person\'s note'
+);
+
+/* Emptying the box removes it, which is how somebody deletes one. */
+postJsonWithJar($baseUrl . '/notes', ['videoId' => $videoRow, 'body' => ''], $jar);
+
+check(
+    'Emptying the box removes the note',
+    (int) $db->value('SELECT COUNT(*) FROM {video_notes} WHERE video_id = ?', [$videoRow]) === 0
+);
+
+/* Signed out, there is nowhere to put one. */
+check(
+    'A signed-out visitor cannot save a note',
+    in_array(postJson($baseUrl . '/notes', ['videoId' => $videoRow, 'body' => 'x'])['status'], [302, 401, 403], true),
+    'notes can be written by anybody, against anybody'
+);
+
+@unlink($otherJar);
+
 /* --------------------------------------------------------------- live streams
  *
  * The state is never stored, so the interesting checks are the ones that move
