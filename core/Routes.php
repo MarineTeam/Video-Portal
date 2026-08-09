@@ -153,6 +153,7 @@ final class Routes
         $router->post('/admin/playlists', [AdminController::class, 'savePlaylist'], ['admin.area']);
         $router->get('/admin/playlists/{id}', [AdminController::class, 'editPlaylist'], ['admin.area']);
         $router->get('/admin/analytics', [AdminController::class, 'analytics'], ['admin.area']);
+        $router->get('/admin/analytics.csv', [AdminController::class, 'exportAnalytics'], ['admin.area']);
         $router->get('/admin/homepage', [AdminController::class, 'homeRows'], ['admin.area']);
         $router->post('/admin/homepage', [AdminController::class, 'saveHomeRow'], ['admin.area']);
         $router->get('/admin/announcements', [AdminController::class, 'announcementsScreen'], ['admin.area']);

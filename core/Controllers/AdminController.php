@@ -1159,6 +1159,65 @@ final class AdminController extends Controller
         }
     }
 
+    /**
+     * The view figures as a spreadsheet.
+     *
+     * Daily rows rather than the totals on the screen: an export exists to let
+     * somebody do what the screen cannot, and a day cannot be recovered from a
+     * total.
+     *
+     * Behind VIEW_ANALYTICS, the same capability as the screen. Not stricter —
+     * this is the same information in a different shape, and a download that
+     * needed a second permission would be one nobody could explain.
+     */
+    public function exportAnalytics(Request $request): Response
+    {
+        $this->require(Capability::VIEW_ANALYTICS);
+
+        $days = \Portal\Content\ViewRepository::sanitizePeriod($request->query('days'));
+
+        try {
+            $rows = $this->container->get(\Portal\Content\ViewRepository::class)->dailyRows($days);
+        } catch (Throwable $e) {
+            error_log('Could not export view counts: ' . $e->getMessage());
+            $rows = [];
+        }
+
+        $csv = \Portal\Support\Csv::document(
+            ['Date', 'Video', 'Address', 'Views', 'Finished'],
+            array_map(
+                static fn (array $row): array => [
+                    $row['day'],
+                    $row['title'],
+                    '/watch/' . $row['slug'],
+                    $row['views'],
+                    $row['completions'],
+                ],
+                $rows
+            )
+        );
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'analytics.export',
+            'analytics',
+            (string) $days,
+            (string) count($rows)
+        );
+
+        return Response::text($csv)
+            ->header('Content-Type', 'text/csv; charset=utf-8')
+            ->header(
+                'Content-Disposition',
+                'attachment; filename="' . \Portal\Support\Csv::filename('views-' . $days . '-days') . '"'
+            )
+            // The browser must not decide this is HTML. A CSV that sniffs as
+            // HTML is a page rendered from content editors typed.
+            ->header('X-Content-Type-Options', 'nosniff')
+            ->private();
+    }
+
     // ------------------------------------------------------------- homepage
 
     public function homeRows(Request $request): Response

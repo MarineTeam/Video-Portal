@@ -1757,6 +1757,16 @@ final class AdminView
             );
         }
 
+        /*
+         * The export carries the same period as the screen, so a download
+         * always matches what is being looked at. A button that quietly
+         * exported a different range would be worse than no button.
+         */
+        $tabs .= sprintf(
+            '<a class="pill" href="/admin/analytics.csv?days=%d">Download CSV</a>',
+            $days
+        );
+
         $rows = '';
         foreach ((array) ($data['top'] ?? []) as $row) {
             $rowViews = (int) $row['views'];

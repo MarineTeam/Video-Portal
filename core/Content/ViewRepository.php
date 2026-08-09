@@ -110,6 +110,44 @@ final class ViewRepository
     }
 
     /**
+     * Every day of every video, for the export.
+     *
+     * Daily rows rather than the totals the screen shows, because the point of
+     * an export is doing something the screen cannot — and a total is one
+     * subtraction away from being recoverable while a day is not recoverable
+     * from a total.
+     *
+     * Bounded by the period and by a hard row cap. This is assembled in memory
+     * on a shared host, and a library with three years of daily figures for a
+     * thousand videos is a million rows; the cap is the difference between a
+     * large download and a request the host kills halfway through, which looks
+     * to whoever pressed the button like the feature is broken.
+     *
+     * @return list<array{day: string, title: string, slug: string, views: int, completions: int}>
+     */
+    public function dailyRows(int $days = 30, int $limit = 50000): array
+    {
+        $rows = $this->db->all(
+            'SELECT vv.day, vv.views, vv.completions, v.title, v.slug
+               FROM {video_views} vv
+               JOIN {videos} v ON v.id = vv.video_id
+              WHERE vv.day >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                AND v.deleted_at IS NULL
+              ORDER BY vv.day DESC, v.title ASC
+              LIMIT ' . max(1, min(200000, $limit)),
+            [$this->clampDays($days)]
+        );
+
+        return array_map(static fn (array $row): array => [
+            'day'         => (string) $row['day'],
+            'title'       => (string) $row['title'],
+            'slug'        => (string) $row['slug'],
+            'views'       => (int) $row['views'],
+            'completions' => (int) $row['completions'],
+        ], $rows);
+    }
+
+    /**
      * One video's daily figures, oldest first.
      *
      * @return list<array{day: string, views: int, completions: int}>

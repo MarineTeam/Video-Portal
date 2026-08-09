@@ -2449,6 +2449,52 @@ check(
     'finishing a video reported a second viewer'
 );
 
+/*
+ * The export.
+ *
+ * The check that carries weight is the last one: a title an editor typed is
+ * the second column, and a spreadsheet reads a cell starting `=` as a formula.
+ * So a title is renamed to one here and the file is inspected for it — nothing
+ * about the export is compromised, but the spreadsheet is what turns the value
+ * into code, and this is where it has to be defused.
+ */
+$db->execute(
+    'UPDATE {videos} SET title = ? WHERE id = ?',
+    ['=HYPERLINK("https://evil.example","Click")', $videoRow]
+);
+
+$export = getWithJar($baseUrl . '/admin/analytics.csv?days=30', $jar);
+
+check('The analytics export downloads', $export['status'] === 200, "got {$export['status']}");
+check(
+    'It is offered as a file rather than shown',
+    str_contains($export['headers']['content-disposition'] ?? '', 'attachment')
+        && str_contains($export['headers']['content-disposition'] ?? '', '.csv'),
+    'a CSV rendered in the browser is a page built from whatever editors typed'
+);
+check(
+    'and the browser is told not to sniff it',
+    ($export['headers']['x-content-type-options'] ?? '') === 'nosniff'
+);
+check(
+    'It carries the daily rows',
+    str_contains($export['body'], 'Date,Video,Address,Views,Finished')
+        && str_contains($export['body'], date('Y-m-d')),
+    'the export is empty or has the wrong shape'
+);
+check(
+    'A title that is a formula cannot execute in a spreadsheet',
+    !str_contains($export['body'], ',=HYPERLINK') && str_contains($export['body'], "'=HYPERLINK"),
+    'opening the export would run a formula built from a title somebody typed'
+);
+check(
+    'The download link is on the screen',
+    str_contains($analytics['body'], '/admin/analytics.csv'),
+    'an export nobody can reach is not an export'
+);
+
+$db->execute('UPDATE {videos} SET title = ? WHERE id = ?', ['A Test Video', $videoRow]);
+
 /* Under ten seconds is somebody clicking away, not a view. */
 $db->execute('DELETE FROM {video_views}');
 $briefJar = sys_get_temp_dir() . '/portal-smoke-brief-' . getmypid() . '.txt';
