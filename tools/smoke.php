@@ -3605,6 +3605,170 @@ check(
     'the switch only goes one way'
 );
 
+/* --------------------------------------------------------------- web push
+ *
+ * Nothing here is delivered — a real notification needs a real push service and
+ * a real browser. What these checks are for is everything on this side of that:
+ * the plugin loads, the service worker is served from the ROOT with the header
+ * that lets it control the whole site, and a subscription that could never be
+ * delivered to is refused when it arrives rather than every night forever.
+ */
+echo "\nWeb push\n";
+
+$pushPlugins = getWithJar($baseUrl . '/admin/plugins', $jar);
+check('Push is listed', str_contains($pushPlugins['body'], 'Push notifications'));
+
+$pushActivated = postWithJar($baseUrl . '/admin/plugins', [
+    '_token' => csrfFrom($pushPlugins['body']),
+    'slug'   => 'push',
+    'action' => 'activate',
+], $jar);
+
+check('Activating push succeeds', $pushActivated['status'] === 302, "got {$pushActivated['status']}");
+check(
+    'and it stayed active after the redirect',
+    (int) $db->value('SELECT is_active FROM {plugins} WHERE slug = ?', ['push']) === 1,
+    'it was deactivated again, which means it threw on load — check the error log'
+);
+check(
+    'Its tables were created by activation',
+    (int) $db->value('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+        [$db->prefix() . 'push_subscriptions']) === 1
+);
+
+/*
+ * The whole back catalogue is claimed at install. Without that, switching this
+ * on for a library that has been up a year would fire every video at every
+ * browser that had ever subscribed.
+ */
+check(
+    'Existing videos count as already pushed',
+    (int) $db->value('SELECT COUNT(*) FROM {pushed_videos}') > 0,
+    'turning the plugin on would announce the entire back catalogue'
+);
+
+/*
+ * The service worker. It has to be at the ROOT — a worker can only control
+ * pages at or below its own path — and it needs the header that widens its
+ * scope, without which it registers successfully and receives nothing.
+ */
+$worker = get($baseUrl . '/push-sw.js');
+check('The service worker is served', $worker['status'] === 200, "got {$worker['status']}");
+check(
+    'as JavaScript',
+    str_contains($worker['headers']['content-type'] ?? '', 'javascript'),
+    'a service worker served as text/html is refused by every browser'
+);
+check(
+    'with the header that lets it control the whole site',
+    ($worker['headers']['service-worker-allowed'] ?? '') === '/',
+    'the worker would register and then receive nothing'
+);
+check(
+    'and it handles both a push and a click on one',
+    str_contains($worker['body'], "addEventListener('push'")
+        && str_contains($worker['body'], "addEventListener('notificationclick'"),
+    'a notification nobody can click leads nowhere'
+);
+
+$pushAdmin = getWithJar($baseUrl . '/admin/push', $jar);
+check('The push settings screen renders', $pushAdmin['status'] === 200, "got {$pushAdmin['status']}");
+check(
+    'It says there are no keys yet',
+    str_contains($pushAdmin['body'], 'No keys yet'),
+    'an admin cannot tell whether anything could be sent'
+);
+check(
+    'and warns that this needs https',
+    str_contains($pushAdmin['body'], 'Only over https'),
+    'somebody will report the feature broken on an http site'
+);
+check(
+    'and that members-only videos are never pushed',
+    str_contains($pushAdmin['body'], 'not theirs to hold'),
+    'the payload passes through somebody else\'s server and nobody is told'
+);
+check(
+    'Plugin pages appear in the admin navigation',
+    str_contains(getWithJar($baseUrl . '/admin', $jar)['body'], '/admin/push')
+);
+
+/*
+ * The subscribe endpoint. A subscription with a key of the wrong length would
+ * otherwise be picked up by every future run, fail, and count as a failure —
+ * so it is refused at the door, where there is still somebody to tell.
+ */
+$goodKey = rtrim(strtr(base64_encode("\x04" . random_bytes(64)), '+/', '-_'), '=');
+$goodAuth = rtrim(strtr(base64_encode(random_bytes(16)), '+/', '-_'), '=');
+
+$refused = postJson($baseUrl . '/push/subscribe', [
+    'endpoint' => 'https://push.example.com/wpush/smoke-bad',
+    'keys'     => ['p256dh' => 'nonsense', 'auth' => $goodAuth],
+]);
+
+check('A malformed subscription is refused', $refused['status'] === 400, "got {$refused['status']}");
+check(
+    'and nothing was stored',
+    (int) $db->value('SELECT COUNT(*) FROM {push_subscriptions}') === 0
+);
+
+$accepted = postJson($baseUrl . '/push/subscribe', [
+    'endpoint' => 'https://push.example.com/wpush/smoke-good',
+    'keys'     => ['p256dh' => $goodKey, 'auth' => $goodAuth],
+]);
+
+check('A well-formed subscription is accepted', $accepted['status'] === 200, "got {$accepted['status']}");
+check(
+    'and stored once',
+    (int) $db->value('SELECT COUNT(*) FROM {push_subscriptions}') === 1
+);
+
+/* A browser re-subscribing is the same subscriber, not a second one. */
+postJson($baseUrl . '/push/subscribe', [
+    'endpoint' => 'https://push.example.com/wpush/smoke-good',
+    'keys'     => ['p256dh' => $goodKey, 'auth' => $goodAuth],
+]);
+
+check(
+    'Re-subscribing does not create a second subscriber',
+    (int) $db->value('SELECT COUNT(*) FROM {push_subscriptions}') === 1,
+    'every notification would be sent twice'
+);
+
+$gone = postJson($baseUrl . '/push/unsubscribe', [
+    'endpoint' => 'https://push.example.com/wpush/smoke-good',
+]);
+
+check('Unsubscribing works', $gone['status'] === 200, "got {$gone['status']}");
+check(
+    'and removes the subscription',
+    (int) $db->value('SELECT COUNT(*) FROM {push_subscriptions}') === 0
+);
+check(
+    'Unsubscribing something unknown is still fine',
+    postJson($baseUrl . '/push/unsubscribe', ['endpoint' => 'https://push.example.com/nope'])['status'] === 200,
+    'a browser would retry forever'
+);
+
+/* Uninstalling takes the tables with it; deactivating must not. */
+postWithJar($baseUrl . '/admin/plugins', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/plugins', $jar)['body']),
+    'slug'   => 'push',
+    'action' => 'deactivate',
+], $jar);
+
+check(
+    'Deactivating keeps the subscriptions',
+    (int) $db->value('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+        [$db->prefix() . 'push_subscriptions']) === 1,
+    'turning it off threw away everybody who had subscribed'
+);
+check(
+    'and the service worker stops being served',
+    get($baseUrl . '/push-sw.js')['status'] === 404,
+    'a deactivated plugin is still answering requests'
+);
+
 /* -------------------------------------------------------- sequential unlock
  *
  * The claim that matters is not "a message appears" but "no embed URL is on
