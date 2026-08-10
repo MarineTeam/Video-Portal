@@ -146,6 +146,19 @@
   };
 
   /**
+   * The headers every TUS request carries.
+   *
+   * One place, so a request cannot be made without the provider's
+   * authorisation. The previous shape built the headers inline at each of the
+   * three call sites, and two of them left the authorisation out — which is
+   * the sort of omission that is invisible on reading and only shows up
+   * against the real service.
+   */
+  Upload.prototype.tusHeaders = function (extra) {
+    return Object.assign({ 'Tus-Resumable': '1.0.0' }, this.authHeaders || {}, extra || {});
+  };
+
+  /**
    * TUS step one: tell the provider how many bytes are coming.
    *
    * The response's Location header is where the bytes go. It is only readable
@@ -155,8 +168,22 @@
   Upload.prototype.createTusUpload = function (ticket) {
     var self = this;
 
-    var headers = Object.assign({}, ticket.headers, {
-      'Tus-Resumable': '1.0.0',
+    /*
+     * Kept for every LATER request, not just this one.
+     *
+     * bunny.net wants AuthorizationSignature, AuthorizationExpire, VideoId and
+     * LibraryId on every request in the upload — its own documentation passes
+     * them through tus-js-client's `headers` option, which applies to the
+     * creation POST, each PATCH, and the HEAD used to resume.
+     *
+     * Sending them only on creation is exactly what this did, and the failure
+     * is confusing rather than obvious: the video IS created, so it appears in
+     * the bunny.net dashboard, and then the first PATCH is refused and the HEAD
+     * that tries to recover answers 400. It reads as a network problem.
+     */
+    this.authHeaders = ticket.headers || {};
+
+    var headers = this.tusHeaders({
       'Upload-Length': String(this.file.size),
       'Upload-Metadata': metadata({
         filetype: this.file.type || 'video/mp4',
@@ -219,9 +246,15 @@
       self.xhr = xhr;
 
       xhr.open('PATCH', self.location, true);
-      xhr.setRequestHeader('Tus-Resumable', '1.0.0');
-      xhr.setRequestHeader('Upload-Offset', String(base));
-      xhr.setRequestHeader('Content-Type', 'application/offset+octet-stream');
+
+      var headers = self.tusHeaders({
+        'Upload-Offset': String(base),
+        'Content-Type': 'application/offset+octet-stream'
+      });
+
+      Object.keys(headers).forEach(function (name) {
+        xhr.setRequestHeader(name, headers[name]);
+      });
 
       xhr.upload.onprogress = function (event) {
         if (event.lengthComputable) {
@@ -269,9 +302,22 @@
 
     return fetch(this.location, {
       method: 'HEAD',
-      headers: { 'Tus-Resumable': '1.0.0' }
+      headers: this.tusHeaders()
     }).then(function (response) {
       if (!response.ok) {
+        /*
+         * 401 and 403 here mean the upload ticket has expired rather than that
+         * anything is wrong with the file — tickets last six hours, and a
+         * genuinely large file on a slow connection can outlive one. Said
+         * separately because "could not resume" sends people looking at their
+         * network.
+         */
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(
+            'The upload authorisation expired before the file finished. Start the upload again.'
+          );
+        }
+
         throw new Error('Could not resume the upload (HTTP ' + response.status + ').');
       }
       var offset = parseInt(response.headers.get('Upload-Offset') || '', 10);
