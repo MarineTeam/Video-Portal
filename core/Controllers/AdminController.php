@@ -58,7 +58,53 @@ final class AdminController extends Controller
                 ? Audit::recent($this->db(), 15)
                 : [],
             'providers' => $this->providerSummary(),
+            'schema'    => $this->schemaHealth(),
         ]);
+    }
+
+    /**
+     * Whether the database is actually the shape this code expects.
+     *
+     * The upgrade path here is "git pull, and the next request migrates" —
+     * which works until it does not, and until now a migration that failed was
+     * caught, written to the error log, and invisible. On a shared host with no
+     * shell the error log is the one place nobody can read, so the site went on
+     * serving a half-applied schema. That does not look broken; it looks like
+     * features that mysteriously do not work.
+     *
+     * @return array{ok: bool, pending: list<string>, applied: int, expected: int, error: string}
+     */
+    private function schemaHealth(): array
+    {
+        try {
+            $status = (new \Portal\Migrator($this->db()))->coreStatus();
+
+            $error = (string) ($this->db()->value(
+                'SELECT `value` FROM {settings} WHERE `key` = ?',
+                ['last_migration_error']
+            ) ?? '');
+
+            return [
+                'ok'       => $status['pending'] === [] && $error === '',
+                'pending'  => $status['pending'],
+                'applied'  => count($status['applied']),
+                'expected' => count($status['expected']),
+                'error'    => $error,
+            ];
+        } catch (Throwable $e) {
+            error_log('Portal: could not read the schema state: ' . $e->getMessage());
+
+            // Reported as a problem rather than as fine. Not being able to tell
+            // is itself worth showing on the screen somebody checks after a
+            // deployment.
+            return [
+                'ok'       => false,
+                'pending'  => [],
+                'applied'  => 0,
+                'expected' => 0,
+                'error'    => 'The schema state could not be read: ' . $e->getMessage(),
+            ];
+        }
     }
 
     // --------------------------------------------------------------- videos

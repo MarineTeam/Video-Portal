@@ -192,12 +192,68 @@ final class AdminView
         </table>
         HTML;
 
+        $schemaBlock = $this->schemaWarning((array) ($data['schema'] ?? []));
+
         return <<<HTML
         <h1>Dashboard</h1>
+        {$schemaBlock}
         <div class="tiles">{$tiles}</div>
         <h2>Services</h2>
         <ul class="plain">{$providers}</ul>
         {$activityBlock}
+        HTML;
+    }
+
+    /**
+     * Say so when the database is not the shape this code expects.
+     *
+     * Above everything else on the page, and silent when all is well — a
+     * banner that is always there is a banner nobody reads.
+     *
+     * This exists because the upgrade path is "git pull, and the next request
+     * migrates", and until now a migration that failed was caught, logged, and
+     * invisible. The site went on serving a half-applied schema, which does not
+     * look broken: it looks like features that mysteriously do not work, on a
+     * host where the error log is the one thing nobody can read.
+     *
+     * @param array{ok?: bool, pending?: list<string>, applied?: int, expected?: int, error?: string} $schema
+     */
+    private function schemaWarning(array $schema): string
+    {
+        if ($schema === [] || ($schema['ok'] ?? true)) {
+            return '';
+        }
+
+        $pending = (array) ($schema['pending'] ?? []);
+        $error = (string) ($schema['error'] ?? '');
+
+        $lines = '';
+
+        if ($pending !== []) {
+            $lines .= sprintf(
+                '<p>%d of %d migrations have been applied. Still waiting: <code>%s</code></p>',
+                (int) ($schema['applied'] ?? 0),
+                (int) ($schema['expected'] ?? 0),
+                e(implode(', ', array_map('strval', $pending)))
+            );
+        }
+
+        if ($error !== '') {
+            // The database's own words. A friendlier summary would lose the one
+            // detail that says which host limit was hit.
+            $lines .= '<p>The last attempt failed with:</p><pre class="note-body">' . e($error) . '</pre>';
+        }
+
+        return <<<HTML
+        <div class="flash error">
+          <p><strong>The database is not up to date.</strong> This site is running against a schema
+             that does not match its code, so some features will not work and may fail in ways that
+             do not say why.</p>
+          {$lines}
+          <p>Migrations are retried on every request, so a temporary problem clears on its own. One
+             that persists is usually a limit on the database server — ask your host, and quote the
+             error above. There are no down-migrations, so restoring a backup is the way back.</p>
+        </div>
         HTML;
     }
 
