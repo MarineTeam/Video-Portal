@@ -419,6 +419,10 @@ final class AdminView
     {
         $token = e((string) $data['token']);
 
+        // Stamped with the file's modification time, so a deployed fix is the
+        // one that runs. See asset_url() — this cost an afternoon once.
+        $uploadScript = e(asset_url('/assets/upload.js'));
+
         if (empty($data['canUpload'])) {
             return <<<HTML
             <fieldset>
@@ -445,7 +449,7 @@ final class AdminView
           <ul id="upload-list" class="upload-list"></ul>
         </fieldset>
 
-        <script src="/assets/upload.js" defer></script>
+        <script src="{$uploadScript}" defer></script>
         HTML;
     }
 

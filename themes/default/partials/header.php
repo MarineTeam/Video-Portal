@@ -40,7 +40,7 @@ $allowIndexing ??= false;
 ?>
 <meta name="robots" content="<?= $allowIndexing ? 'index, follow' : 'noindex, nofollow' ?>">
 
-<link rel="stylesheet" href="<?= e($assetsUrl) ?>/theme.css">
+<link rel="stylesheet" href="<?= e(isset($themeAsset) ? $themeAsset('theme.css') : $assetsUrl . '/theme.css') ?>">
 
 <?php
 /*

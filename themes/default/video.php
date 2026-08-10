@@ -382,6 +382,6 @@ $transcript ??= [];
      data-start-at="<?= (int) ($video['startAt'] ?? 0) ?>"
      hidden></div>
 
-<script src="<?= e($assetsUrl ?? '/theme-asset/default') ?>/player.js" defer></script>
+<script src="<?= e(isset($themeAsset) ? $themeAsset('player.js') : ($assetsUrl ?? '/theme-asset/default') . '/player.js') ?>" defer></script>
 
 <?= $template->partial('footer', get_defined_vars()) ?>

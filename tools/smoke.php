@@ -1211,6 +1211,22 @@ check(
  * appears exactly once, which is only true while nothing builds its own
  * headers and skips the authorisation.
  */
+/*
+ * The script tag must carry a version stamp.
+ *
+ * Without one a browser goes on running the copy it already has after a
+ * deploy, and that failure is the hardest kind to recognise: the fix is
+ * present on the server, absent from the running page, and the symptom is
+ * identical to the fix being wrong. It cost an afternoon of debugging a TUS
+ * upload against the live site before the network tab showed a request the
+ * new code could not have made.
+ */
+check(
+    'The upload script is loaded with a version stamp',
+    preg_match('#/assets/upload\.js\?v=\d+#', $videosScreen['body']) === 1,
+    'a deployed fix would not reach a browser that already has the old file'
+);
+
 $uploadJs = get($baseUrl . '/assets/upload.js');
 
 check('The upload script is served', $uploadJs['status'] === 200, "got {$uploadJs['status']}");
