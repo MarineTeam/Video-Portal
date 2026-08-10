@@ -4932,6 +4932,83 @@ check(
     'a deactivated plugin is still rendering'
 );
 
+/* ------------------------------------------------------- schema visibility
+ *
+ * The upgrade path is "git pull, and the next request migrates". Until this
+ * existed, a migration that failed on the host was caught, logged, and
+ * invisible — so the site went on serving a half-applied schema, which does
+ * not look broken, it looks like features that mysteriously do not work.
+ *
+ * The check that matters is the second one: the banner has to APPEAR. A
+ * warning that is only ever absent is indistinguishable from one that is
+ * broken.
+ */
+echo "\nSchema visibility\n";
+
+$healthyDash = getWithJar($baseUrl . '/admin', $jar);
+
+check(
+    'A healthy install shows no schema warning',
+    !str_contains($healthyDash['body'], 'The database is not up to date'),
+    'a banner that is always there is a banner nobody reads'
+);
+
+/*
+ * A missing migration is RE-APPLIED rather than reported, and that is the
+ * point of the upgrade path.
+ *
+ * Deleting the newest schema_version row is what a half-applied upgrade leaves
+ * behind — and the next request notices, re-runs it, and moves on. So the
+ * banner is deliberately not what this proves; the self-healing is. An earlier
+ * version of these checks looked for the banner here and failed against
+ * entirely correct behaviour: it was chasing a window that closes before the
+ * page renders.
+ *
+ * The pending-migration REPORTING is pinned by SchemaHealthTest, which can
+ * observe that state without a request in the way.
+ */
+$newestMigration = (string) $db->value('SELECT version FROM {schema_version} ORDER BY version DESC LIMIT 1');
+$db->execute('DELETE FROM {schema_version} WHERE version = ?', [$newestMigration]);
+
+$recoveredDash = getWithJar($baseUrl . '/admin', $jar);
+
+check(
+    'A missing migration is re-applied on the next request',
+    (string) $db->value(
+        'SELECT version FROM {schema_version} WHERE version = ?',
+        [$newestMigration]
+    ) === $newestMigration,
+    'the upgrade path is "git pull and the next request migrates", and it did not'
+);
+check(
+    'and the site does not complain about a problem it already fixed',
+    !str_contains($recoveredDash['body'], 'The database is not up to date'),
+    'a warning that outlives its problem trains people to ignore it'
+);
+
+/* A recorded failure is surfaced too, not only a missing migration. */
+$db->execute(
+    'INSERT INTO {settings} (`key`, `value`, updated_at) VALUES (?, ?, NOW())
+     ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = NOW()',
+    ['last_migration_error', 'SQLSTATE[42000]: Row size too large']
+);
+
+$failedDash = getWithJar($baseUrl . '/admin', $jar);
+
+check(
+    'A recorded migration failure is shown',
+    str_contains($failedDash['body'], 'The database is not up to date')
+        && str_contains($failedDash['body'], 'Row size too large'),
+    'the error went to a log nobody on a shared host can read'
+);
+check(
+    'and it says a backup is the way back',
+    str_contains($failedDash['body'], 'restoring a backup'),
+    'there are no down-migrations and nobody is told'
+);
+
+$db->execute('DELETE FROM {settings} WHERE `key` = ?', ['last_migration_error']);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

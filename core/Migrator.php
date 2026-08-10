@@ -94,6 +94,35 @@ final class Migrator
         $this->db->execute('DELETE FROM {plugin_migrations} WHERE plugin_slug = ?', [$slug]);
     }
 
+    /**
+     * What the code expects, and what the database has.
+     *
+     * Exposed so a screen can SHOW it. Until this existed, a migration that
+     * failed on the host was caught, written to the error log, and invisible
+     * everywhere else — leaving a site running on a half-applied schema, which
+     * does not look broken, it looks like features that mysteriously do not
+     * work. On a shared host with no shell, the error log is the one place
+     * nobody can read.
+     *
+     * @return array{expected: list<string>, applied: list<string>, pending: list<string>}
+     */
+    public function coreStatus(): array
+    {
+        $expected = array_keys($this->migrationFiles(PORTAL_CORE . '/migrations'));
+
+        try {
+            $applied = $this->db->tableExists('schema_version') ? $this->appliedCoreVersions() : [];
+        } catch (Throwable) {
+            $applied = [];
+        }
+
+        return [
+            'expected' => $expected,
+            'applied'  => $applied,
+            'pending'  => array_values(array_diff($expected, $applied)),
+        ];
+    }
+
     public function coreNeedsMigration(): bool
     {
         try {

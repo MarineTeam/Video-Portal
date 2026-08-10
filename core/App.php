@@ -322,10 +322,58 @@ final class App
                  * forever.
                  */
                 (new \Portal\Support\Cron($db, $this))->ensureCoreJobs();
+
+                /*
+                 * Clearing a recorded failure belongs INSIDE this branch.
+                 *
+                 * Outside it — where the first version of this put it — it runs
+                 * on every request, so the commonest page load on the site
+                 * carries a write to {settings} to report that nothing was
+                 * wrong. Diagnostics that cost a write per request are worse
+                 * than the problem they describe.
+                 *
+                 * Here it runs only when migrations actually ran, which is the
+                 * only moment the answer can have changed.
+                 */
+                $this->recordMigrationFailure($db, '');
             }
         } catch (Throwable $e) {
-            // Not fatal on its own — the request may not touch the new tables.
+            /*
+             * Still not fatal — the request may not touch the new tables, and
+             * refusing to serve the site because one ALTER failed would turn a
+             * degraded install into an outage.
+             *
+             * But it is no longer only logged. A migration that fails on the
+             * host used to go to error_log and nowhere else, which on a shared
+             * host with no shell is nowhere at all: the site kept running on a
+             * half-applied schema, which does not look broken — it looks like
+             * features that mysteriously do not work. The admin now says so.
+             */
             error_log('Portal: automatic migration failed: ' . $e->getMessage());
+
+            $this->recordMigrationFailure($db, $e->getMessage());
+        }
+    }
+
+    /**
+     * Remember that a migration failed, where somebody can see it.
+     *
+     * Written to settings rather than to a new table, because a new table
+     * would itself need a migration — and the one thing that cannot be relied
+     * on here is that migrations work. {settings} has existed since 0001.
+     */
+    private function recordMigrationFailure(Db $db, string $message): void
+    {
+        try {
+            $db->execute(
+                'INSERT INTO {settings} (`key`, `value`, updated_at) VALUES (?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = NOW()',
+                ['last_migration_error', substr($message, 0, 2000)]
+            );
+        } catch (Throwable $inner) {
+            // The database is in a worse state than a failed migration. There
+            // is nowhere left to write this down.
+            error_log('Portal: could not record the migration failure: ' . $inner->getMessage());
         }
     }
 
