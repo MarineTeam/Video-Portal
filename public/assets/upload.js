@@ -193,7 +193,18 @@
 
     return fetch(ticket.endpoint, { method: 'POST', headers: headers }).then(function (response) {
       if (!response.ok) {
-        throw new Error('The video service refused the upload (HTTP ' + response.status + ').');
+        return response.text().catch(function () { return ''; }).then(function (body) {
+          if (window.console) {
+            window.console.error(
+              'Portal upload: POST ' + ticket.endpoint + ' answered ' + response.status,
+              { sentHeaders: Object.keys(headers), body: body }
+            );
+          }
+
+          throw new Error(
+            'The video service refused the upload (HTTP ' + response.status + ').' + explain(body)
+          );
+        });
       }
 
       var location = response.headers.get('Location');
@@ -266,7 +277,16 @@
         self.xhr = null;
 
         if (xhr.status < 200 || xhr.status >= 300) {
-          reject(new Error('The video service rejected part of the file (HTTP ' + xhr.status + ').'));
+          /*
+           * The provider's own words, not just the status. A bare "HTTP 400"
+           * sends people to look at their connection; bunny.net says which
+           * header it objected to, and that sentence is the difference between
+           * a fix and an afternoon.
+           */
+          reject(new Error(
+            'The video service rejected part of the file (HTTP ' + xhr.status + ').'
+            + explain(xhr.responseText)
+          ));
           return;
         }
 
@@ -300,10 +320,23 @@
   Upload.prototype.resync = function () {
     var self = this;
 
+    /*
+     * GET rather than HEAD would tell us more, but TUS specifies HEAD and a
+     * body is not what is wanted here. The status and the location are logged
+     * instead, because a resume failure is the point at which somebody needs
+     * to know WHICH request failed and where it was sent.
+     */
     return fetch(this.location, {
       method: 'HEAD',
       headers: this.tusHeaders()
     }).then(function (response) {
+      if (!response.ok && window.console) {
+        window.console.error(
+          'Portal upload: HEAD ' + self.location + ' answered ' + response.status,
+          { sentHeaders: Object.keys(self.tusHeaders()) }
+        );
+      }
+
       if (!response.ok) {
         /*
          * 401 and 403 here mean the upload ticket has expired rather than that
@@ -341,7 +374,24 @@
 
         attempt++;
         var wait = Math.min(30000, 1000 * Math.pow(2, attempt));
-        upload.say('Connection lost. Retrying in ' + Math.round(wait / 1000) + 's…');
+
+        /*
+         * Say what actually went wrong, not "connection lost".
+         *
+         * The first failure is the one that explains everything, and this used
+         * to replace it with a guess about the network — so a rejected request
+         * and a dropped Wi-Fi connection produced identical messages, and the
+         * only error anybody ever saw was the one from the resume attempt
+         * afterwards. That cost a round trip of debugging against the live
+         * site.
+         */
+        var why = error && error.message ? error.message : String(error);
+
+        if (window.console) {
+          window.console.error('Portal upload: attempt ' + attempt + ' failed', error);
+        }
+
+        upload.say(why + ' Retrying in ' + Math.round(wait / 1000) + 's…');
 
         return delay(wait)
           .then(function () {
@@ -530,6 +580,23 @@
   }
 
   /** TUS metadata is comma-separated "key base64value" pairs. */
+  /**
+   * The provider's own explanation, if it gave one.
+   *
+   * Trimmed and capped: bunny.net answers with a short JSON object, but a
+   * misconfigured proxy in front of it can answer with a whole HTML error page,
+   * and pasting that into a status line helps nobody.
+   */
+  function explain(body) {
+    var text = String(body || '').trim();
+
+    if (text === '' || text.charAt(0) === '<') {
+      return '';
+    }
+
+    return ' The service said: ' + text.slice(0, 300);
+  }
+
   function metadata(pairs) {
     return Object.keys(pairs)
       .map(function (key) {
