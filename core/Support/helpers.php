@@ -74,3 +74,41 @@ if (!function_exists('e')) {
         return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 }
+
+if (!function_exists('asset_url')) {
+    /**
+     * A static asset's URL, stamped so a browser re-fetches it after a deploy.
+     *
+     * This exists because of a real afternoon lost to it. A fix to upload.js
+     * was written, tested, released and pulled onto the live host — and the
+     * browser went on running the previous copy, because /assets/upload.js is
+     * a plain static file and nothing in the URL ever changed. The network tab
+     * showed a request with the old headers, which reads as "the fix does not
+     * work" rather than "the fix is not loaded", and the two are impossible to
+     * tell apart from the outside.
+     *
+     * The stamp is the file's modification time, which is what `git pull`
+     * changes and what nothing else does. A content hash would be marginally
+     * more correct — it survives a touch with no edit — and costs a read of
+     * every asset on every page render, which is the wrong trade on a shared
+     * host for a difference nobody would notice.
+     *
+     * Deliberately NOT the app version: a fix inside 1.0.0 has to reach people
+     * too, and that is exactly the case this was written for.
+     */
+    function asset_url(string $url, ?string $absolutePath = null): string
+    {
+        $absolutePath ??= PORTAL_PUBLIC . '/' . ltrim($url, '/');
+
+        $stamp = @filemtime($absolutePath);
+
+        if ($stamp === false) {
+            // An asset that cannot be found is left alone rather than stamped
+            // with a guess. It is somebody else's problem to explain, and a
+            // made-up version would cache-bust on every single request.
+            return $url;
+        }
+
+        return $url . (str_contains($url, '?') ? '&' : '?') . 'v=' . $stamp;
+    }
+}

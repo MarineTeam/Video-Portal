@@ -94,7 +94,15 @@ final class PluginContext
     /** Public URL for an asset in this plugin's assets/ directory. */
     public function assetUrl(string $relative): string
     {
-        return $this->config->url('/plugin-asset/' . $this->slug . '/' . ltrim($relative, '/'));
+        $relative = ltrim($relative, '/');
+
+        // Stamped with the file's modification time, so a browser re-fetches a
+        // plugin's script after an upgrade instead of running the copy it
+        // already has. See asset_url().
+        return asset_url(
+            $this->config->url('/plugin-asset/' . $this->slug . '/' . $relative),
+            PORTAL_PLUGINS . '/' . $this->slug . '/assets/' . $relative
+        );
     }
 
     // -------------------------------------------------------------- settings

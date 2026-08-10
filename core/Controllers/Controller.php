@@ -104,6 +104,28 @@ abstract class Controller
             'siteName'    => apply_filters('site_name', $themes->setting('site_name', 'Video Portal') ?? 'Video Portal'),
             'logoUrl'     => $themes->setting('logo_url') ?: null,
             'assetsUrl'   => $this->config()->url('/theme-asset/' . $themes->activeSlug()),
+            /*
+             * One asset, stamped so a browser re-fetches it after an upgrade.
+             *
+             * $assetsUrl above is a BASE that templates append a filename to,
+             * so it cannot carry a stamp — the stamp has to be per file. Both
+             * are provided: a theme written before this still works, unstamped,
+             * and one that uses this gets its scripts reloaded when they change.
+             *
+             * Worth the addition because a stale cached script is the single
+             * hardest deployment failure to recognise. It presents as "the fix
+             * does not work" and it looks identical, from the outside, to a fix
+             * that is genuinely wrong.
+             */
+            'themeAsset'  => function (string $relative) use ($themes): string {
+                $slug = $themes->activeSlug();
+                $relative = ltrim($relative, '/');
+
+                return asset_url(
+                    $this->config()->url('/theme-asset/' . $slug . '/' . $relative),
+                    PORTAL_THEMES . '/' . $slug . '/assets/' . $relative
+                );
+            },
             'currentUser' => $user === null ? null : [
                 'name'    => $user->displayName(),
                 'email'   => $user->email,

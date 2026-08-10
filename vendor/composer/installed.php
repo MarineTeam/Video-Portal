@@ -3,7 +3,7 @@
         'name' => 'marineteam/video-portal',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '9deed4f7269e3f5fe938801c4daaf5b80f6fe3f7',
+        'reference' => '7e063e9a733ed2db1dfbbe88098ed62932448894',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -22,7 +22,7 @@
         'marineteam/video-portal' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '9deed4f7269e3f5fe938801c4daaf5b80f6fe3f7',
+            'reference' => '7e063e9a733ed2db1dfbbe88098ed62932448894',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
