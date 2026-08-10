@@ -1192,6 +1192,39 @@ check(
     str_contains($videosScreen['body'], 'not pass through this site')
 );
 
+/*
+ * Every TUS request must carry the provider's authorisation.
+ *
+ * This is a structural check on the served asset rather than a behavioural one,
+ * because proving it properly needs a real bunny.net library. It is here
+ * because the behavioural version was missing and the bug reached production:
+ * the four authorisation headers were sent on the creation POST only, so the
+ * video was created — and appeared in the bunny.net dashboard — and then the
+ * first PATCH was refused and the HEAD that tries to recover answered 400. It
+ * reads as a network fault, and the retry loop says "Connection lost".
+ *
+ * bunny.net's own client passes those headers through tus-js-client's `headers`
+ * option, which applies to every request in the upload.
+ *
+ * The fix was structural: one helper builds the headers and all three call
+ * sites use it. So the check is structural too — the Tus-Resumable literal
+ * appears exactly once, which is only true while nothing builds its own
+ * headers and skips the authorisation.
+ */
+$uploadJs = get($baseUrl . '/assets/upload.js');
+
+check('The upload script is served', $uploadJs['status'] === 200, "got {$uploadJs['status']}");
+check(
+    'No TUS request builds its own headers',
+    substr_count($uploadJs['body'], 'Tus-Resumable') === 1,
+    'a request that skips the provider authorisation is how the upload broke in production'
+);
+check(
+    'and the shared helper carries the ticket headers',
+    str_contains($uploadJs['body'], 'authHeaders'),
+    'the helper exists but does not include what the provider requires'
+);
+
 $ticketNoCsrf = postWithJar($baseUrl . '/admin/upload/ticket', ['title' => 'Nope'], $jar);
 check(
     'An upload ticket without a CSRF token is refused',
