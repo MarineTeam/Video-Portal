@@ -4902,6 +4902,117 @@ check(
     str_contains($qmPublic['body'], 'id="query-monitor"')
 );
 
+/* ------------------------------------------------------ what pages actually cost
+ *
+ * Using the monitor for the thing it was built for, rather than only checking
+ * that it renders. It reports the count in its own headline, so these read it
+ * back and put a ceiling on it.
+ *
+ * The ceilings are generous — this is a guard against a query PER CARD, which
+ * is the mistake the batched thumbnail modes, the batched comment counts and
+ * the batched transcript lookups all exist to avoid. Every one of those was
+ * added because somebody could have written the per-row version, and nothing
+ * until now would have noticed if a later change reintroduced it.
+ *
+ * A failure here is not "the page is slow". It is "this page now scales with
+ * how much content the site has", which is the shape that only hurts once
+ * somebody has a real library.
+ */
+$queryCount = static function (string $html): ?int {
+    // The monitor's own headline: "12 queries · 3.4ms SQL · …"
+    return preg_match('/(\d+)\s+quer(?:y|ies)\s+·/', $html, $m) === 1 ? (int) $m[1] : null;
+};
+
+$homeBefore = $queryCount($qmPublic['body']);
+
+check(
+    'The monitor reports a count that can be read back',
+    $homeBefore !== null,
+    'the headline format changed, so everything below it is measuring nothing'
+);
+
+/*
+ * The claim is not "the homepage uses few queries" — with two videos seeded,
+ * a per-card query would still land under any ceiling worth writing, and the
+ * check would pass while measuring nothing.
+ *
+ * The claim worth making is that the count does not GROW with the content.
+ * So: measure, add thirty videos, measure again. A listing that costs a query
+ * per card moves by thirty; one that batches moves by nearly nothing.
+ *
+ * This is the property every batched lookup in the codebase exists to protect
+ * — thumbnail modes, comment counts, transcript existence, scripture refs —
+ * and until now nothing would have noticed a later change reintroducing the
+ * per-row version.
+ */
+$searchBefore = $queryCount(getWithJar($baseUrl . '/search?q=scale', $jar)['body']);
+
+$bulkStart = (int) $db->value('SELECT COALESCE(MAX(id), 0) FROM {videos}');
+$now = date('Y-m-d H:i:s');
+
+for ($i = 0; $i < 30; $i++) {
+    $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'scale-' . $i,
+        'slug' => 'scale-video-' . $i, 'title' => 'Scale Video ' . $i,
+        'status' => 'ready', 'is_published' => 1, 'duration' => 100,
+        'created_at' => $now, 'updated_at' => $now,
+    ]);
+}
+
+$homeAfter = $queryCount(getWithJar($baseUrl . '/', $jar)['body']);
+
+check(
+    'The homepage cost does not grow with the library',
+    $homeBefore !== null && $homeAfter !== null && ($homeAfter - $homeBefore) <= 5,
+    sprintf(
+        '%s queries with 2 videos, %s with 32 — a listing that costs a query per card',
+        var_export($homeBefore, true),
+        var_export($homeAfter, true)
+    )
+);
+
+$searchAfter = $queryCount(getWithJar($baseUrl . '/search?q=scale', $jar)['body']);
+
+/*
+ * Measured the same way as the homepage rather than against a ceiling. An
+ * earlier version compared search to a fixed budget and passed under a
+ * deliberately reintroduced per-card query — the number grew from 23 to 34 and
+ * the ceiling was 39, so the check watched it happen and said nothing.
+ */
+check(
+    'Nor does search',
+    $searchBefore !== null && $searchAfter !== null && ($searchAfter - $searchBefore) <= 5,
+    sprintf(
+        '%s queries over 0 results, %s over 30 — a result list that costs a query per row',
+        var_export($searchBefore, true),
+        var_export($searchAfter, true)
+    )
+);
+
+echo sprintf(
+    "    (homepage %s -> %s, search %s -> %s, for 2 -> 32 videos)\n",
+    var_export($homeBefore, true),
+    var_export($homeAfter, true),
+    var_export($searchBefore, true),
+    var_export($searchAfter, true)
+);
+
+$db->execute('DELETE FROM {videos} WHERE id > ?', [$bulkStart]);
+
+$qmWatch = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+$watchQueries = $queryCount($qmWatch['body']);
+
+/*
+ * A watch page is a fixed number of panels rather than a list, so a ceiling is
+ * the right shape here — but it is deliberately not much above the real number,
+ * because the failure this catches is a new panel that queries per row.
+ */
+check(
+    'A watch page stays within its budget',
+    $watchQueries !== null && $watchQueries < 60,
+    'watch page used ' . var_export($watchQueries, true) . ' queries'
+);
+
 /*
  * The check that matters. A stranger must see none of this — not the SQL, not
  * the counts, not the bar. Rendered by the same hook on the same page, so the
