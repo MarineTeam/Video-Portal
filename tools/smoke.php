@@ -60,6 +60,40 @@ function check(string $label, bool $ok, string $detail = ''): void
 }
 
 /**
+ * Forget that anybody has tried to sign in recently.
+ *
+ * The application throttles sign-in to ten attempts per IP per fifteen
+ * minutes, which is a real protection working exactly as intended. This script
+ * signs in as a dozen different people from 127.0.0.1 inside a few minutes, so
+ * without this the LAST sections to be written fail on the throttle rather
+ * than on anything they test.
+ *
+ * That failure is worse than an ordinary one because of how it reads: the
+ * first check in a section reports "an unapproved person cannot sign in",
+ * which is a confident statement about a feature that is in fact fine. Called
+ * before each sign-in late in the run, so a section's result depends on the
+ * section and not on how many sections precede it.
+ */
+function clearLoginThrottle(Db $db): void
+{
+    /*
+     * Every row, not the login ones.
+     *
+     * RateLimit stores hash('sha256', $bucket) rather than the bucket itself,
+     * deliberately — a bucket built from an email address would otherwise put
+     * that address in a table nobody thinks of as holding personal data. The
+     * consequence is that the keys are unrecognisable, and the obvious version
+     * of this function — DELETE ... WHERE bucket LIKE 'login:%' — matched
+     * nothing at all. A DELETE that matches nothing succeeds, so it looked like
+     * it worked and the throttle stayed exactly where it was.
+     *
+     * This is a scratch database that exists for one run, and no check in this
+     * file depends on a throttle surviving between sections.
+     */
+    $db->execute('DELETE FROM {rate_limits}');
+}
+
+/**
  * @param array<string, string> $fields
  * @return array{status: int, body: string, headers: array<string, string>}
  */
@@ -91,11 +125,11 @@ function getWithJar(string $url, string $jar): array
  * @param array<string, string|list<string>> $fields
  * @return array{status: int, body: string, headers: array<string, string>}
  */
-function postWithJar(string $url, array $fields, string $jar): array
+function postWithJar(string $url, array $fields, string $jar, array $headers = []): array
 {
     // http_build_query turns list values into videos[0]=..., which PHP parses
     // back into the array the form would have sent.
-    return withJar($url, $jar, http_build_query($fields));
+    return withJar($url, $jar, http_build_query($fields), $headers);
 }
 
 /**
@@ -180,7 +214,7 @@ function uploadWithJar(
 }
 
 /** @return array{status: int, body: string, headers: array<string, string>} */
-function withJar(string $url, string $jar, ?string $body): array
+function withJar(string $url, string $jar, ?string $body, array $headers = []): array
 {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -189,6 +223,10 @@ function withJar(string $url, string $jar, ?string $body): array
         CURLOPT_COOKIEJAR      => $jar,
         CURLOPT_COOKIEFILE     => $jar,
         CURLOPT_TIMEOUT        => 15,
+        // Only what a caller asks for. A Referer matters where the handler
+        // redirects back to where the person came from, which curl does not
+        // send on its own.
+        CURLOPT_HTTPHEADER     => $headers,
         // Deliberately not following: the status code IS the assertion.
         CURLOPT_FOLLOWLOCATION => false,
     ]);
@@ -2437,10 +2475,19 @@ $db->execute('DELETE FROM {subscriptions}');
 $settingsForSubs = getWithJar($baseUrl . '/admin/settings', $jar);
 check('Settings offers the subscription switch', str_contains($settingsForSubs['body'], 'name="subscriptions_enabled"'));
 
+/*
+ * Sent the way the real form sends it: every checkbox on the screen, with the
+ * one being switched off simply absent. `_whole_form` is what licenses the
+ * handler to read absence as "unticked" — without it these fields are left
+ * alone, which is what makes a partial save safe.
+ */
 postWithJar($baseUrl . '/admin/settings', [
-    '_token'    => csrfFrom($settingsForSubs['body']),
-    'site_name' => 'Smoke Portal',
-    'timezone'  => 'UTC',
+    '_token'      => csrfFrom($settingsForSubs['body']),
+    '_whole_form' => '1',
+    'site_name'   => 'Smoke Portal',
+    'timezone'    => 'UTC',
+    // On by default, so a whole-form save has to carry it or it goes off.
+    'allow_access_requests' => '1',
 ], $jar);
 
 check(
@@ -2463,9 +2510,46 @@ check(
 /* Back on, so anything after this sees the ordinary site. */
 postWithJar($baseUrl . '/admin/settings', [
     '_token'                => csrfFrom($settingsForSubs['body']),
+    '_whole_form'           => '1',
     'site_name'             => 'Smoke Portal',
     'timezone'              => 'UTC',
     'subscriptions_enabled' => '1',
+    'allow_access_requests' => '1',
+], $jar);
+
+/*
+ * And the reason `_whole_form` exists at all.
+ *
+ * A POST that changes one text field must not switch off a policy it never
+ * mentioned. This went unnoticed for as long as every checkbox on the screen
+ * defaulted to OFF — writing '0' for an absent box matched the default, so the
+ * damage was invisible. The first setting that defaulted to ON turned every
+ * partial save into a silent disable, which is the same defect Phase 4 found
+ * on the video form.
+ */
+postWithJar($baseUrl . '/admin/settings', [
+    '_token'    => csrfFrom($settingsForSubs['body']),
+    'site_name' => 'Smoke Portal Renamed',
+    'timezone'  => 'UTC',
+], $jar);
+
+check(
+    'A partial settings save leaves checkboxes it did not mention alone',
+    (string) $db->value('SELECT `value` FROM {settings} WHERE `key` = ?', ['subscriptions_enabled']) === '1'
+        && (string) $db->value('SELECT `value` FROM {settings} WHERE `key` = ?', ['allow_access_requests']) === '1',
+    'saving the site name turned off a setting nobody touched'
+);
+check(
+    'and still saves what it did mention',
+    (string) $db->value('SELECT `value` FROM {settings} WHERE `key` = ?', ['site_name']) === 'Smoke Portal Renamed',
+    'ignoring absent fields must not mean ignoring present ones'
+);
+
+/* Put the name back for anything downstream that reads it. */
+postWithJar($baseUrl . '/admin/settings', [
+    '_token'    => csrfFrom($settingsForSubs['body']),
+    'site_name' => 'Smoke Portal',
+    'timezone'  => 'UTC',
 ], $jar);
 
 echo "\nNotices\n";
@@ -3973,11 +4057,20 @@ $settingsScreen = getWithJar($baseUrl . '/admin/settings', $jar);
 check('Settings offers the indexing switch', str_contains($settingsScreen['body'], 'name="allow_indexing"'));
 check('Settings offers the podcast fields', str_contains($settingsScreen['body'], 'name="podcast_owner_email"'));
 
+/*
+ * Whole-form, because this ticks a checkbox. Without the marker the handler
+ * leaves every checkbox alone — which is what makes a partial save safe, and
+ * means a save that intends to CHANGE one has to say so.
+ */
 postWithJar($baseUrl . '/admin/settings', [
     '_token'              => csrfFrom($settingsScreen['body']),
+    '_whole_form'         => '1',
     'site_name'           => 'Smoke Portal',
     'timezone'            => 'UTC',
     'allow_indexing'      => '1',
+    // On by default, so a whole-form save has to carry them or they go off.
+    'subscriptions_enabled' => '1',
+    'allow_access_requests' => '1',
     'podcast_owner_name'  => 'Smoke Owner',
     'podcast_owner_email' => 'owner@smoke.test',
 ], $jar);
@@ -4006,11 +4099,17 @@ check(
     'a submission would be rejected'
 );
 
-/* Put it back, so anything after this runs against a private site. */
+/*
+ * Put it back, so anything after this runs against a private site. Whole-form
+ * again, with allow_indexing absent — which is how a browser says "unticked".
+ */
 postWithJar($baseUrl . '/admin/settings', [
-    '_token'    => csrfFrom($settingsScreen['body']),
-    'site_name' => 'Smoke Portal',
-    'timezone'  => 'UTC',
+    '_token'      => csrfFrom($settingsScreen['body']),
+    '_whole_form' => '1',
+    'site_name'   => 'Smoke Portal',
+    'timezone'    => 'UTC',
+    'subscriptions_enabled' => '1',
+    'allow_access_requests' => '1',
 ], $jar);
 
 check(
@@ -5290,6 +5389,7 @@ $db->insert('users', [
 $navJar = sys_get_temp_dir() . '/portal-smoke-nav-' . getmypid() . '.txt';
 @unlink($navJar);
 
+clearLoginThrottle($db);
 $navLogin = postWithJar($baseUrl . '/auth/login', [
     'email'    => 'nav-editor@smoke.test',
     'password' => 'nav-editor-password-1234',
@@ -5446,6 +5546,7 @@ check(
 $statsJar = sys_get_temp_dir() . '/portal-smoke-stats-' . getmypid() . '.txt';
 @unlink($statsJar);
 
+clearLoginThrottle($db);
 $statsLogin = postWithJar($baseUrl . '/auth/login', [
     'email'    => 'nav-editor@smoke.test',
     'password' => 'nav-editor-password-1234',
@@ -5472,6 +5573,248 @@ check(
 );
 
 @unlink($statsJar);
+
+/* ------------------------------------------------------- access requests
+ *
+ * The gap this closes is the purest instance of the pattern in the whole
+ * project: approving people has worked since Phase 1, the dashboard has
+ * counted the ones waiting since Phase 1, and there has never been a way for
+ * one of them to say anything. The page told them to go find a human.
+ *
+ * So every check here drives the page an unapproved person actually lands on.
+ * A repository test can prove submit() works; only this can prove somebody can
+ * reach it.
+ */
+echo "\nAccess requests\n";
+
+$askEmail = 'asking@smoke.test';
+$askPassword = 'asking-for-access-1234';
+$askUserId = $db->insert('users', [
+    'email' => $askEmail, 'name' => 'Hopeful Person',
+    'authorized' => 0,
+    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash($askPassword, PASSWORD_DEFAULT),
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$askJar = sys_get_temp_dir() . '/portal-smoke-ask-' . getmypid() . '.txt';
+@unlink($askJar);
+
+clearLoginThrottle($db);
+$askLoginPage = getWithJar($baseUrl . '/auth/login', $askJar);
+$askLogin = postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom($askLoginPage['body']),
+    'email'    => $askEmail,
+    'password' => $askPassword,
+], $askJar);
+
+/*
+ * The reason, not just the number.
+ *
+ * A sign-in failure here has three possible causes — the throttle, no local
+ * provider, or the credentials — and they are indistinguishable from a status
+ * code. Reporting "got 401" sent the person reading it (me) guessing twice.
+ */
+check(
+    'An unapproved person can sign in',
+    $askLogin['status'] === 302,
+    "got {$askLogin['status']}: " . (
+        preg_match('~<div class="notice">(.*?)</div>~s', $askLogin['body'], $m)
+            ? trim(html_entity_decode(strip_tags($m[1])))
+            : 'no error message on the page'
+    )
+);
+
+$pendingPage = getWithJar($baseUrl . '/watch/' . $videoSlug, $askJar);
+check(
+    'and is refused the library',
+    $pendingPage['status'] === 403,
+    "got {$pendingPage['status']} — an unapproved account got in"
+);
+check(
+    'with a page that offers a way to ask',
+    str_contains($pendingPage['body'], 'action="/request-access"'),
+    'this page used to end at "let whoever invited you know"'
+);
+
+/* The form is a POST that writes and sends mail, so it needs a token. */
+$noTokenAsk = postWithJar($baseUrl . '/request-access', ['note' => 'no token here'], $askJar);
+check(
+    'Asking without a CSRF token is refused',
+    $noTokenAsk['status'] === 419 || $noTokenAsk['status'] === 403,
+    "got {$noTokenAsk['status']}"
+);
+check(
+    'and nothing was recorded',
+    (int) $db->value('SELECT COUNT(*) FROM {access_requests}') === 0,
+    'a request was written by a form nobody on this site rendered'
+);
+
+$askToken = csrfFrom($pendingPage['body']);
+$asked = postWithJar($baseUrl . '/request-access', [
+    '_token' => $askToken,
+    'note'   => "I'm on the Thursday team — Sam asked me to sign up.",
+], $askJar, ['Referer: ' . $baseUrl . '/watch/' . $videoSlug]);
+
+check('Asking for access is accepted', $asked['status'] === 302, "got {$asked['status']}");
+
+/*
+ * And lands back on the page that refused them, not the homepage.
+ *
+ * Somebody who clicks a button and ends up somewhere else with no
+ * acknowledgement concludes it did not work and clicks again — and the second
+ * click is the one that is silently ignored, because a person may ask once. The
+ * confirmation is what stops the fire-once guard from reading as a broken
+ * button.
+ */
+check(
+    'and returns them to the page that refused them',
+    str_contains($asked['headers']['location'] ?? '', '/watch/' . $videoSlug),
+    'got: ' . ($asked['headers']['location'] ?? 'no Location header')
+);
+check(
+    'and the request is recorded',
+    (int) $db->value('SELECT COUNT(*) FROM {access_requests} WHERE user_id = ?', [$askUserId]) === 1,
+    'the button did nothing'
+);
+
+$afterAsking = getWithJar($baseUrl . '/watch/' . $videoSlug, $askJar);
+check(
+    'The page now says the request has been sent',
+    str_contains($afterAsking['body'], 'Your request has been sent'),
+    'somebody who asked cannot tell whether it worked, so they will ask again'
+);
+check(
+    'and no longer offers the form',
+    !str_contains($afterAsking['body'], 'action="/request-access"'),
+    'a form that resubmits is a form that will be resubmitted'
+);
+
+/*
+ * The fire-once guard, from the outside. Asking again must edit the note and
+ * must not create a second row — this is what stops a button shown to any
+ * stranger who can authenticate from becoming a mail relay.
+ */
+postWithJar($baseUrl . '/request-access', [
+    '_token' => $askToken,
+    'note'   => 'Second attempt with a different message.',
+], $askJar);
+
+check(
+    'Asking twice is still one request',
+    (int) $db->value('SELECT COUNT(*) FROM {access_requests}') === 1,
+    'each click would be a row, and an email'
+);
+
+/* The administrator sees it where they already go to decide. */
+$peopleScreen = getWithJar($baseUrl . '/admin/users', $jar);
+check(
+    'The People screen shows that they asked',
+    str_contains($peopleScreen['body'], 'Asked for access'),
+    'the note is stored where nobody looks'
+);
+check(
+    'and shows what they said, escaped',
+    str_contains($peopleScreen['body'], 'Second attempt with a different message.'),
+    'the message is the thing that answers "should I approve this person"'
+);
+
+/* Approving answers the question, so the question goes away. */
+$approve = postWithJar($baseUrl . '/admin/users', [
+    '_token' => csrfFrom($peopleScreen['body']),
+    'id'     => $askUserId,
+    'action' => 'authorize',
+], $jar);
+
+check('Approving them succeeds', $approve['status'] === 302, "got {$approve['status']}");
+check(
+    'and clears the request',
+    (int) $db->value('SELECT COUNT(*) FROM {access_requests} WHERE user_id = ?', [$askUserId]) === 0,
+    'the request would sit beside an account that already has access'
+);
+check(
+    'and they can now watch',
+    getWithJar($baseUrl . '/watch/' . $videoSlug, $askJar)['status'] === 200,
+    'approval did not take effect'
+);
+
+/*
+ * Switched off, the form is gone AND the route refuses — a hidden form that
+ * still accepts a POST is a setting that only works on people who do not look.
+ */
+$db->execute(
+    'INSERT INTO {settings} (`key`, `value`, updated_at) VALUES (?, ?, NOW())
+     ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = NOW()',
+    ['allow_access_requests', '0']
+);
+$db->execute('UPDATE {users} SET authorized = 0 WHERE id = ?', [$askUserId]);
+$db->execute('DELETE FROM {access_requests} WHERE user_id = ?', [$askUserId]);
+
+$offPage = getWithJar($baseUrl . '/watch/' . $videoSlug, $askJar);
+check(
+    'With requests switched off the form is gone',
+    !str_contains($offPage['body'], 'action="/request-access"'),
+    'an invitation-only site is still inviting people to knock'
+);
+check(
+    'and the page still explains the refusal',
+    str_contains($offPage['body'], 'not approved yet'),
+    'switching a feature off should not blank the page it lived on'
+);
+
+$offPost = postWithJar($baseUrl . '/request-access', [
+    '_token' => csrfFrom($offPage['body']) ?: $askToken,
+    'note'   => 'submitting anyway',
+], $askJar);
+check(
+    'and the route refuses a request submitted anyway',
+    $offPost['status'] === 403,
+    "got {$offPost['status']} — hiding a form is not switching it off"
+);
+
+$db->execute('DELETE FROM {settings} WHERE `key` = ?', ['allow_access_requests']);
+
+/*
+ * The upgrade window.
+ *
+ * Deploying is `git pull`, and the new code serves requests from the moment it
+ * lands — the migrator runs on the first request, not before it. So there is a
+ * real interval where this page's code exists and its table does not, and the
+ * people hitting it are precisely the ones waiting to be approved.
+ *
+ * The fallback that covers it is a try/catch, which is the kind of guard that
+ * silently stops being exercised. Staged by removing the table, which is what
+ * that interval looks like from the page's point of view.
+ */
+$db->execute('DROP TABLE {access_requests}');
+
+$midUpgrade = getWithJar($baseUrl . '/watch/' . $videoSlug, $askJar);
+check(
+    'The pending page survives its table not existing yet',
+    $midUpgrade['status'] === 403 && str_contains($midUpgrade['body'], 'not approved yet'),
+    "got {$midUpgrade['status']} — an upgrade would turn a 403 into a 500 for everyone waiting"
+);
+check(
+    'and falls back to telling them who to contact',
+    str_contains($midUpgrade['body'], 'let whoever invited you know'),
+    'the page renders but says nothing useful'
+);
+
+/* Put it back the way the migrator would, and confirm it did. */
+$db->execute('DELETE FROM {schema_version} WHERE version = ?', ['0018']);
+getWithJar($baseUrl . '/admin', $jar);
+
+check(
+    'and the next request re-applies the migration',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM information_schema.tables
+          WHERE table_schema = DATABASE() AND table_name = ?',
+        ['access_requests']
+    ) === 1,
+    'the table did not come back, so the checks above left the site broken'
+);
+
+@unlink($askJar);
 
 echo "\nRouting\n";
 

@@ -695,6 +695,7 @@ final class AdminController extends Controller
         'watermark_default',
         'members_thumbnail_default',
         'require_verified_email',
+        'allow_access_requests',
         'geo_enabled',
         'admin_geo_enabled',
     ];
@@ -2435,9 +2436,22 @@ final class AdminController extends Controller
               LIMIT 200'
         );
 
+        // One query for the whole listing rather than one per row. Two hundred
+        // accounts times a note lookup is exactly the shape the query monitor
+        // exists to catch.
+        $notes = [];
+        try {
+            $notes = $this->container->get(\Portal\Auth\AccessRequests::class)
+                ->notesFor(array_map(static fn (array $u): int => (int) $u['id'], $users));
+        } catch (Throwable $e) {
+            // Before migration 0018 has run. The screen is still the screen.
+            error_log('Could not read access requests: ' . $e->getMessage());
+        }
+
         return $this->admin('users', [
-            'users' => $users,
-            'roles' => $this->db()->all('SELECT * FROM {roles} ORDER BY position'),
+            'users'        => $users,
+            'roles'        => $this->db()->all('SELECT * FROM {roles} ORDER BY position'),
+            'requestNotes' => $notes,
         ]);
     }
 
@@ -2460,6 +2474,20 @@ final class AdminController extends Controller
         switch ($action) {
             case 'authorize':
                 $users->setAuthorized($id, true, $this->user()?->email);
+
+                /*
+                 * The question has been answered, so it stops being a question.
+                 * Left in place, the row would keep the "asked for access" note
+                 * beside an account that already has access — and would be the
+                 * second place, after {users}, that claims to know whether
+                 * somebody is waiting.
+                 */
+                try {
+                    $this->container->get(\Portal\Auth\AccessRequests::class)->clear($id);
+                } catch (Throwable $e) {
+                    error_log('Could not clear the access request: ' . $e->getMessage());
+                }
+
                 Audit::log($this->db(), $this->user()?->email, 'user.authorize', 'user', (string) $id, $target->email);
                 return $this->back($request, $target->email . ' can now watch videos.');
 
@@ -2680,6 +2708,9 @@ final class AdminController extends Controller
                 // Default '0': enforcing this is a decision with real lockout
                 // risk, so it belongs to whoever owns the site.
                 'require_verified_email' => $this->config()->setting('require_verified_email', '0'),
+                // Default '1': refusing somebody and giving them no way to ask
+                // is the state this replaces, not one worth preserving.
+                'allow_access_requests' => $this->config()->setting('allow_access_requests', '1'),
             ],
             'subscriberCount' => $this->subscriberCount(),
             'cronJobs' => $cron->jobs(),
@@ -2710,22 +2741,48 @@ final class AdminController extends Controller
             return $this->back($request, 'That is not a recognised timezone.', 'error');
         }
 
+        /*
+         * Absent means unchecked, so a checkbox cannot be read with ?? — that
+         * would make the setting impossible to turn back off.
+         *
+         * Which makes a POST that omits a checkbox indistinguishable from one
+         * that unticked it, and this handler used to read every such POST as
+         * "turn it off". Harmless while every checkbox here defaulted to OFF,
+         * because writing '0' matched the default. The moment one defaulted to
+         * ON, a partial save silently disabled it — which is the defect Phase 4
+         * found on the video form and fixed the same way.
+         *
+         * So the form declares itself complete. Present, an unticked box really
+         * does clear. Missing, checkboxes are left exactly as they were, and a
+         * caller saving one text field cannot change a policy it never
+         * mentioned.
+         */
+        $whole = $request->input('_whole_form') !== null;
+
+        $checkbox = function (string $key, bool $default) use ($request, $whole): string {
+            if ($whole) {
+                return $request->input($key) !== null ? '1' : '0';
+            }
+
+            return $this->config()->settingBool($key, $default) ? '1' : '0';
+        };
+
         $this->config()->setSettings([
             'site_name' => $siteName,
             'timezone'  => $timezone,
-            // Absent means unchecked, so this cannot be read with ?? — that
-            // would make the setting impossible to turn back off.
-            'members_thumbnail_default' => $request->input('members_thumbnail_default') !== null ? '1' : '0',
-            'allow_indexing'   => $request->input('allow_indexing') !== null ? '1' : '0',
-            'podcast_explicit' => $request->input('podcast_explicit') !== null ? '1' : '0',
+
+            'members_thumbnail_default' => $checkbox('members_thumbnail_default', false),
+            'allow_indexing'            => $checkbox('allow_indexing', false),
+            'podcast_explicit'          => $checkbox('podcast_explicit', false),
+            'subscriptions_enabled'     => $checkbox('subscriptions_enabled', true),
+            'require_verified_email'    => $checkbox('require_verified_email', false),
+            'allow_access_requests'     => $checkbox('allow_access_requests', true),
 
             'podcast_author'      => trim($request->input('podcast_author') ?? ''),
             'podcast_owner_name'  => trim($request->input('podcast_owner_name') ?? ''),
             'podcast_owner_email' => trim($request->input('podcast_owner_email') ?? ''),
             'podcast_image_url'   => trim($request->input('podcast_image_url') ?? ''),
             'podcast_category'    => trim($request->input('podcast_category') ?? ''),
-            'subscriptions_enabled' => $request->input('subscriptions_enabled') !== null ? '1' : '0',
-            'require_verified_email' => $request->input('require_verified_email') !== null ? '1' : '0',
         ]);
         Audit::log($this->db(), $this->user()?->email, 'settings.update');
 
