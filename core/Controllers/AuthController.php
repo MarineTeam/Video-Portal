@@ -7,6 +7,7 @@ namespace Portal\Controllers;
 use Portal\Auth\AuthProvider;
 use Portal\Auth\AuthResult;
 use Portal\Auth\LocalProvider;
+use Portal\Auth\PasswordPolicy;
 use Portal\Auth\Session;
 use Portal\Auth\UserRepository;
 use Portal\Http\HttpException;
@@ -14,6 +15,7 @@ use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Support\Audit;
 use Portal\Support\RateLimit;
+use Portal\Support\Str;
 use Throwable;
 
 /**
@@ -181,6 +183,133 @@ final class AuthController extends Controller
         }
 
         return $this->redirect('/')->private();
+    }
+
+    /**
+     * Create your own account, when the site allows it.
+     *
+     * `allow_signup` has been a field on the Services screen since Phase 1 and
+     * `allowsSignup()` was read by nothing, so an administrator could switch on
+     * "let visitors create their own account" and no such thing existed. A
+     * toggle that does nothing is worse than a missing feature: the setting
+     * says the site behaves a way it does not.
+     *
+     * What it creates is an UNAPPROVED account, exactly as the field's own
+     * description promises. That is what makes this safe to expose: the new
+     * account can sign in and see nothing, and the pending page it lands on now
+     * carries the request-for-access form. Sign up, ask, wait — three steps
+     * that already existed separately.
+     */
+    public function register(Request $request): Response
+    {
+        $local = $this->localProvider();
+
+        if ($local === null || !$local->allowsSignup()) {
+            // Not "forbidden" — as far as this site is concerned there is no
+            // such page, and saying otherwise advertises a switch somebody
+            // deliberately left off.
+            throw HttpException::notFound();
+        }
+
+        if ($this->guard()->isAuthenticated()) {
+            return $this->redirect('/');
+        }
+
+        if ($request->method !== 'POST') {
+            return $this->registerPage($local, null);
+        }
+
+        $this->verifyCsrf($request);
+
+        /*
+         * By IP only. Throttling by the submitted address would let somebody
+         * lock a specific person out of registering, and the thing worth
+         * limiting here is the rate at which one machine can make accounts.
+         */
+        $limiter = new RateLimit($this->db());
+        if (!$limiter->allow('signup:ip:' . $request->ip(), 5, 3600)) {
+            return $this->registerPage($local, 'Too many attempts. Try again later.');
+        }
+
+        $email = Str::normalizeEmail($request->input('email') ?? '');
+        $password = (string) ($request->post['password'] ?? '');
+        $name = trim($request->input('name') ?? '');
+
+        if (!Str::isEmail($email)) {
+            return $this->registerPage($local, 'That does not look like an email address.');
+        }
+
+        $problems = PasswordPolicy::problems($password, $local->minPasswordLength());
+        if ($problems !== []) {
+            return $this->registerPage($local, implode(' ', $problems));
+        }
+
+        /** @var UserRepository $users */
+        $users = $this->container->get(UserRepository::class);
+
+        /*
+         * An address that already has an account produces the SAME page as one
+         * that does not, and nothing is created.
+         *
+         * Otherwise this form is an oracle: submit an address, read the error,
+         * learn whether that person has an account here. The magic-link gate
+         * has been built around avoiding exactly that since Phase 2, and a
+         * registration form is the easier place to ask the question.
+         *
+         * The cost is that somebody who forgot they had signed up is told to
+         * wait for approval they may already have. They find out by signing in,
+         * which is the thing they should have done.
+         */
+        if ($users->findByEmail($email) === null) {
+            try {
+                $user = $users->create(
+                    email: $email,
+                    name: $name !== '' ? $name : null,
+                    roleSlug: \Portal\Auth\Capability::ROLE_VIEWER,
+                    password: $password,
+                    authorized: false,
+                );
+
+                Audit::log($this->db(), $email, 'user.signup', 'user', (string) $user->id);
+                do_action('user_signed_up', $user);
+            } catch (Throwable $e) {
+                // Including the repository refusing the password. Reported the
+                // same way as anything else rather than as a 500.
+                return $this->registerPage($local, $e->getMessage());
+            }
+        }
+
+        /*
+         * Never signed in automatically, even on the branch that created an
+         * account. A session established here would differ observably between
+         * the two cases — a Set-Cookie header is all a prober needs — which
+         * would undo the whole point of the identical response above.
+         */
+        return $this->registerDone($local);
+    }
+
+    private function registerPage(LocalProvider $local, ?string $error): Response
+    {
+        $siteName = (string) ($this->themeManager()->setting('site_name', 'Video Portal') ?? 'Video Portal');
+
+        return Response::html(
+            $this->registerHtml($siteName, $error, $local->minPasswordLength(), $this->csrfToken()),
+            $error === null ? 200 : 422
+        )->private();
+    }
+
+    private function registerDone(LocalProvider $local): Response
+    {
+        $siteName = e((string) ($this->themeManager()->setting('site_name', 'Video Portal') ?? 'Video Portal'));
+
+        return Response::html($this->authPage($siteName, <<<HTML
+            <h1>Thank you</h1>
+            <p>If that address did not already have an account here, one has been created and is
+               waiting for an administrator to approve it.</p>
+            <p>You can sign in now — until somebody approves the account you will see a page
+               explaining that, with a button to ask.</p>
+            <a class="btn" href="/auth/login">Sign in</a>
+            HTML))->private();
     }
 
     /**
@@ -395,6 +524,17 @@ final class AuthController extends Controller
             }
         }
 
+        /*
+         * Offered only when the site actually takes registrations. A link to a
+         * page that 404s is worse than no link, and the switch being off is a
+         * decision somebody made.
+         */
+        $local = $this->localProvider();
+        $signupBlock = ($local !== null && $local->allowsSignup())
+            ? '<p style="font-size:.8125rem;color:#94a3b8;margin:1.25rem 0 0;text-align:center">'
+              . 'No account? <a href="/auth/register" style="color:#38bdf8">Create one</a>.</p>'
+            : '';
+
         $formBlock = '';
         if ($showPasswordForm) {
             $secondary = $remoteUrl !== null ? ' secondary' : '';
@@ -413,6 +553,70 @@ final class AuthController extends Controller
             HTML;
         }
 
+        return $this->authPage($name, <<<HTML
+            <h1>Sign in to {$name}</h1>
+            {$errorBlock}
+            {$remoteBlock}
+            {$formBlock}
+            {$signupBlock}
+            HTML);
+    }
+
+    /**
+     * The registration form.
+     *
+     * Deliberately asks for as little as possible. An account that cannot see
+     * anything until somebody approves it does not need a profile; everything
+     * else can be filled in later by whoever approves it.
+     */
+    private function registerHtml(string $siteName, ?string $error, int $minimum, string $token): string
+    {
+        $name = e($siteName);
+        $tokenAttr = e($token);
+
+        $errorBlock = $error !== null
+            ? '<div class="notice">' . e($error) . '</div>'
+            : '';
+
+        return $this->authPage($name, <<<HTML
+            <h1>Create an account</h1>
+            {$errorBlock}
+            <form method="post" action="/auth/register">
+              <input type="hidden" name="_token" value="{$tokenAttr}">
+              <label>Your name <span style="opacity:.6">(optional)</span>
+                <input type="text" name="name" autocomplete="name">
+              </label>
+              <label>Email address
+                <input type="email" name="email" required autocomplete="username" autofocus>
+              </label>
+              <label>Password
+                <input type="password" name="password" required autocomplete="new-password"
+                       minlength="{$minimum}">
+              </label>
+              <p style="font-size:.8125rem;color:#94a3b8;margin:-.5rem 0 1rem">
+                At least {$minimum} characters. A few ordinary words together beat a short one with
+                symbols in it.
+              </p>
+              <button class="btn" type="submit">Create account</button>
+            </form>
+            <p style="font-size:.8125rem;color:#94a3b8;margin:1.25rem 0 0">
+              A new account cannot watch anything until an administrator approves it. You can ask
+              them to, once you have signed in.
+            </p>
+            <div class="divider"><span>or</span></div>
+            <a class="btn secondary" href="/auth/login">Sign in instead</a>
+            HTML);
+    }
+
+    /**
+     * The chrome the sign-in and sign-up pages share.
+     *
+     * Standalone rather than themed, for the same reason the guard's notice
+     * pages are: these have to render when the active theme is broken, and
+     * signing in is how somebody gets to the screen that would fix it.
+     */
+    private function authPage(string $name, string $body): string
+    {
         return <<<HTML
         <!doctype html>
         <html lang="en">
@@ -420,7 +624,7 @@ final class AuthController extends Controller
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="robots" content="noindex, nofollow">
-        <title>Sign in — {$name}</title>
+        <title>{$name}</title>
         <style>
           :root { color-scheme: dark; }
           * { box-sizing: border-box; }
@@ -449,10 +653,7 @@ final class AuthController extends Controller
         </head>
         <body>
           <main class="card">
-            <h1>Sign in to {$name}</h1>
-            {$errorBlock}
-            {$remoteBlock}
-            {$formBlock}
+            {$body}
           </main>
         </body>
         </html>

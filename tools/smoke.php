@@ -6627,6 +6627,166 @@ check(
     'a link to "nothing scheduled" is one people stop clicking'
 );
 
+/* --------------------------------------------------------------- signup
+ *
+ * `allow_signup` has been a field on the Services screen since Phase 1 and
+ * allowsSignup() was read by nothing, so an administrator could switch on "let
+ * visitors create their own account" and no such thing existed.
+ *
+ * Two checks carry the weight: the switch has to actually gate it, and the form
+ * must not become an oracle for which addresses have accounts — which is the
+ * thing the magic-link gate has been built around avoiding since Phase 2, and
+ * which a registration form asks more directly.
+ */
+echo "\nSignup\n";
+
+check(
+    'With the switch off there is no registration page',
+    get($baseUrl . '/auth/register')['status'] === 404,
+    'a setting somebody deliberately left off is being advertised'
+);
+check(
+    'and the sign-in page does not offer one',
+    !str_contains(get($baseUrl . '/auth/login')['body'], '/auth/register'),
+    'a link to a page that 404s is worse than no link'
+);
+
+/* Switch it on the way the Services screen would. */
+$localCreds = $db->value("SELECT credentials FROM {providers} WHERE kind = 'auth' AND slug = 'local'");
+$db->execute(
+    "UPDATE {providers} SET credentials = ? WHERE kind = 'auth' AND slug = 'local'",
+    [(new \Portal\Support\Crypto((string) $written['app_key']))->encrypt(
+        json_encode(['allow_signup' => '1', 'min_password_length' => '12'], JSON_UNESCAPED_SLASHES) ?: '{}'
+    )]
+);
+
+check(
+    'and the sign-in page links to it',
+    str_contains(get($baseUrl . '/auth/login')['body'], '/auth/register'),
+    'the only way in is to know the address'
+);
+
+/*
+ * Fetched WITH the jar. The token is derived from the session id, so one taken
+ * from a cookie-less GET belongs to a session the POST does not carry — which
+ * is a 419 on every submission and six failures that look like the feature.
+ */
+$signupJar = sys_get_temp_dir() . '/portal-smoke-signup-' . getmypid() . '.txt';
+@unlink($signupJar);
+
+$signupPage = getWithJar($baseUrl . '/auth/register', $signupJar);
+check('With it on the page appears', $signupPage['status'] === 200, "got {$signupPage['status']}");
+
+$signupToken = csrfFrom($signupPage['body']);
+
+/* The password rule applies here too. */
+$weak = postWithJar($baseUrl . '/auth/register', [
+    '_token'   => $signupToken,
+    'email'    => 'newcomer@smoke.test',
+    'password' => 'short',
+], $signupJar);
+
+check(
+    'A weak password is refused at signup',
+    str_contains($weak['body'], '12 characters'),
+    'the rule is enforced on the change-password page and not here'
+);
+check(
+    'and no account was made',
+    (int) $db->value('SELECT COUNT(*) FROM {users} WHERE email = ?', ['newcomer@smoke.test']) === 0,
+    'a refused registration created the account anyway'
+);
+
+$created = postWithJar($baseUrl . '/auth/register', [
+    '_token'   => csrfFrom($signupPage['body']),
+    'email'    => 'newcomer@smoke.test',
+    'name'     => 'A Newcomer',
+    'password' => 'a perfectly fine passphrase',
+], $signupJar);
+
+check('Signing up succeeds', $created['status'] === 200, "got {$created['status']}");
+
+/*
+ * Existence first, THEN the flag. Asking only whether authorized is zero is
+ * satisfied by there being no account at all — (int) null is 0 — so the check
+ * passes hardest exactly when the feature is most broken.
+ */
+$newcomerRow = $db->first('SELECT id, authorized FROM {users} WHERE email = ?', ['newcomer@smoke.test']);
+check(
+    'and creates an account nobody has approved',
+    $newcomerRow !== null && (int) $newcomerRow['authorized'] === 0,
+    $newcomerRow === null ? 'no account was created at all' : 'it was created already approved'
+);
+/*
+ * Not signed in — asserted as "still anonymous", not as "no cookie".
+ *
+ * A session cookie IS set here, because verifying the CSRF token touches the
+ * session, and it happens on both branches equally so it distinguishes
+ * nothing. What must not differ is whether the response leaves somebody
+ * AUTHENTICATED: signing in the created case and not the existing one is the
+ * observable difference that would undo the identical body below.
+ *
+ * A signed-in unapproved account gets 403 and the pending page. An anonymous
+ * visitor gets redirected to sign in. That is the distinction worth checking.
+ */
+check(
+    'and does not sign them in',
+    getWithJar($baseUrl . '/watch/' . $videoSlug, $signupJar)['status'] === 302,
+    'registering authenticated somebody, which tells a prober which branch ran'
+);
+
+/*
+ * The oracle check. An address that already exists must produce the same page
+ * as one that does not — same status, same body — or this form answers "does
+ * this person have an account here" for anybody who asks.
+ */
+$again = postWithJar($baseUrl . '/auth/register', [
+    '_token'   => csrfFrom($signupPage['body']),
+    'email'    => 'newcomer@smoke.test',
+    'password' => 'a different fine passphrase',
+], $signupJar);
+
+/*
+ * Identical AND successful. Comparing the two responses alone is satisfied by
+ * both of them failing the same way — two 419s are byte-identical — so the
+ * check would be at its happiest when nothing worked at all.
+ */
+check(
+    'Registering a known address answers identically',
+    $again['status'] === 200
+        && $again['status'] === $created['status']
+        && $again['body'] === $created['body'],
+    'the form tells a stranger which addresses have accounts here'
+);
+check(
+    'and does not touch the existing account',
+    (int) $db->value('SELECT COUNT(*) FROM {users} WHERE email = ?', ['newcomer@smoke.test']) === 1,
+    'a second registration overwrote somebody else\'s account'
+);
+
+/* The new account can sign in, and lands on the pending page with the ask. */
+clearLoginThrottle($db);
+$newcomerLogin = postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $signupJar)['body']),
+    'email'    => 'newcomer@smoke.test',
+    'password' => 'a perfectly fine passphrase',
+], $signupJar);
+
+check('The new account can sign in', $newcomerLogin['status'] === 302, "got {$newcomerLogin['status']}");
+check(
+    'and lands where it can ask for access',
+    str_contains(getWithJar($baseUrl . '/watch/' . $videoSlug, $signupJar)['body'], 'action="/request-access"'),
+    'sign up, then nothing — the three steps do not join up'
+);
+
+/* Put the provider back so nothing downstream sees signup enabled. */
+$db->execute(
+    "UPDATE {providers} SET credentials = ? WHERE kind = 'auth' AND slug = 'local'",
+    [$localCreds]
+);
+$db->execute('DELETE FROM {users} WHERE email = ?', ['newcomer@smoke.test']);
+@unlink($signupJar);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

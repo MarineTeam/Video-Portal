@@ -115,6 +115,13 @@ final class Routes
         $router->get('/auth/login', [AuthController::class, 'login']);
         $router->post('/auth/login', [AuthController::class, 'authenticate']);
         $router->get('/auth/callback', [AuthController::class, 'callback']);
+
+        /*
+         * Registration, which 404s unless the site has switched it on. One
+         * handler for both methods so a failed submission re-renders the form
+         * rather than 405-ing.
+         */
+        $router->any(['GET', 'POST'], '/auth/register', [AuthController::class, 'register']);
         $router->any(['GET', 'POST'], '/auth/logout', [AuthController::class, 'logout']);
 
         /*
