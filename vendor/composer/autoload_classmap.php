@@ -139,6 +139,7 @@ return array(
     'Portal\\Support\\Crypto' => $baseDir . '/core/Support/Crypto.php',
     'Portal\\Support\\Csrf' => $baseDir . '/core/Support/Csrf.php',
     'Portal\\Support\\Csv' => $baseDir . '/core/Support/Csv.php',
+    'Portal\\Support\\DeployStamp' => $baseDir . '/core/Support/DeployStamp.php',
     'Portal\\Support\\Feed' => $baseDir . '/core/Support/Feed.php',
     'Portal\\Support\\Http' => $baseDir . '/core/Support/Http.php',
     'Portal\\Support\\HttpResponse' => $baseDir . '/core/Support/HttpResponse.php',
