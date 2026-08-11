@@ -5835,6 +5835,65 @@ check(
 
 @unlink($askJar);
 
+/* ----------------------------------------------------------- deploy stamp
+ *
+ * The opcode cache is cleared when the deployed code moves. Neither half of
+ * that is observable from here — a cleared cache looks like a working site and
+ * so does a stale one — so what is checked is the part that CAN go wrong
+ * loudly: the cost.
+ *
+ * A check on every request that writes a row on every request is worse than
+ * the problem it solves, and this project has made that exact mistake once
+ * already with the migration-failure flag.
+ */
+echo "\nDeploy detection\n";
+
+get($baseUrl . '/');
+
+$stampRow = $db->first('SELECT `value`, updated_at FROM {settings} WHERE `key` = ?', ['deploy_stamp']);
+check(
+    'A deploy stamp is recorded',
+    $stampRow !== null && (string) $stampRow['value'] !== '',
+    'nothing was recorded, so a deploy can never be noticed'
+);
+
+get($baseUrl . '/');
+get($baseUrl . '/auth/login');
+get($baseUrl . '/');
+
+$stampAfter = $db->first('SELECT `value`, updated_at FROM {settings} WHERE `key` = ?', ['deploy_stamp']);
+check(
+    'and ordinary requests do not rewrite it',
+    $stampAfter !== null
+        && (string) $stampAfter['updated_at'] === (string) ($stampRow['updated_at'] ?? ''),
+    'every page load carries a settings write to say nothing changed'
+);
+
+/*
+ * And it does notice. Touching a sentinel is what `git pull` does to it —
+ * mtime only, which is the signal, and nothing git tracks.
+ */
+touch(PORTAL_ROOT . '/vendor/composer/installed.php', time() + 5);
+
+get($baseUrl . '/');
+
+$stampMoved = $db->first('SELECT `value`, updated_at FROM {settings} WHERE `key` = ?', ['deploy_stamp']);
+check(
+    'A changed file is noticed on the next request',
+    $stampMoved !== null && (string) $stampMoved['value'] !== (string) ($stampAfter['value'] ?? ''),
+    'a deploy would go unnoticed and the stale bytecode would stay'
+);
+
+/* Settled again straight afterwards, rather than re-firing every request. */
+$settled = $db->first('SELECT updated_at FROM {settings} WHERE `key` = ?', ['deploy_stamp']);
+get($baseUrl . '/');
+check(
+    'and it settles rather than firing repeatedly',
+    (string) ($db->value('SELECT updated_at FROM {settings} WHERE `key` = ?', ['deploy_stamp']))
+        === (string) ($settled['updated_at'] ?? ''),
+    'one deploy would keep clearing the cache on every request that followed'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

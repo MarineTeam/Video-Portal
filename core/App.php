@@ -307,8 +307,59 @@ final class App
      * upgrade fixes the schema, rather than failing obscurely on a missing
      * column.
      */
+    /**
+     * Clear compiled bytecode when the deployed code has changed.
+     *
+     * Deploying is `git pull` onto a running server, and OPcache revalidates
+     * each file against its own timestamp on a timer — per file, independently.
+     * Until every file has been rechecked the server can be executing a mixture
+     * of two releases, which is how a URL that works can briefly stop working
+     * and then start again with nobody touching anything.
+     *
+     * Hung off the same signal the migration branch below uses, and for the
+     * same reason: this is the moment the code is known to have moved. Unlike
+     * that branch it is NOT limited to migrations, because most deploys do not
+     * carry one and every deploy has this window.
+     *
+     * Everything here is best-effort. `opcache_reset()` is disabled on some
+     * shared hosts, the stamp is recorded whether or not the reset was allowed,
+     * and nothing about serving the request depends on any of it.
+     */
+    private function refreshOpcodeCache(Db $db): void
+    {
+        try {
+            $current = \Portal\Support\DeployStamp::of(PORTAL_ROOT);
+            $stored = $this->config->setting('deploy_stamp');
+
+            if ($stored === $current) {
+                return;
+            }
+
+            /*
+             * Recorded before the reset is attempted, and recorded even when
+             * the reset is refused. Otherwise a host with opcache_reset()
+             * disabled would write nothing, find a difference again on the next
+             * request, and carry a settings write on every page load forever —
+             * the same trap the migration-failure flag fell into.
+             */
+            $this->config->setSetting('deploy_stamp', $current);
+
+            if (\Portal\Support\DeployStamp::changed($stored, $current)
+                && function_exists('opcache_reset')
+                && ini_get('opcache.enable')) {
+                @opcache_reset();
+            }
+        } catch (Throwable $e) {
+            // A cache that could not be cleared is a slower path to the same
+            // place, not a reason to fail the request.
+            error_log('Portal: could not refresh the opcode cache: ' . $e->getMessage());
+        }
+    }
+
     private function runPendingMigrations(Db $db): void
     {
+        $this->refreshOpcodeCache($db);
+
         try {
             $migrator = new Migrator($db);
             if ($migrator->coreNeedsMigration()) {
