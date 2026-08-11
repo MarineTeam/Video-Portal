@@ -671,6 +671,60 @@ final class AdminController extends Controller
     }
 
     /** @return array<string, string|null> */
+    /**
+     * The whole library, streamed as NDJSON.
+     *
+     * Settings have been exportable since Phase 3 and the content never has,
+     * which on a host with no shell and no database console means the only copy
+     * of what somebody spent a year cataloguing lives somewhere they cannot
+     * reach except through this application.
+     *
+     * Streamed rather than built. A real library assembled into a string is a
+     * string the memory limit refuses, and the refusal arrives as a blank page
+     * — the least diagnosable failure this product could produce.
+     *
+     * Behind MANAGE_SETTINGS, the same bar as the settings export. This carries
+     * every video including the unpublished and the members-only, so it is a
+     * site-owner action and not an editor one.
+     */
+    public function exportContent(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        $withTranscripts = $request->query('transcripts') === '1';
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'content.export',
+            null,
+            null,
+            $withTranscripts ? 'with transcripts' : 'catalogue only'
+        );
+
+        $export = new \Portal\Content\ContentExport($this->db());
+
+        /*
+         * The generator is not touched until send() runs the callback, so
+         * nothing is queried while the response is still being assembled — and
+         * by then the headers have gone out, which is why nothing in here may
+         * throw. Each record is encoded and flushed on its own; holding even
+         * the encoded lines would put the whole library back in memory.
+         */
+        return Response::stream(
+            static function () use ($export, $withTranscripts): void {
+                foreach ($export->records($withTranscripts) as $record) {
+                    echo \Portal\Content\ContentExport::line($record);
+                    flush();
+                }
+            },
+            'application/x-ndjson; charset=utf-8'
+        )->header(
+            'Content-Disposition',
+            'attachment; filename="library-' . date('Y-m-d') . '.ndjson"'
+        )->private();
+    }
+
     private function exportableSettings(): array
     {
         $out = [];

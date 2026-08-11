@@ -110,6 +110,7 @@ final class AdminView
         $viewIcon = $this->navIcon('eye');
         $outIcon = $this->navIcon('exit');
         $menuIcon = $this->navIcon('menu');
+        $keyIcon = $this->navIcon('key');
 
         /*
          * The menu opens and closes with a checkbox rather than a script.
@@ -146,6 +147,7 @@ final class AdminView
             <a class="brand sidebar-brand" href="/admin">{$siteName}</a>
             <ul class="menu">{$nav}</ul>
             <ul class="menu meta">
+              <li class="section"><a class="top" href="/account/password">{$keyIcon}<span>Password</span></a></li>
               <li class="section"><a class="top" href="/">{$viewIcon}<span>View site</span></a></li>
               <li class="section"><a class="top" href="/auth/logout">{$outIcon}<span>Sign out</span></a></li>
             </ul>
@@ -243,6 +245,8 @@ final class AdminView
             'exit'   => '<path d="M12 3.5H5.2a1.2 1.2 0 0 0-1.2 1.2v10.6a1.2 1.2 0 0 0 1.2 1.2H12"/>'
                       . '<path d="M13.5 6.8 16.7 10l-3.2 3.2"/><path d="M16.4 10H8.2"/>',
             'menu'   => '<path d="M3 5.5h14"/><path d="M3 10h14"/><path d="M3 14.5h14"/>',
+            'key'    => '<circle cx="7" cy="13" r="3.2"/><path d="M9.3 10.7 16.5 3.5"/>'
+                      . '<path d="M14.2 5.8l1.8 1.8"/><path d="M12.6 7.4l1.8 1.8"/>',
             default  => '<circle cx="10" cy="10" r="6.5"/>',
         };
 
@@ -3649,7 +3653,17 @@ final class AdminView
            a file that is both a liability and useless.</p>
         <div class="actions">
           <a class="btn secondary" href="/admin/settings/export">Download settings</a>
+          <a class="btn secondary" href="/admin/settings/content">Download the library</a>
+          <a class="btn secondary" href="/admin/settings/content?transcripts=1">…with transcripts</a>
         </div>
+        <p class="muted small">The library download is every video, category, series and speaker as
+           one line of JSON each — including the unpublished and members-only ones. On a host with no
+           shell, it is the only way to get a copy of what you catalogued out of the database.
+           Transcripts are a separate button because they can be fifty times the size.</p>
+        <p class="muted small"><strong>It is a record, not a restore.</strong> Nothing reads it back:
+           putting it into a site would need rules for a slug that already exists and a provider id
+           from somebody else's account, and guessing at those quietly is worse than not offering it.
+           Keep it the way you would keep a printed catalogue.</p>
         <form method="post" action="/admin/settings/import" enctype="multipart/form-data" class="toolbar">
           <input type="hidden" name="_token" value="{$token}">
           <input type="file" name="settings" accept=".json,application/json" required>

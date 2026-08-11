@@ -7,6 +7,7 @@ namespace Portal\Install;
 use PDO;
 use PDOException;
 use Portal\Auth\Capability;
+use Portal\Auth\PasswordPolicy;
 use Portal\Auth\PermissionSeeder;
 use Portal\Auth\UserRepository;
 use Portal\Config;
@@ -266,6 +267,30 @@ final class Installer
         }
         if (filter_var($configData['base_url'], FILTER_VALIDATE_URL) === false) {
             return InstallResult::failure('That site address is not a valid URL.');
+        }
+
+        /*
+         * The administrator password, checked BEFORE anything is created.
+         *
+         * The repository refuses a weak one regardless, but that refusal
+         * arrives from inside the seed step, after the schema has been built,
+         * phrased as "setting up the initial data failed". Here it is a
+         * sentence about the password, on the step that asked for one, with
+         * nothing done yet.
+         *
+         * This is also the only password this product ever asks a person to
+         * choose, and it belongs to the account that is the way back in when
+         * the identity provider is misconfigured on a host with no shell.
+         */
+        $adminPassword = (string) ($admin['password'] ?? '');
+        if ($adminPassword !== '') {
+            $problems = PasswordPolicy::problems($adminPassword);
+            if ($problems !== []) {
+                return InstallResult::failure(
+                    'That administrator password is not strong enough.',
+                    implode(' ', $problems)
+                );
+            }
         }
 
         // Build a Db from the pending config without writing anything yet.

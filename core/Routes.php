@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Portal;
 
+use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
@@ -117,6 +118,22 @@ final class Routes
         $router->any(['GET', 'POST'], '/auth/logout', [AuthController::class, 'logout']);
 
         /*
+         * Changing your own password.
+         *
+         * `auth.user`, not `auth.authorized`: holding a password and being
+         * approved to watch are different things, and somebody waiting for
+         * approval should still be able to rotate a credential. One handler for
+         * both methods, so a GET that arrives after a failed POST re-renders
+         * the form rather than 405-ing.
+         */
+        $router->any(
+            ['GET', 'POST'],
+            '/account/password',
+            [AccountController::class, 'password'],
+            ['auth.user']
+        );
+
+        /*
          * Asking for access.
          *
          * Guarded by `auth.user` and NOT by `auth.authorized`, which is the
@@ -197,6 +214,7 @@ final class Routes
         $router->post('/admin/plugins/install', [AdminController::class, 'installPlugin'], ['admin.area']);
         $router->post('/admin/themes/install', [AdminController::class, 'installTheme'], ['admin.area']);
         $router->get('/admin/settings/export', [AdminController::class, 'exportSettings'], ['admin.area']);
+        $router->get('/admin/settings/content', [AdminController::class, 'exportContent'], ['admin.area']);
         $router->post('/admin/settings/import', [AdminController::class, 'importSettings'], ['admin.area']);
 
         // ---------------------------------------------------------- upload

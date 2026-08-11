@@ -272,6 +272,16 @@ abstract class Controller
             $items[] = ['label' => 'Saved', 'href' => '/saved'];
         }
 
+        /*
+         * Only for accounts that have one. Somebody signing in through Auth0
+         * has no local password, and a link whose page tells them so is a link
+         * that should not have been offered — the same rule Saved follows just
+         * above.
+         */
+        if ($user !== null && $user->hasPassword) {
+            $items[] = ['label' => 'Password', 'href' => '/account/password'];
+        }
+
         /** @var list<array{label: string, href: string}> */
         return apply_filters('default_nav', $items);
     }
