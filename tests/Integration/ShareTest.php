@@ -421,6 +421,128 @@ final class ShareTest extends DatabaseTestCase
         self::assertNotNull($this->shares->find($live->id));
     }
 
+    /**
+     * A bounded run removes at most what it was asked for, oldest first.
+     *
+     * The scheduled job passes a bound because on a host without real cron it
+     * runs inside somebody's page view, and a site that has never been cleaned
+     * could hold years of lapsed links. Ordering matters as much as the cap:
+     * unordered, repeated runs could revisit the same rows and never drain.
+     */
+    public function testABoundedPurgeTakesTheOldestFirstAndLeavesTheRest(): void
+    {
+        $ids = [];
+        foreach ([300, 200, 100] as $daysAgo) {
+            $share = $this->shares->create($this->videoId, "old{$daysAgo}@example.test");
+            $this->db()->execute(
+                'UPDATE {shares} SET expires_at = DATE_SUB(NOW(), INTERVAL ? DAY) WHERE id = ?',
+                [$daysAgo, $share->id]
+            );
+            $ids[$daysAgo] = $share->id;
+        }
+
+        self::assertSame(3, $this->shares->purgeableCount());
+        self::assertSame(2, $this->shares->purgeExpired(2), 'the cap was not applied');
+
+        self::assertNull($this->shares->find($ids[300]), 'the oldest should go first');
+        self::assertNull($this->shares->find($ids[200]));
+        self::assertNotNull($this->shares->find($ids[100]), 'the newest should have been left');
+
+        // And a second run finishes the job rather than revisiting the same rows.
+        self::assertSame(1, $this->shares->purgeExpired(2));
+        self::assertSame(0, $this->shares->purgeableCount());
+    }
+
+    /**
+     * No bound means all of them — the admin button, where somebody is waiting
+     * on purpose.
+     */
+    public function testAnUnboundedPurgeClearsEverythingPastGrace(): void
+    {
+        foreach (range(1, 4) as $i) {
+            $share = $this->shares->create($this->videoId, "bulk{$i}@example.test");
+            $this->db()->execute(
+                'UPDATE {shares} SET expires_at = DATE_SUB(NOW(), INTERVAL 90 DAY) WHERE id = ?',
+                [$share->id]
+            );
+        }
+
+        self::assertSame(4, $this->shares->purgeExpired());
+        self::assertSame(0, $this->shares->purgeableCount());
+    }
+
+    /**
+     * The SQL that runs and the PHP that describes it must agree.
+     *
+     * `Share::isPastGrace()` states the rule readably and
+     * `ShareRepository::purgeExpired()` executes it, because deleting a year of
+     * rows one object at a time is not a thing to do on a shared host. Two
+     * encodings of one rule only stay in step if something checks.
+     *
+     * They had already drifted once: the scheduled cleanup carried a third
+     * version that removed only revoked rows, so a link that merely lapsed was
+     * never cleaned up unless somebody pressed the button by hand. This is the
+     * check that would have caught it — every case is one the two could
+     * disagree about.
+     */
+    public function testTheDeleteRuleAgreesWithIsPastGrace(): void
+    {
+        $cases = [
+            'live'                  => ['expires' => '+7 DAY',  'revoked' => null],
+            'expired inside grace'  => ['expires' => '-7 DAY',  'revoked' => null],
+            'expired past grace'    => ['expires' => '-90 DAY', 'revoked' => null],
+            'revoked inside grace'  => ['expires' => '-90 DAY', 'revoked' => '-7 DAY'],
+            'revoked past grace'    => ['expires' => '-7 DAY',  'revoked' => '-90 DAY'],
+        ];
+
+        $ids = [];
+        $expectedGone = [];
+
+        foreach ($cases as $label => $case) {
+            $share = $this->shares->create($this->videoId, 'agree@example.test');
+            $ids[$label] = $share->id;
+
+            $this->db()->execute(
+                'UPDATE {shares}
+                    SET expires_at = DATE_ADD(NOW(), INTERVAL ' . $case['expires'] . '),
+                        revoked_at = ' . ($case['revoked'] === null
+                            ? 'NULL'
+                            : 'DATE_ADD(NOW(), INTERVAL ' . $case['revoked'] . ')') . '
+                  WHERE id = ?',
+                [$share->id]
+            );
+
+            // What the PHP says about this row, read back after the update so
+            // the object carries the dates the database now holds.
+            $reloaded = $this->shares->find($share->id);
+            self::assertNotNull($reloaded, $label);
+
+            if ($reloaded->isPastGrace()) {
+                $expectedGone[] = $label;
+            }
+        }
+
+        // The rule the two are meant to share, spelled out: past grace exactly
+        // when sixty days have passed since revocation, or since expiry when it
+        // was never revoked.
+        self::assertSame(
+            ['expired past grace', 'revoked past grace'],
+            $expectedGone,
+            'isPastGrace() no longer means what the cleanup is documented to do'
+        );
+
+        self::assertSame(count($expectedGone), $this->shares->purgeableCount());
+        self::assertSame(count($expectedGone), $this->shares->purgeExpired());
+
+        foreach ($ids as $label => $id) {
+            if (in_array($label, $expectedGone, true)) {
+                self::assertNull($this->shares->find($id), "{$label} should have been removed");
+            } else {
+                self::assertNotNull($this->shares->find($id), "{$label} should have been kept");
+            }
+        }
+    }
+
     // ------------------------------------------------------------- matching
 
     public function testRecipientMatchingIsCaseAndSpaceInsensitive(): void
