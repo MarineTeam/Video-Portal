@@ -6548,6 +6548,85 @@ foreach ($orderKids as $id) {
 }
 $db->execute('DELETE FROM {categories} WHERE id = ?', [$orderParent]);
 
+/* ------------------------------------------------------------- on air
+ *
+ * liveNow() has existed since Phase 5 with no caller and /live has never been
+ * linked from anywhere, so a stream could be going out while every page on the
+ * site looked exactly as it does on a Tuesday.
+ *
+ * The check that matters is the members-only one. A banner is the loudest thing
+ * on the page, and announcing a private stream to a signed-out visitor would
+ * leak both its existence and its title — which is the same rule the live page
+ * already follows by answering 404 rather than 403.
+ */
+echo "\nOn air\n";
+
+$liveStart = date('Y-m-d H:i:s', time() - 600);
+$liveEnd = date('Y-m-d H:i:s', time() + 3600);
+
+$publicStream = $db->insert('live_streams', [
+    'slug' => 'smoke-on-air', 'title' => 'Sunday Service, Live',
+    'embed_url' => 'https://example.test/embed', 'is_published' => 1, 'member_only' => 0,
+    'starts_at' => $liveStart, 'ends_at' => $liveEnd,
+    'created_at' => $liveStart, 'updated_at' => $liveStart,
+]);
+
+$homeLive = get($baseUrl . '/');
+check(
+    'A live stream puts a banner on the site',
+    str_contains($homeLive['body'], 'live-banner')
+        && str_contains($homeLive['body'], 'Sunday Service, Live'),
+    'a stream can be going out with nothing on the site saying so'
+);
+check(
+    'and it links to the stream',
+    str_contains($homeLive['body'], '/live/smoke-on-air'),
+    'the banner announces something with no way to reach it'
+);
+check(
+    'and Live appears in the navigation',
+    str_contains($homeLive['body'], '>Live now<') || str_contains($homeLive['body'], '/live"'),
+    '/live has never been linked from anywhere'
+);
+
+/* It reaches an inside page too, not only the homepage. */
+check(
+    'The banner is on every page, not just the homepage',
+    str_contains(get($baseUrl . '/watch/' . $videoSlug)['body'], 'live-banner')
+        || str_contains(get($baseUrl . '/search')['body'], 'live-banner'),
+    'somebody arriving from a search engine mid-service is told nothing'
+);
+
+/* The leak check. */
+$db->execute('UPDATE {live_streams} SET member_only = 1 WHERE id = ?', [$publicStream]);
+
+$anonHome = get($baseUrl . '/');
+check(
+    'A members-only stream is not announced to a signed-out visitor',
+    !str_contains($anonHome['body'], 'Sunday Service, Live'),
+    'the banner leaked the existence and the title of a private stream'
+);
+check(
+    'but an approved viewer is told',
+    str_contains(getWithJar($baseUrl . '/', $jar)['body'], 'Sunday Service, Live'),
+    'the stream is invisible to the people it is for'
+);
+
+/* Nothing live means no banner and no navigation entry. */
+$db->execute('DELETE FROM {live_streams} WHERE id = ?', [$publicStream]);
+
+$quiet = get($baseUrl . '/');
+check(
+    'With nothing scheduled there is no banner',
+    !str_contains($quiet['body'], 'live-banner'),
+    'a permanent live banner is one nobody reads on the week it is true'
+);
+check(
+    'and no Live link to an empty page',
+    !str_contains($quiet['body'], '>Live now<'),
+    'a link to "nothing scheduled" is one people stop clicking'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

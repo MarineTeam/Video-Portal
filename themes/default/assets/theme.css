@@ -265,6 +265,38 @@ main { padding: 2.5rem 0 4rem; }
 }
 .announcement-dismiss button:hover { opacity: 1; }
 
+/* On air. Sits with the announcements and reads louder than them, because it
+   is the one message on this site with an expiry measured in minutes. */
+.live-banner {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin: 1rem 0 0;
+  padding: .75rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgb(239 68 68 / .5);
+  background: rgb(239 68 68 / .1);
+  color: inherit;
+  text-decoration: none;
+  font-size: .9375rem;
+}
+.live-banner:hover { background: rgb(239 68 68 / .16); }
+.live-go { margin-left: auto; white-space: nowrap; opacity: .8; }
+.live-dot {
+  width: .625rem;
+  height: .625rem;
+  border-radius: 50%;
+  background: rgb(239 68 68);
+  flex: 0 0 auto;
+  animation: live-pulse 2s ease-in-out infinite;
+}
+@keyframes live-pulse { 50% { opacity: .35; } }
+/* Somebody who asked for less movement gets a steady dot rather than none:
+   the colour is carrying the meaning, the animation is only drawing the eye. */
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+}
+
 .card-body { padding: .875rem 1rem 1.125rem; }
 .card-title {
   font-size: .9375rem;
