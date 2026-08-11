@@ -5332,6 +5332,147 @@ check(
 
 @unlink($navJar);
 
+/* -------------------------------------------------- provider statistics
+ *
+ * The plugin exists to be a CALLER. VideoProvider::statistics() has been on
+ * the interface and implemented since Phase 1 and nothing in the codebase ever
+ * invoked it, which is the same defect class as a repository method with full
+ * coverage and no form behind it: every unit test passes and no person can
+ * reach the feature.
+ *
+ * So these checks drive the rendered page. The unit tests cover the judgement
+ * it makes; only a real request proves the judgement is on a screen.
+ *
+ * The provider here is the fake one this script installs with, so statistics()
+ * returns zeroes — which is precisely the ambiguous case the plugin is built to
+ * be honest about, and therefore the one worth asserting on.
+ */
+echo "\nProvider statistics\n";
+
+$statsPluginsPage = getWithJar($baseUrl . '/admin/plugins', $jar);
+check(
+    'Provider statistics is listed as a plugin',
+    str_contains($statsPluginsPage['body'], 'Provider Statistics'),
+    'the bundled plugin was not discovered — check the .gitignore allowlist'
+);
+
+$statsActivated = postWithJar($baseUrl . '/admin/plugins', [
+    '_token' => csrfFrom($statsPluginsPage['body']),
+    'slug'   => 'provider-stats',
+    'action' => 'activate',
+], $jar);
+
+check('Activating provider-stats succeeds', $statsActivated['status'] === 302, "got {$statsActivated['status']}");
+check(
+    'and it stays active after the redirect',
+    (int) $db->value('SELECT is_active FROM {plugins} WHERE slug = ?', ['provider-stats']) === 1,
+    'it threw on load and was silently deactivated — check the error log'
+);
+
+$statsPage = getWithJar($baseUrl . '/admin/provider-stats', $jar);
+check('The provider statistics screen renders', $statsPage['status'] === 200, "got {$statsPage['status']}");
+check(
+    'It shows both sources side by side',
+    str_contains($statsPage['body'], 'Plays, per bunny.net')
+        && str_contains($statsPage['body'], 'Plays, per this site'),
+    'one number alone is the analytics screen again'
+);
+check(
+    'and explains why the two disagree',
+    str_contains($statsPage['body'], 'being ahead is normal'),
+    'a gap with no explanation reads as a bug in whichever number is smaller'
+);
+
+/*
+ * Both branches of the honesty logic, staged rather than hoped for.
+ *
+ * This is the reason the screen is worth having, so both states have to be
+ * driven through a real request — a branch that only a unit test ever reaches
+ * is one nothing proves is on a page. The earlier checks in this script have
+ * already recorded plays, so the quiet case has to be made rather than found.
+ *
+ * Nothing after this section reads {video_views}; the analytics checks are far
+ * upstream and have already run.
+ */
+$db->execute('DELETE FROM {video_views}');
+
+$statsQuiet = getWithJar($baseUrl . '/admin/provider-stats', $jar);
+check(
+    'With nothing on either side it refuses to guess',
+    str_contains($statsQuiet['body'], 'Nothing to compare'),
+    'zeroes from a failed call would be presented as a real reading'
+);
+
+/* Now give this site plays the provider will not know about. */
+$db->execute(
+    'INSERT INTO {video_views} (video_id, day, views, completions) VALUES (?, CURDATE(), ?, ?)
+     ON DUPLICATE KEY UPDATE views = VALUES(views), completions = VALUES(completions)',
+    [$videoRow, 40, 9]
+);
+
+$statsWithLocal = getWithJar($baseUrl . '/admin/provider-stats', $jar);
+check(
+    'A silent provider beside recorded plays is called out as a failed read',
+    str_contains($statsWithLocal['body'], 'returned nothing for this window'),
+    'the one inference that separates a dead API from an idle library'
+);
+check(
+    'and the same page no longer says it cannot tell',
+    !str_contains($statsWithLocal['body'], 'Nothing to compare'),
+    'both verdicts on one page means neither is being chosen'
+);
+check(
+    'and it points at the screen that would fix it',
+    str_contains($statsWithLocal['body'], '/admin/providers'),
+    'a diagnosis with no next step'
+);
+
+/* The period selector has to actually change the window. */
+$statsWeek = getWithJar($baseUrl . '/admin/provider-stats?days=7', $jar);
+check(
+    'The period selector works',
+    $statsWeek['status'] === 200 && str_contains($statsWeek['body'], 'href="/admin/provider-stats?days=30"'),
+    "got {$statsWeek['status']}"
+);
+
+/*
+ * It is a report, so it is gated on VIEW_ANALYTICS rather than on the
+ * permission to install software. Driven from the single-capability account the
+ * navigation section created, which holds manage_videos and nothing else — so
+ * it reaches the admin area and must still be refused this page. Signed in
+ * afresh rather than reusing that jar, because the navigation section deletes
+ * its own cookies and a missing jar would answer 302 and read as a pass.
+ */
+$statsJar = sys_get_temp_dir() . '/portal-smoke-stats-' . getmypid() . '.txt';
+@unlink($statsJar);
+
+$statsLogin = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'nav-editor@smoke.test',
+    'password' => 'nav-editor-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $statsJar)['body']),
+], $statsJar);
+
+check('The single-capability editor signs in again', $statsLogin['status'] === 302, "got {$statsLogin['status']}");
+check(
+    'and still reaches the admin area',
+    getWithJar($baseUrl . '/admin/videos', $statsJar)['status'] === 200,
+    'the 403 below would prove nothing if they were locked out entirely'
+);
+
+$statsForbidden = getWithJar($baseUrl . '/admin/provider-stats', $statsJar);
+check(
+    'but is refused the statistics report',
+    $statsForbidden['status'] === 403,
+    "got {$statsForbidden['status']} — a report on the whole library behind no permission at all"
+);
+check(
+    'and it is not offered to them in the navigation',
+    !str_contains(getWithJar($baseUrl . '/admin/videos', $statsJar)['body'], '/admin/provider-stats'),
+    'a link that leads to a 403 reads as a broken site rather than a boundary'
+);
+
+@unlink($statsJar);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

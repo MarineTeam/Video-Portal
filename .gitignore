@@ -22,6 +22,7 @@
 !/plugins/ratings/
 !/plugins/query-monitor/
 !/plugins/push/
+!/plugins/provider-stats/
 /themes/*
 !/themes/default/
 !/themes/.gitkeep
