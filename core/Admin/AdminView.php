@@ -3653,7 +3653,17 @@ final class AdminView
            a file that is both a liability and useless.</p>
         <div class="actions">
           <a class="btn secondary" href="/admin/settings/export">Download settings</a>
+          <a class="btn secondary" href="/admin/settings/content">Download the library</a>
+          <a class="btn secondary" href="/admin/settings/content?transcripts=1">…with transcripts</a>
         </div>
+        <p class="muted small">The library download is every video, category, series and speaker as
+           one line of JSON each — including the unpublished and members-only ones. On a host with no
+           shell, it is the only way to get a copy of what you catalogued out of the database.
+           Transcripts are a separate button because they can be fifty times the size.</p>
+        <p class="muted small"><strong>It is a record, not a restore.</strong> Nothing reads it back:
+           putting it into a site would need rules for a slug that already exists and a provider id
+           from somebody else's account, and guessing at those quietly is worse than not offering it.
+           Keep it the way you would keep a printed catalogue.</p>
         <form method="post" action="/admin/settings/import" enctype="multipart/form-data" class="toolbar">
           <input type="hidden" name="_token" value="{$token}">
           <input type="file" name="settings" accept=".json,application/json" required>

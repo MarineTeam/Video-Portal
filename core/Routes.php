@@ -214,6 +214,7 @@ final class Routes
         $router->post('/admin/plugins/install', [AdminController::class, 'installPlugin'], ['admin.area']);
         $router->post('/admin/themes/install', [AdminController::class, 'installTheme'], ['admin.area']);
         $router->get('/admin/settings/export', [AdminController::class, 'exportSettings'], ['admin.area']);
+        $router->get('/admin/settings/content', [AdminController::class, 'exportContent'], ['admin.area']);
         $router->post('/admin/settings/import', [AdminController::class, 'importSettings'], ['admin.area']);
 
         // ---------------------------------------------------------- upload

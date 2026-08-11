@@ -412,8 +412,24 @@ $cleanup = static function () use ($admin, $database, &$serverProcess, &$serverL
     }
     @unlink(PORTAL_PUBLIC . '/smoke-hack.php');
 
+    /*
+     * The server log survives a failing run.
+     *
+     * It holds the stack trace behind every 500, and deleting it unconditionally
+     * meant that a check reporting "got 500" gave no way to find out WHY without
+     * running the whole thing again with the deletion commented out. That cost
+     * two diagnoses in one afternoon.
+     *
+     * On a clean run it goes, because nothing in it is worth keeping.
+     */
+    global $failed;
+
     if (isset($serverLog) && is_file($serverLog)) {
-        @unlink($serverLog);
+        if ((int) $failed > 0) {
+            echo "\nServer log kept for the failures above:\n  {$serverLog}\n";
+        } else {
+            @unlink($serverLog);
+        }
     }
     $admin->exec("DROP DATABASE IF EXISTS `{$database}`");
     echo "\nCleaned up.\n";
@@ -6163,6 +6179,140 @@ foreach ($relIds as $id) {
     $db->execute('DELETE FROM {videos} WHERE id = ?', [$id]);
 }
 $db->execute('DELETE FROM {series} WHERE id = ?', [$relSeries]);
+
+/* ------------------------------------------------------- library export
+ *
+ * Settings have been exportable since Phase 3 and the content never has, which
+ * on a host with no shell means the catalogue exists only inside the database.
+ *
+ * NDJSON, streamed. The checks are about the format holding together and the
+ * gate being real — a file that parses is the whole value of a backup, and an
+ * export of every unpublished video is not something to leave open.
+ */
+echo "\nLibrary export\n";
+
+$exported = getWithJar($baseUrl . '/admin/settings/content', $jar);
+
+check('The library export downloads', $exported['status'] === 200, "got {$exported['status']}");
+check(
+    'as NDJSON, offered as a file',
+    str_contains($exported['headers']['content-type'] ?? '', 'ndjson')
+        && str_contains($exported['headers']['content-disposition'] ?? '', 'attachment'),
+    'a browser would render it as a page instead of saving it'
+);
+
+$exportLines = array_values(array_filter(explode("\n", trim($exported['body']))));
+
+check(
+    'Every line is valid JSON on its own',
+    $exportLines !== [] && array_reduce(
+        $exportLines,
+        static fn (bool $ok, string $line): bool => $ok && json_decode($line, true) !== null,
+        true
+    ),
+    'the point of one-object-per-line is that a truncated file is still readable'
+);
+
+$exportTypes = [];
+foreach ($exportLines as $line) {
+    $row = json_decode($line, true);
+    if (is_array($row) && isset($row['type'])) {
+        $exportTypes[(string) $row['type']] = true;
+    }
+}
+
+check(
+    'It starts with a meta line naming the version',
+    ($first = json_decode($exportLines[0] ?? '{}', true)) && ($first['type'] ?? '') === 'meta'
+        && ($first['version'] ?? '') !== '',
+    'a file with no provenance is one nobody can tell the age of'
+);
+check(
+    'and carries the catalogue',
+    isset($exportTypes['video'], $exportTypes['category']),
+    'an export missing the content is not a backup: got ' . implode(', ', array_keys($exportTypes))
+);
+
+/*
+ * Dependency order. Anything reading this in one pass has to have seen a
+ * category before the video that refers to it, or it has to buffer the whole
+ * file — which is the problem the format exists to avoid, one step downstream.
+ */
+$firstVideoAt = null;
+$lastCategoryAt = null;
+foreach ($exportLines as $i => $line) {
+    $row = json_decode($line, true);
+    $type = is_array($row) ? ($row['type'] ?? '') : '';
+    if ($type === 'category') {
+        $lastCategoryAt = $i;
+    }
+    if ($type === 'video' && $firstVideoAt === null) {
+        $firstVideoAt = $i;
+    }
+}
+
+check(
+    'Categories come before the videos that refer to them',
+    $lastCategoryAt !== null && $firstVideoAt !== null && $lastCategoryAt < $firstVideoAt,
+    'a one-pass reader would meet a video before the category it names'
+);
+
+/* Transcripts are the opt-in half, because they can dwarf everything else. */
+check(
+    'Transcripts are left out by default',
+    !isset($exportTypes['transcript']),
+    'the default download is fifty times bigger than it needs to be'
+);
+
+/*
+ * Staged rather than assumed. The transcripts section earlier in this run
+ * deletes the one it made and asserts the count is zero, so by here the library
+ * genuinely has none — and a check that read that as "the feature is broken"
+ * would be testing the state of the fixture, not the export.
+ */
+$db->execute(
+    'INSERT INTO {transcripts} (video_id, body, source, cue_count, created_at, updated_at)
+     VALUES (?, ?, ?, ?, NOW(), NOW())
+     ON DUPLICATE KEY UPDATE body = VALUES(body)',
+    [$videoRow, 'A transcript kept only long enough to be exported.', 'smoke', 1]
+);
+
+$withText = getWithJar($baseUrl . '/admin/settings/content?transcripts=1', $jar);
+check(
+    'and included when asked for',
+    str_contains($withText['body'], '"type":"transcript"'),
+    'the button that promises transcripts does not deliver them'
+);
+check(
+    'with the text in it',
+    str_contains($withText['body'], 'kept only long enough to be exported'),
+    'a transcript record with no transcript in it'
+);
+
+$db->execute('DELETE FROM {transcripts} WHERE video_id = ?', [$videoRow]);
+
+/*
+ * The gate. This carries every unpublished and members-only video in the
+ * library, so it is a site-owner action — checked from the single-capability
+ * seat, which holds manage_videos and nothing else.
+ */
+clearLoginThrottle($db);
+$exportJar = sys_get_temp_dir() . '/portal-smoke-export-' . getmypid() . '.txt';
+@unlink($exportJar);
+
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $exportJar)['body']),
+    'email'    => 'nav-editor@smoke.test',
+    'password' => 'nav-editor-password-1234',
+], $exportJar);
+
+check(
+    'Somebody without manage_settings cannot download the library',
+    getWithJar($baseUrl . '/admin/settings/content', $exportJar)['status'] === 403,
+    'every unpublished video in the library behind an editor-level permission'
+);
+
+@unlink($exportJar);
 
 echo "\nRouting\n";
 

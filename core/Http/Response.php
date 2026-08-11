@@ -19,6 +19,13 @@ final class Response
     /** @var list<array{name: string, value: string, options: array<string, mixed>}> */
     private array $cookies = [];
 
+    /**
+     * Set when the body is produced as it is sent rather than held.
+     *
+     * @var (callable(): void)|null
+     */
+    private $emit = null;
+
     public function __construct(
         private string $body = '',
         private int $status = 200,
@@ -59,6 +66,46 @@ final class Response
     public static function redirect(string $location, int $status = 302): self
     {
         return (new self('', $status))->header('Location', $location);
+    }
+
+    /**
+     * A response whose body is produced while it is being sent.
+     *
+     * Everything else here buffers the whole body before anything reaches the
+     * wire, deliberately — that is what lets the share gate return byte-for-byte
+     * identical responses for every failure case, because they can be compared
+     * and normalized first. Nothing about that changes; this is a second kind
+     * of response for the one job the buffering cannot do.
+     *
+     * That job is an export. A library's worth of records assembled into a
+     * string is a string the memory limit on a shared host will refuse, and the
+     * refusal arrives as a blank page rather than as an error anybody can read.
+     * Streaming keeps the peak at one batch.
+     *
+     * The callback echoes. It runs AFTER headers and cookies have gone out, so
+     * nothing it does can change the status or set a cookie, and it must not
+     * throw — by the time it runs there is no way to turn the response into an
+     * error page, because the 200 has already been sent.
+     *
+     * @param callable(): void $emit
+     */
+    public static function stream(callable $emit, string $contentType): self
+    {
+        $response = new self('', 200);
+        $response->emit = $emit;
+
+        return $response
+            ->header('Content-Type', $contentType)
+            // No length is known in advance, and guessing one truncates the
+            // download at exactly the wrong place.
+            ->header('X-Accel-Buffering', 'no')
+            ->header('X-Content-Type-Options', 'nosniff');
+    }
+
+    /** True when this response produces its body as it sends. */
+    public function isStreamed(): bool
+    {
+        return $this->emit !== null;
     }
 
     public static function noContent(): self
@@ -192,9 +239,27 @@ final class Response
         }
 
         // 204 and 304 must not carry a body.
-        if ($this->status !== 204 && $this->status !== 304) {
-            echo $this->body;
+        if ($this->status === 204 || $this->status === 304) {
+            return;
         }
+
+        if ($this->emit !== null) {
+            /*
+             * Streamed. Output buffering is turned off first, because a buffer
+             * left in place defeats the entire point — the response would be
+             * assembled in memory anyway, which is the thing this exists to
+             * avoid, and the caller would never know.
+             */
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+
+            ($this->emit)();
+
+            return;
+        }
+
+        echo $this->body;
     }
 
     private function normalizeHeaderName(string $name): string
