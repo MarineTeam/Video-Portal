@@ -102,12 +102,6 @@ final class Response
             ->header('X-Content-Type-Options', 'nosniff');
     }
 
-    /** True when this response produces its body as it sends. */
-    public function isStreamed(): bool
-    {
-        return $this->emit !== null;
-    }
-
     public static function noContent(): self
     {
         return new self('', 204);
