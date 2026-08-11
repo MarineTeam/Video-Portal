@@ -116,6 +116,21 @@ final class Routes
         $router->get('/auth/callback', [AuthController::class, 'callback']);
         $router->any(['GET', 'POST'], '/auth/logout', [AuthController::class, 'logout']);
 
+        /*
+         * Asking for access.
+         *
+         * Guarded by `auth.user` and NOT by `auth.authorized`, which is the
+         * whole point: the people who need this are precisely the ones
+         * `auth.authorized` refuses. Guarding it with the middleware that
+         * produces the page it appears on would mean you had to be approved in
+         * order to ask to be approved.
+         *
+         * POST only. It writes a row and sends mail, so it must not be
+         * reachable by a link somebody can be tricked into following; the CSRF
+         * token is checked in the handler.
+         */
+        $router->post('/request-access', [AuthController::class, 'requestAccess'], ['auth.user']);
+
         // --------------------------------------------------------- viewing
 
         // requireAuthorized, not requireUser: signing in proves identity,

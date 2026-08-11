@@ -25,6 +25,8 @@ return array(
     'Portal\\Admin\\AdminShareView' => $baseDir . '/core/Admin/AdminShareView.php',
     'Portal\\Admin\\AdminView' => $baseDir . '/core/Admin/AdminView.php',
     'Portal\\App' => $baseDir . '/core/App.php',
+    'Portal\\Auth\\AccessRequestMailer' => $baseDir . '/core/Auth/AccessRequestMailer.php',
+    'Portal\\Auth\\AccessRequests' => $baseDir . '/core/Auth/AccessRequests.php',
     'Portal\\Auth\\Auth0Provider' => $baseDir . '/core/Auth/Auth0Provider.php',
     'Portal\\Auth\\AuthProvider' => $baseDir . '/core/Auth/AuthProvider.php',
     'Portal\\Auth\\AuthResult' => $baseDir . '/core/Auth/AuthResult.php',

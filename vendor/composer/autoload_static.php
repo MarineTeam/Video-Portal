@@ -53,6 +53,8 @@ class ComposerStaticInitae9cdb4486d610beb9cff40d8f421199
         'Portal\\Admin\\AdminShareView' => __DIR__ . '/../..' . '/core/Admin/AdminShareView.php',
         'Portal\\Admin\\AdminView' => __DIR__ . '/../..' . '/core/Admin/AdminView.php',
         'Portal\\App' => __DIR__ . '/../..' . '/core/App.php',
+        'Portal\\Auth\\AccessRequestMailer' => __DIR__ . '/../..' . '/core/Auth/AccessRequestMailer.php',
+        'Portal\\Auth\\AccessRequests' => __DIR__ . '/../..' . '/core/Auth/AccessRequests.php',
         'Portal\\Auth\\Auth0Provider' => __DIR__ . '/../..' . '/core/Auth/Auth0Provider.php',
         'Portal\\Auth\\AuthProvider' => __DIR__ . '/../..' . '/core/Auth/AuthProvider.php',
         'Portal\\Auth\\AuthResult' => __DIR__ . '/../..' . '/core/Auth/AuthResult.php',

@@ -153,6 +153,8 @@ final class App
             => new UserRepository($c->get(Db::class)));
         $c->singleton(Capabilities::class, static fn (Container $c): Capabilities
             => new Capabilities($c->get(Db::class)));
+        $c->singleton(\Portal\Auth\AccessRequests::class, static fn (Container $c): \Portal\Auth\AccessRequests
+            => new \Portal\Auth\AccessRequests($c->get(Db::class)));
 
         $c->singleton(Guard::class, static fn (Container $c): Guard => new Guard(
             $c->get(Session::class),

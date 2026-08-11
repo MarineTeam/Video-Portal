@@ -285,11 +285,73 @@ final class Guard
             <h1>Your account is not approved yet</h1>
             <p>You are signed in as <span class="email">{$email}</span>, but an administrator
                has not yet given this account access to the video library.</p>
-            <p>If you were expecting access, let whoever invited you know — they can approve
-               you from the admin area.</p>
+            {$this->requestBlock($user)}
             <a href="/auth/logout">Sign out</a>
             HTML
         );
+    }
+
+    /**
+     * The part of the pending page that lets somebody do something about it.
+     *
+     * Until this existed the page ended with "let whoever invited you know",
+     * which is a site creating a dead end and then handing the person a
+     * telephone. The dashboard had counted them the whole time; counting is not
+     * telling, and the person counted had no way to say anything at all.
+     *
+     * Three states, because "you have asked" and "you may ask" are different
+     * things to be told, and so is "this site does not take requests".
+     *
+     * Rendered here rather than in a controller because this page is a 403 that
+     * the guard produces before any controller runs — the same reason it is
+     * standalone HTML rather than a theme template.
+     */
+    private function requestBlock(User $user): string
+    {
+        try {
+            $container = \Portal\Container::instance();
+
+            if (!$container->get(\Portal\Config::class)->settingBool('allow_access_requests', true)) {
+                // Switched off deliberately: an invitation-only site does not
+                // want a button that invites strangers to knock. Say nothing
+                // rather than showing a form that would be refused.
+                return '<p>If you were expecting access, let whoever invited you know — they can
+                        approve you from the admin area.</p>';
+            }
+
+            $requests = $container->get(AccessRequests::class);
+
+            if ($requests->has($user->id)) {
+                return '<p><strong>Your request has been sent.</strong> An administrator will see it
+                        the next time they sign in. There is nothing more to do here — you will be
+                        able to sign in and watch as soon as somebody approves the account.</p>';
+            }
+
+            $token = \Portal\Support\Csrf::field($this->session);
+            $limit = AccessRequests::MAX_NOTE;
+
+            return <<<HTML
+            <p>You can ask for access here, and whoever runs the site will be told.</p>
+            <form method="post" action="/request-access">
+              {$token}
+              <label for="note">Anything worth saying about who you are (optional)</label>
+              <textarea id="note" name="note" rows="3" maxlength="{$limit}"
+                        placeholder="e.g. I'm on the Thursday team — Sam asked me to sign up."></textarea>
+              <button type="submit">Ask for access</button>
+            </form>
+            HTML;
+        } catch (\Throwable $e) {
+            /*
+             * This page's whole job is to explain a refusal without becoming a
+             * different failure. Before migration 0018 has run, or with the
+             * container in an odd state, the person still gets the page they
+             * came for — just without the form.
+             */
+            error_log('Access requests: could not render the request form. ' . $e->getMessage());
+
+            return '<p>If you were expecting access, let whoever invited you know — they can
+                    approve you from the admin area.</p>';
+        }
     }
 
     /**
@@ -323,6 +385,16 @@ final class Guard
           .email { color:#38bdf8; font-weight:500; }
           a { display:inline-block; margin-top:.5rem; padding:.5rem 1.125rem; border-radius:10px;
               border:1px solid rgba(148,163,184,.3); color:#e2e8f0; text-decoration:none; font-size:.9375rem; }
+          /* The request form. Deliberately quiet: it is an option on this page,
+             not the point of it. */
+          label { display:block; margin-bottom:.375rem; font-size:.875rem; color:#94a3b8; }
+          textarea { width:100%; box-sizing:border-box; padding:.625rem .75rem; border-radius:10px;
+                     border:1px solid rgba(148,163,184,.26); background:rgba(15,23,42,.6);
+                     color:#e2e8f0; font:inherit; font-size:.9375rem; resize:vertical; }
+          button { margin-top:.75rem; padding:.5rem 1.125rem; border-radius:10px; border:0;
+                   background:#38bdf8; color:#0b1220; font:inherit; font-weight:600;
+                   font-size:.9375rem; cursor:pointer; }
+          form { margin:0 0 1rem; }
         </style>
         </head>
         <body>

@@ -9,8 +9,10 @@ use Portal\Auth\AuthResult;
 use Portal\Auth\LocalProvider;
 use Portal\Auth\Session;
 use Portal\Auth\UserRepository;
+use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
+use Portal\Support\Audit;
 use Portal\Support\RateLimit;
 use Throwable;
 
@@ -179,6 +181,95 @@ final class AuthController extends Controller
         }
 
         return $this->redirect('/')->private();
+    }
+
+    /**
+     * "I would like access, please."
+     *
+     * Only reachable by somebody who is signed in and not approved, which is
+     * the entire population this is for. An approved account has nothing to
+     * ask for and an anonymous visitor has no identity to attach a request to,
+     * so both are turned away rather than quietly accepted.
+     *
+     * Not behind `auth.authorized` — that middleware is exactly what refuses
+     * these people, and putting it here would mean the only way to ask for
+     * access was to already have it.
+     */
+    public function requestAccess(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+
+        $user = $this->user();
+
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        if (!$this->config()->settingBool('allow_access_requests', true)) {
+            throw HttpException::forbidden('This site does not take access requests.');
+        }
+
+        // Nothing to ask for, and recording a request from somebody who already
+        // has access would put a row on the pending list that can never be
+        // cleared by approving anyone.
+        if ($user->isAdmin() || $user->authorized) {
+            return $this->redirect('/');
+        }
+
+        /** @var \Portal\Auth\AccessRequests $requests */
+        $requests = $this->container->get(\Portal\Auth\AccessRequests::class);
+
+        $note = \Portal\Auth\AccessRequests::sanitize($request->input('note') ?? '');
+        $isFirstAsk = $requests->submit($user->id, $note);
+
+        Audit::log(
+            $this->db(),
+            $user->email,
+            'access.request',
+            'user',
+            (string) $user->id,
+            $isFirstAsk ? 'first request' : 'updated an existing request'
+        );
+
+        /*
+         * Mail only on the first ask, and only after the row exists.
+         *
+         * The row is the record; the email is a courtesy. Sending first would
+         * mean a delivery failure could lose a request, and sending on every
+         * ask would turn a button in front of any stranger who can authenticate
+         * into a way to mail the administrators repeatedly.
+         */
+        if ($isFirstAsk) {
+            try {
+                $mailer = new \Portal\Auth\AccessRequestMailer(
+                    $this->db(),
+                    $this->config(),
+                    $this->container->get(\Portal\Mail\MailProvider::class)
+                );
+
+                if ($mailer->notify($user, $note)) {
+                    $requests->markNotified($user->id);
+                }
+            } catch (Throwable $e) {
+                // The request is already stored and visible on the People
+                // screen. A mail provider that is down must not turn asking for
+                // access into an error page.
+                error_log('Access request: notification failed. ' . $e->getMessage());
+            }
+        }
+
+        /*
+         * Back to the page they were refused on, which now reports that the
+         * request has been sent.
+         *
+         * Not the homepage. Somebody who clicks a button and lands somewhere
+         * else with no acknowledgement concludes it did not work and clicks it
+         * again — and the second click is the one that is silently ignored,
+         * because a person may only ask once. The confirmation is not a
+         * courtesy here; it is what stops the fire-once guard from reading as
+         * a broken button.
+         */
+        return $this->back($request);
     }
 
     // -------------------------------------------------------------- internals

@@ -3069,6 +3069,17 @@ final class AdminView
             );
         }
 
+        /*
+         * What each pending person said when they asked.
+         *
+         * Shown here rather than on a screen of its own. An administrator
+         * arrives at People to decide whether to approve somebody, and the note
+         * is the thing that answers that question — putting it anywhere else
+         * would mean the decision and the evidence for it lived in two places,
+         * and one of them would go unread.
+         */
+        $notes = (array) ($data['requestNotes'] ?? []);
+
         $rows = '';
         foreach ((array) ($data['users'] ?? []) as $user) {
             $authorized = (int) $user['authorized'] === 1;
@@ -3079,9 +3090,26 @@ final class AdminView
                 $roleOptions
             );
 
+            $note = trim((string) ($notes[(int) $user['id']] ?? ''));
+            $asked = '';
+
+            if (!$authorized && isset($notes[(int) $user['id']])) {
+                // The presence of a row is the news; the message is optional.
+                // Somebody who asked without saying anything still asked, and
+                // an empty quote block would read as though they said nothing
+                // when in fact they said nothing *extra*.
+                $asked = $note === ''
+                    ? '<br><span class="pill">Asked for access</span>'
+                    : sprintf(
+                        '<br><span class="pill">Asked for access</span>'
+                        . '<br><span class="muted small">“%s”</span>',
+                        nl2br(e($note))
+                    );
+            }
+
             $rows .= sprintf(
                 '<tr>
-                   <td><strong>%s</strong><br><span class="muted">%s</span></td>
+                   <td><strong>%s</strong><br><span class="muted">%s</span>%s</td>
                    <td>%s</td>
                    <td>
                      <form method="post" class="inline">
@@ -3101,6 +3129,7 @@ final class AdminView
                  </tr>',
                 e((string) ($user['name'] ?? $user['email'])),
                 e((string) $user['email']),
+                $asked,
                 $authorized ? '<span class="pill ok">Approved</span>' : '<span class="pill warn">Pending</span>',
                 $token,
                 (int) $user['id'],
@@ -3486,6 +3515,7 @@ final class AdminView
         $podcastExplicit = $checked('podcast_explicit');
         $subscriptionsEnabled = $checked('subscriptions_enabled');
         $requireVerified = $checked('require_verified_email');
+        $allowRequests = $checked('allow_access_requests');
         $subscriberCount = (int) ($data['subscriberCount'] ?? 0);
 
         return <<<HTML
@@ -3493,6 +3523,11 @@ final class AdminView
 
         <form method="post">
           <input type="hidden" name="_token" value="{$token}">
+          <!-- This form carries every checkbox on the screen, so an unticked
+               box here really does mean off. Without this marker the handler
+               cannot tell "unticked" from "not part of this request", and a
+               partial save would switch off whatever it failed to mention. -->
+          <input type="hidden" name="_whole_form" value="1">
           <label>Site name <input type="text" name="site_name" value="{$this->attr($settings['site_name'] ?? '')}"></label>
           <label>Timezone <select name="timezone">{$zones}</select></label>
 
@@ -3582,6 +3617,17 @@ final class AdminView
                be shut out by it. Neither is any account with a password set here — there is no way
                to confirm an address for one, so requiring it would close local sign-in permanently,
                and local sign-in is how you get back in on a host with no shell.</p>
+
+            <label class="checkbox">
+              <input type="checkbox" name="allow_access_requests" value="1"{$allowRequests}>
+              Let people ask for access
+            </label>
+            <p class="muted small">Somebody who signs in and has not been approved sees a short form
+               instead of a dead end, and you are emailed once. Each person can ask once ever, so the
+               button cannot be used to send you mail repeatedly.</p>
+            <p class="muted small">Turn it off for an invitation-only site: the page then says to
+               contact whoever invited them, and the form is gone. Requests already made stay on the
+               People screen either way.</p>
           </fieldset>
 
           <button class="btn">Save</button>
