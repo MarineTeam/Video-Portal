@@ -141,10 +141,96 @@ final class WatchController extends Controller
                 'saveAction' => '/saved',
                 'csrfField'  => '<input type="hidden" name="_token" value="'
                     . e($this->csrfToken()) . '">',
-                'related' => [],
+                'related' => $this->related($video),
                 'backUrl' => '/',
             ]
         );
+    }
+
+    /**
+     * What to watch after this one.
+     *
+     * The theme has rendered this section since Phase 1 and was handed an empty
+     * array every time, so it has never appeared on a page. Filling it is the
+     * whole change; the presentation was already written and already correct.
+     *
+     * Candidates are ranked here and then passed through the ordinary listing
+     * query, which is what decides whether this viewer may see any of them.
+     * Doing the visibility myself would be a second implementation of the rules
+     * that keep unpublished and members-only videos off a public page, and two
+     * implementations of that eventually disagree.
+     *
+     * Wrapped whole. This is the least important thing on the watch page and it
+     * runs after everything that matters is already resolved; a failure here
+     * should cost the section, not the video.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function related(Video $video): array
+    {
+        try {
+            /** @var VideoRepository $videos */
+            $videos = $this->container->get(VideoRepository::class);
+
+            $signals = $videos->relatednessSignals($video);
+            if ($signals === []) {
+                return [];
+            }
+
+            $ranked = \Portal\Content\Relatedness::rank($signals);
+            if ($ranked === []) {
+                return [];
+            }
+
+            $user = $this->user();
+            $canWatch = $user !== null && ($user->isAdmin() || $user->authorized);
+
+            $result = $videos->query([
+                'ids'               => $ranked,
+                'includeMemberOnly' => $canWatch,
+                // A premiere is listed everywhere else on the site, and the
+                // card says so. Hiding it here would make the section disagree
+                // with the series page it sits next to.
+                'includePremieres'  => true,
+            ], 1, \Portal\Content\Relatedness::LIMIT);
+
+            if ($result['items'] === []) {
+                return [];
+            }
+
+            /*
+             * query() returns its own curated order — pinned first, then the
+             * arrangement an editor chose. That is right for a listing and
+             * wrong here, where the ranking IS the answer. Restored to the
+             * ranked order, with anything the query dropped simply absent.
+             */
+            $byId = [];
+            foreach ($result['items'] as $item) {
+                $byId[$item->id] = $item;
+            }
+
+            $ordered = [];
+            foreach ($ranked as $id) {
+                if (isset($byId[$id])) {
+                    $ordered[] = $byId[$id];
+                }
+            }
+
+            $presenter = new \Portal\Content\VideoPresenter(
+                $videos,
+                $this->container->get(VideoProvider::class)
+            );
+
+            return $presenter->cards(
+                $ordered,
+                $canWatch,
+                $this->config()->settingBool('members_thumbnail_default', false)
+            );
+        } catch (Throwable $e) {
+            error_log('Could not build the related videos: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /**

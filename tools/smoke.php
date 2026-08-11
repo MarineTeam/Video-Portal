@@ -4639,10 +4639,25 @@ check(
     str_contains($secondEpisode['body'], 'Watch in order'),
     'the lock is not applied at all'
 );
+/*
+ * No player for the locked video — asserted as the absence of a player, not
+ * as the absence of the string "token=".
+ *
+ * That broader clause was a proxy, and it drifted. It held while a locked page
+ * carried nothing signed at all; the moment the page grew a "More like this"
+ * section it started matching the CDN token on a THUMBNAIL — for a different
+ * video, one this viewer is allowed to see, of the kind every listing on the
+ * site already shows. The lock was intact and the check said otherwise.
+ *
+ * A proxy assertion fails this way eventually: it passes for a reason nobody
+ * wrote down, and when the reason stops holding it reports a defect that is not
+ * there. The claim worth making is the one the section above makes positively —
+ * a playable page has an <iframe>, so a locked one must not.
+ */
 check(
-    'and no player URL is on the page',
-    !str_contains($secondEpisode['body'], 'iframe.mediadelivery.net')
-        && !str_contains($secondEpisode['body'], 'token='),
+    'and no player is on the page',
+    !str_contains($secondEpisode['body'], '<iframe')
+        && !str_contains($secondEpisode['body'], 'iframe.mediadelivery.net'),
     'a signed URL was minted for a locked video, so the lock is decoration'
 );
 check(
@@ -4650,6 +4665,18 @@ check(
     str_contains($secondEpisode['body'], 'Episode One')
         && str_contains($secondEpisode['body'], '/watch/course-episode-one'),
     '"locked" with no way forward is a dead end'
+);
+
+/*
+ * And it still suggests something to watch. This is also what accounts for the
+ * signed CDN tokens on a locked page — they are thumbnails for videos this
+ * viewer may see, which is why the check above asks about the player rather
+ * than about signing.
+ */
+check(
+    'A locked page still offers other videos',
+    str_contains($secondEpisode['body'], 'More like this'),
+    'a locked episode is a dead end again'
 );
 
 /* Finishing the first opens the second. */
@@ -6043,6 +6070,99 @@ clearLoginThrottle($db);
 @unlink($newJar);
 @unlink($oldJar);
 @unlink(sys_get_temp_dir() . '/portal-smoke-pwcheck-' . getmypid() . '.txt');
+
+/* ------------------------------------------------------- more like this
+ *
+ * The theme has rendered this section since Phase 1 and the controller passed
+ * it an empty array every time, so it has never appeared on a page. The
+ * fifteenth instance of the pattern, and the one where the presentation was
+ * already finished.
+ *
+ * The check that matters is not "a section appears" — it is that the section
+ * cannot show something the viewer is not allowed to see. Relatedness picks
+ * candidates and the ordinary listing query decides visibility, so this proves
+ * the second half is actually in the path.
+ */
+echo "\nMore like this\n";
+
+$relatedNow = date('Y-m-d H:i:s');
+$relSeries = $db->insert('series', [
+    'slug' => 'related-series', 'title' => 'A Related Series',
+    'is_published' => 1, 'created_at' => $relatedNow, 'updated_at' => $relatedNow,
+]);
+
+$relIds = [];
+foreach (['visible' => 1, 'sibling' => 1] as $name => $published) {
+    $relIds[$name] = $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'smoke-related-' . $name,
+        'slug' => 'related-' . $name, 'title' => 'Related ' . ucfirst($name),
+        'status' => 'ready', 'is_published' => $published, 'duration' => 60,
+        'series_id' => $relSeries,
+        'published_at' => $relatedNow, 'created_at' => $relatedNow, 'updated_at' => $relatedNow,
+    ]);
+}
+
+/* Same series, but not for the public: one unpublished, one members-only. */
+$relIds['unpublished'] = $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-related-unpublished',
+    'slug' => 'related-unpublished', 'title' => 'Related Unpublished',
+    'status' => 'ready', 'is_published' => 0, 'duration' => 60,
+    'series_id' => $relSeries,
+    'created_at' => $relatedNow, 'updated_at' => $relatedNow,
+]);
+$relIds['members'] = $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-related-members',
+    'slug' => 'related-members', 'title' => 'Related Members Only',
+    'status' => 'ready', 'is_published' => 1, 'member_only' => 1, 'duration' => 60,
+    'series_id' => $relSeries,
+    'published_at' => $relatedNow, 'created_at' => $relatedNow, 'updated_at' => $relatedNow,
+]);
+
+$relatedPage = getWithJar($baseUrl . '/watch/related-visible', $jar);
+
+check('A video with siblings renders', $relatedPage['status'] === 200, "got {$relatedPage['status']}");
+check(
+    'The "More like this" section appears',
+    str_contains($relatedPage['body'], 'More like this'),
+    'the theme has rendered this since Phase 1 and never had anything to show'
+);
+check(
+    'and it offers the sibling episode',
+    str_contains($relatedPage['body'], '/watch/related-sibling'),
+    'the strongest signal there is — the next part of what you are watching'
+);
+
+/*
+ * The one that would be a real defect. Both of these share a series with the
+ * video being watched, so relatedness ranks them; only the listing query keeps
+ * them out.
+ */
+check(
+    'An unpublished sibling is not offered',
+    !str_contains($relatedPage['body'], '/watch/related-unpublished'),
+    'relatedness is deciding visibility instead of the listing query'
+);
+
+$anonRelated = get($baseUrl . '/watch/related-visible');
+check(
+    'and a members-only sibling is not offered to a signed-out visitor',
+    !str_contains($anonRelated['body'], '/watch/related-members'),
+    'a members-only video reached a public page through the related list'
+);
+
+/*
+ * Cost is deliberately not asserted here. It runs on the busiest page in the
+ * product and the signals are gathered in one statement for that reason — but
+ * this script talks to the server over HTTP and counts queries on its OWN
+ * connection, so anything it measured would be about the test and not the
+ * page. The query monitor is what can see that, and it can see it live.
+ */
+
+/* Cleaned up so later sections see the library they expect. */
+foreach ($relIds as $id) {
+    $db->execute('DELETE FROM {videos} WHERE id = ?', [$id]);
+}
+$db->execute('DELETE FROM {series} WHERE id = ?', [$relSeries]);
 
 echo "\nRouting\n";
 

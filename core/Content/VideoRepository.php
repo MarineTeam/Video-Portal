@@ -350,6 +350,87 @@ final class VideoRepository
      *
      * @return list<int>
      */
+    /**
+     * Signals that other videos share something with this one.
+     *
+     * One statement rather than four, because this runs on the busiest page in
+     * the product. Four queries per watch page is the exact shape the query
+     * monitor exists to name, and it would be four more on a page that already
+     * loads chapters, transcripts, attachments and scripture.
+     *
+     * A UNION ALL of four cheap index reads, aggregated once. Each branch emits
+     * a row per candidate per match, and the outer query counts them — so
+     * "shares two categories" arrives as a number without any branch needing to
+     * know about the others.
+     *
+     * Visibility is deliberately NOT decided here. This returns candidates; the
+     * caller passes them through query(), which owns every rule about what a
+     * given viewer may see. Two places that both decide visibility is one place
+     * that will eventually disagree, and the failure mode is an unpublished or
+     * members-only video appearing in a public list.
+     *
+     * @return array<int, array{series: bool, speaker: bool, categories: int, scriptures: int}>
+     */
+    public function relatednessSignals(Video $video, int $candidateLimit = 60): array
+    {
+        $limit = max(1, min(200, $candidateLimit));
+
+        $rows = $this->db->all(
+            "SELECT candidate, MAX(is_series) AS is_series, MAX(is_speaker) AS is_speaker,
+                    SUM(is_category) AS categories, SUM(is_scripture) AS scriptures
+               FROM (
+                   SELECT v.id AS candidate, 1 AS is_series, 0 AS is_speaker,
+                          0 AS is_category, 0 AS is_scripture
+                     FROM {videos} v
+                    WHERE v.series_id IS NOT NULL AND v.series_id = ? AND v.id <> ?
+
+                   UNION ALL
+
+                   SELECT v.id, 0, 1, 0, 0
+                     FROM {videos} v
+                    WHERE v.speaker_id IS NOT NULL AND v.speaker_id = ? AND v.id <> ?
+
+                   UNION ALL
+
+                   SELECT vc.video_id, 0, 0, 1, 0
+                     FROM {video_categories} vc
+                    WHERE vc.category_id IN (
+                              SELECT category_id FROM {video_categories} WHERE video_id = ?
+                          )
+                      AND vc.video_id <> ?
+
+                   UNION ALL
+
+                   SELECT sr.video_id, 0, 0, 0, 1
+                     FROM {scripture_refs} sr
+                    WHERE (sr.book, sr.chapter) IN (
+                              SELECT book, chapter FROM {scripture_refs} WHERE video_id = ?
+                          )
+                      AND sr.video_id <> ?
+               ) AS signals
+              GROUP BY candidate
+              LIMIT {$limit}",
+            [
+                $video->seriesId, $video->id,
+                $video->speakerId, $video->id,
+                $video->id, $video->id,
+                $video->id, $video->id,
+            ]
+        );
+
+        $signals = [];
+        foreach ($rows as $row) {
+            $signals[(int) $row['candidate']] = [
+                'series'     => (int) $row['is_series'] === 1,
+                'speaker'    => (int) $row['is_speaker'] === 1,
+                'categories' => (int) $row['categories'],
+                'scriptures' => (int) $row['scriptures'],
+            ];
+        }
+
+        return $signals;
+    }
+
     public function categoryIds(int $videoId): array
     {
         return array_map(
