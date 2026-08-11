@@ -2456,6 +2456,22 @@ final class AdminController extends Controller
                 case 'restore-revision':
                     return $this->restoreRevision($request, RevisionRepository::CATEGORY, $id);
 
+                case 'up':
+                case 'down':
+                    /*
+                     * Silent on success, like the other ordering buttons — the
+                     * list itself is the feedback, and a flash after every
+                     * nudge would bury the change under a message about it.
+                     * Only the no-op is worth a word, because a button that
+                     * appears to do nothing otherwise looks broken.
+                     */
+                    $moved = $categories->move($id, $action === 'up' ? -1 : 1);
+
+                    return $this->back(
+                        $request,
+                        $moved ? '' : 'That one is already at the end of its level.'
+                    );
+
                 case 'update':
                     $this->revisions()->record(RevisionRepository::CATEGORY, $id, $this->user()?->email ?? '');
                     $categories->update($id, [

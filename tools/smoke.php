@@ -6472,6 +6472,82 @@ foreach ($bulkIds as $id) {
 }
 @unlink($bulkJar);
 
+/* ---------------------------------------------------- category ordering
+ *
+ * CategoryRepository::reorder() has existed since Phase 1 with no caller, so
+ * the `position` column the schema describes as "for manual ordering" has never
+ * been orderable — every tree on every install sits in creation order.
+ *
+ * The repository half is covered by CategoryOrderTest, where the stored rows
+ * can be read directly. These drive the buttons, because a move() nothing
+ * presses is the thing being fixed.
+ */
+echo "\nCategory ordering\n";
+
+$orderParent = $db->insert('categories', [
+    'slug' => 'order-parent', 'name' => 'Order Parent', 'path' => '/', 'depth' => 0,
+    'position' => 900, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$orderKids = [];
+foreach (['first', 'second'] as $i => $name) {
+    $orderKids[$name] = $db->insert('categories', [
+        'slug' => 'order-' . $name, 'name' => 'Order ' . ucfirst($name),
+        'parent_id' => $orderParent, 'path' => '/' . $orderParent . '/', 'depth' => 1,
+        'position' => ($i + 1) * 10,
+        'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+    ]);
+}
+
+$categoryScreen = getWithJar($baseUrl . '/admin/categories', $jar);
+check(
+    'The categories screen offers ordering buttons',
+    str_contains($categoryScreen['body'], 'name="action" value="up"'),
+    'the position column has never been reachable from a screen'
+);
+
+$orderToken = csrfFrom($categoryScreen['body']);
+
+postWithJar($baseUrl . '/admin/categories', [
+    '_token' => $orderToken,
+    'id'     => (string) $orderKids['second'],
+    'action' => 'up',
+], $jar);
+
+check(
+    'Moving one up reorders its siblings',
+    (int) $db->value('SELECT position FROM {categories} WHERE id = ?', [$orderKids['second']])
+        < (int) $db->value('SELECT position FROM {categories} WHERE id = ?', [$orderKids['first']]),
+    'the button did nothing'
+);
+
+/*
+ * At the end it says so rather than reporting a change. A button that appears
+ * to do nothing is one somebody presses repeatedly.
+ */
+$atTheEnd = postWithJar($baseUrl . '/admin/categories', [
+    '_token' => $orderToken,
+    'id'     => (string) $orderKids['second'],
+    'action' => 'up',
+], $jar);
+
+check(
+    'and pressing it at the end says so',
+    str_contains(getWithJar($baseUrl . '/admin/categories', $jar)['body'], 'already at the end'),
+    'no feedback, so the button reads as broken'
+);
+
+/* The parent must not have been dragged into its children's ordering. */
+check(
+    'A move inside a parent leaves the parent alone',
+    (int) $db->value('SELECT position FROM {categories} WHERE id = ?', [$orderParent]) === 900,
+    'reordering children reached up and moved their parent'
+);
+
+foreach ($orderKids as $id) {
+    $db->execute('DELETE FROM {categories} WHERE id = ?', [$id]);
+}
+$db->execute('DELETE FROM {categories} WHERE id = ?', [$orderParent]);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

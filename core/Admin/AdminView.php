@@ -1344,6 +1344,10 @@ final class AdminView
                      <form method="post" class="inline">
                        <input type="hidden" name="_token" value="%s">
                        <input type="hidden" name="id" value="%d">
+                       <button name="action" value="up" class="btn tiny secondary"
+                               title="Move up among its siblings">&uarr;</button>
+                       <button name="action" value="down" class="btn tiny secondary"
+                               title="Move down among its siblings">&darr;</button>
                        <button name="action" value="delete" class="btn tiny danger"
                                onclick="return confirm(\'Delete this category? Videos in it are kept.\')">Delete</button>
                      </form>
@@ -1371,6 +1375,9 @@ final class AdminView
         <p class="muted">Categories you create here take precedence over collections at your video
            provider. Importing brings collections in as a starting point; renaming one afterwards
            will not be undone by a later import.</p>
+
+        <p class="muted small">The arrows move a category among its siblings, which is the order the
+           site lists them in. They do not move it to a different parent — use Edit for that.</p>
 
         <div class="cols">
           <div>
