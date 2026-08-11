@@ -112,9 +112,9 @@ final class AdminNavTest extends TestCase
      *
      * This is the property that keeps eight headings from being twenty-six
      * links again: every other section's children exist in the markup — they
-     * have to, for the flyout and for a phone — but the CSS only unfolds the
-     * one carrying `current`. If every section rendered as current, the menu
-     * would still be correct HTML and completely useless.
+     * have to, so the section has them ready when you open it — but the CSS
+     * only unfolds the one carrying `current`. If every section rendered as
+     * current, the menu would still be correct HTML and completely useless.
      */
     public function testExactlyOneSectionIsOpenAtATime(): void
     {
@@ -139,9 +139,8 @@ final class AdminNavTest extends TestCase
      * Every link is present whether or not its section is open.
      *
      * The CSS hides the closed ones, so a link missing from the markup is a
-     * page that cannot be reached by hovering, by tabbing, or on a phone —
-     * the exact defect that made a plugin's settings screen findable only by
-     * reading the source.
+     * page with no route to it at all — the exact defect that once made a
+     * plugin's settings screen findable only by reading the source.
      */
     public function testClosedSectionsStillCarryTheirLinks(): void
     {
@@ -168,8 +167,8 @@ final class AdminNavTest extends TestCase
     /**
      * A menu entry with no children renders no empty list.
      *
-     * An empty <ul> would still match the flyout rules, so hovering Analytics
-     * would open a bordered box with nothing in it.
+     * An empty <ul> would still take the submenu's padding, so landing on
+     * Analytics would open a gap under it with nothing in it.
      */
     public function testAChildlessSectionRendersNoSubmenu(): void
     {

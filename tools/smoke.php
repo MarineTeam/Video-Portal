@@ -1400,6 +1400,23 @@ $adminAfter = getWithJar($baseUrl . '/admin', $jar);
 check('Plugin pages appear in the admin navigation', str_contains($adminAfter['body'], '/admin/watermark'));
 
 /*
+ * And appear where a person can actually see them.
+ *
+ * Plugin screens are children of the Plugins section, and only the section you
+ * are in shows its children — so "the link is in the HTML" and "somebody can
+ * find the link" stopped being the same claim the moment the menu grouped.
+ * Opening /admin/plugins has to be the thing that reveals them, or the check
+ * above is measuring a link that is permanently display:none.
+ */
+$pluginsSection = getWithJar($baseUrl . '/admin/plugins', $jar);
+check(
+    'and the Plugins screen is the one that opens their section',
+    preg_match('~<a [^>]*href="/admin/plugins"[^>]*aria-current="page"~', $pluginsSection['body']) === 1
+        && str_contains($pluginsSection['body'], '/admin/watermark'),
+    'the plugin pages are in the markup but nothing a person clicks unfolds them'
+);
+
+/*
  * The point of the whole plugin: an actual watermark on an actual player.
  * Made as an account-mode share for the signed-in administrator, because that
  * is the one recipient this script can authenticate as.

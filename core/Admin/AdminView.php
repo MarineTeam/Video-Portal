@@ -120,6 +120,10 @@ final class AdminView
          * is broken. The input stays focusable — visually hidden, not
          * display:none — so it can still be reached by keyboard, with the focus
          * ring drawn on the button beside it.
+         *
+         * The checkbox sits before .admin because the rule that opens the menu
+         * is a sibling combinator. Moving it inside the header would silently
+         * stop the button working.
          */
         return <<<HTML
         <!doctype html>
@@ -161,9 +165,14 @@ final class AdminView
      * The sidebar.
      *
      * A section is current when the screen being rendered is one it or any of
-     * its children owns, and only a current section shows its children inline.
-     * The rest are one hover — or one Tab — away, which is what keeps eight
-     * headings from being twenty-six links again.
+     * its children owns, and only a current section shows its children. The
+     * rest are one click away — every heading links to its own first child, so
+     * clicking it both navigates and opens the section. That is what keeps
+     * eight headings from being twenty-six links again.
+     *
+     * Every child is rendered whether or not its section is open: the CSS
+     * decides what is shown, so nothing is missing from the markup and a
+     * section that opens has its links already there.
      *
      * @param list<array<string, mixed>> $items
      */
@@ -3638,9 +3647,10 @@ final class AdminView
         .brand { font-weight:650; color:#e2e8f0; }
         .admin { display:flex; align-items:flex-start; min-height:100vh; }
         .topbar { display:none; }
-        /* Visually hidden but still focusable — see the comment at the markup. */
-        .menu-state { position:absolute; width:1px; height:1px; margin:-1px;
-                      padding:0; border:0; overflow:hidden; clip:rect(0 0 0 0); }
+        /* Nothing here on a wide screen: the menu is already open, so a
+           focusable control that toggles an invisible thing would be a tab stop
+           that appears to do nothing. The media query brings it back. */
+        .menu-state { display:none; }
         /* The bottom padding clears the query monitor's fixed bar. With eight
            sections and one of them open the menu reaches the bottom of a laptop
            viewport, and the bar would sit on top of Sign out. */
@@ -3649,7 +3659,6 @@ final class AdminView
                      border-right:1px solid rgba(148,163,184,.16); padding-bottom:3.5rem; }
         #adminmenu .sidebar-brand { display:block; padding:1.125rem 1rem 1.25rem; font-size:1rem; }
         #adminmenu .menu { list-style:none; margin:0; padding:0; }
-        #adminmenu .section { position:relative; }
         #adminmenu .top { display:flex; align-items:center; gap:.625rem; padding:.5rem 1rem;
                           color:#cbd5e1; font-size:.9375rem; border-left:3px solid transparent; }
         #adminmenu .top svg { width:1.125rem; height:1.125rem; flex:0 0 auto; opacity:.75; }
@@ -3661,26 +3670,33 @@ final class AdminView
                            border-top:1px solid rgba(148,163,184,.14); }
         #adminmenu .meta .top { color:#94a3b8; font-size:.875rem; }
 
-        /* A section's children show inline while you are inside it, and as a
-           flyout while you are not. :focus-within matters as much as :hover —
-           a menu that only opens under a mouse is one a keyboard cannot use. */
+        /*
+         * Only the section you are in shows its children, and it shows them
+         * inline. There is no hover flyout, which was the first thing tried
+         * and had to go: the sidebar is a scroll container, and a scroll
+         * container clips its descendants on BOTH axes, so a submenu
+         * positioned at left:100% did not escape the sidebar — it widened the
+         * sidebar's own scroll area and sat off the edge, reachable only by
+         * scrolling sideways inside the menu. Measured, not guessed:
+         * scrollWidth 408 against clientWidth 224.
+         *
+         * The alternatives were worse. Dropping the scroll leaves a menu taller
+         * than the viewport with no way to reach the bottom of it, and hover
+         * flyouts cannot escape a scroll container without JavaScript
+         * positioning them.
+         *
+         * What it costs: reaching a page in another section is two clicks
+         * rather than one, because every section heading opens at its own first
+         * child and the submenu is there when you land. That is what the phone
+         * layout already did, and it works the same under a mouse, a keyboard,
+         * and a finger — which a hover flyout never did.
+         */
         #adminmenu .submenu { list-style:none; margin:0; padding:.125rem 0 .5rem; display:none; }
-        #adminmenu .submenu a { display:block; padding:.3125rem 1rem; color:#94a3b8; font-size:.875rem; }
+        #adminmenu .submenu a { display:block; padding:.3125rem 1rem .3125rem 2.875rem;
+                                color:#94a3b8; font-size:.875rem; }
         #adminmenu .submenu a:hover { color:#f8fafc; text-decoration:none; }
         #adminmenu .submenu li.current > a { color:#38bdf8; font-weight:600; }
         #adminmenu .section.current > .submenu { display:block; }
-        #adminmenu .section.current > .submenu a { padding-left:2.875rem; }
-        #adminmenu .section:hover > .submenu,
-        #adminmenu .section:focus-within > .submenu {
-              display:block; position:absolute; left:100%; top:0; min-width:11.5rem; z-index:30;
-              background:#152238; border:1px solid rgba(148,163,184,.2); border-radius:0 10px 10px 0;
-              padding:.375rem 0; box-shadow:0 14px 32px rgba(2,6,23,.55); }
-        /* The section you are already in keeps its inline list; turning it into
-           a flyout the moment the pointer crossed it would make the page jump. */
-        #adminmenu .section.current:hover > .submenu,
-        #adminmenu .section.current:focus-within > .submenu {
-              position:static; background:none; border:0; box-shadow:none;
-              padding:.125rem 0 .5rem; }
 
         main { flex:1; min-width:0; max-width:76rem; padding:2rem 2rem 4rem; }
         h1 { font-size:1.5rem; margin:0 0 1.5rem; font-weight:650; letter-spacing:-.01em; }
@@ -3776,21 +3792,22 @@ final class AdminView
                          font-weight:550; color:#e2e8f0;
                          border:1px solid rgba(148,163,184,.3); }
           .menu-button svg { width:1.125rem; height:1.125rem; }
+          /* Visually hidden but still focusable, so the menu can be opened from
+             the keyboard. The focus ring is drawn on the button beside it,
+             because an invisible control with an invisible focus ring is a
+             tab stop nobody can see they are on. */
+          .menu-state { display:block; position:absolute; width:1px; height:1px;
+                        margin:-1px; padding:0; border:0; overflow:hidden; clip:rect(0 0 0 0); }
           .menu-state:focus-visible ~ .topbar .menu-button { outline:2px solid #38bdf8;
                                                              outline-offset:2px; }
           #adminmenu { display:none; position:static; width:auto; height:auto; overflow:visible;
                        border-right:0; border-bottom:1px solid rgba(148,163,184,.16); }
           .menu-state:checked ~ .admin #adminmenu { display:block; }
           #adminmenu .sidebar-brand { display:none; }
-          /* Every submenu open, always. There is no hover on a touch screen, so
-             a flyout here would be a link a phone could not reach at all. */
-          #adminmenu .submenu,
-          #adminmenu .section:hover > .submenu,
-          #adminmenu .section:focus-within > .submenu {
-                display:block; position:static; background:none; border:0; box-shadow:none;
-                padding:.125rem 0 .5rem; }
-          #adminmenu .submenu a,
-          #adminmenu .section.current > .submenu a { padding-left:2.875rem; }
+          /* Every submenu open, always. Opening the menu on a phone is already
+             a deliberate act, so the whole map is what you want to see — and
+             the sidebar is in the page flow here, so its length costs nothing. */
+          #adminmenu .submenu { display:block; }
           main { max-width:none; padding:1.5rem 1rem 3rem; }
         }
         CSS;
