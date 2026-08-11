@@ -75,6 +75,7 @@ class ComposerStaticInitae9cdb4486d610beb9cff40d8f421199
         'Portal\\Content\\AnnouncementRepository' => __DIR__ . '/../..' . '/core/Content/AnnouncementRepository.php',
         'Portal\\Content\\AssetPolicy' => __DIR__ . '/../..' . '/core/Content/AssetPolicy.php',
         'Portal\\Content\\AssetRepository' => __DIR__ . '/../..' . '/core/Content/AssetRepository.php',
+        'Portal\\Content\\BulkAction' => __DIR__ . '/../..' . '/core/Content/BulkAction.php',
         'Portal\\Content\\CaptionFile' => __DIR__ . '/../..' . '/core/Content/CaptionFile.php',
         'Portal\\Content\\Category' => __DIR__ . '/../..' . '/core/Content/Category.php',
         'Portal\\Content\\CategoryRepository' => __DIR__ . '/../..' . '/core/Content/CategoryRepository.php',

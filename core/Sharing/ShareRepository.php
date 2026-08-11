@@ -519,13 +519,37 @@ final class ShareRepository
      * waits sixty days after expiry or revocation so Extend and Restore keep
      * working long after a link stops being usable.
      */
-    public function purgeExpired(): int
+    /**
+     * @param int|null $limit most rows to remove in one call, or null for all
+     */
+    public function purgeExpired(?int $limit = null): int
     {
+        /*
+         * Bounded when the caller asks, because the scheduled job now runs
+         * here — and on a host without real cron that means it runs inside
+         * somebody's ordinary page view. A site that has never been cleaned
+         * could have years of lapsed links, and one enormous DELETE would be a
+         * visitor waiting for it. The same reasoning bounds videos.sync to one
+         * page of a hundred.
+         *
+         * Oldest first, so a bounded run drains the backlog in order rather
+         * than skimming whatever the database happened to reach first, and
+         * repeated runs make progress instead of revisiting the same rows.
+         *
+         * The admin button passes nothing and clears the lot: somebody who
+         * pressed it is waiting for it deliberately.
+         */
+        $bound = '';
+        if ($limit !== null && $limit > 0) {
+            $bound = ' ORDER BY COALESCE(revoked_at, expires_at) ASC LIMIT ' . $limit;
+        }
+
         try {
             return $this->db->execute(
                 'DELETE FROM {shares}
                   WHERE (revoked_at IS NOT NULL AND revoked_at < DATE_SUB(NOW(), INTERVAL ? DAY))
-                     OR (revoked_at IS NULL AND expires_at < DATE_SUB(NOW(), INTERVAL ? DAY))',
+                     OR (revoked_at IS NULL AND expires_at < DATE_SUB(NOW(), INTERVAL ? DAY))'
+                . $bound,
                 [Share::GRACE_DAYS, Share::GRACE_DAYS]
             );
         } catch (Throwable $e) {

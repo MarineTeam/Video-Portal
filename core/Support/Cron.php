@@ -36,6 +36,16 @@ final class Cron
     /** A lock older than this is assumed to belong to a dead process. */
     private const LOCK_TIMEOUT = 300;
 
+    /**
+     * Lapsed share links removed per run.
+     *
+     * Without real cron this runs inside somebody's page view, so the cost has
+     * to be bounded the way videos.sync is. The job runs daily, so a site that
+     * has never been cleaned drains its backlog over a few days rather than
+     * making one visitor wait for all of it.
+     */
+    private const SHARES_PER_RUN = 500;
+
     /** @var array<string, callable(App):string> */
     private array $handlers = [];
 
@@ -71,14 +81,24 @@ final class Cron
         };
 
         $this->handlers['shares.cleanup'] = static function (App $app): string {
-            // Expired-but-not-revoked links are kept for a grace period so
-            // Extend and Restore still work on them. Only rows past that
-            // window are removed.
-            $removed = Db::instance()->execute(
-                'DELETE FROM {shares}
-                  WHERE revoked_at IS NOT NULL
-                    AND revoked_at < DATE_SUB(NOW(), INTERVAL 60 DAY)'
-            );
+            /*
+             * Through the repository, which is the one place that knows what
+             * "past the grace period" means.
+             *
+             * This used to inline its own DELETE, and the two had drifted: the
+             * repository removes anything sixty days past expiry OR revocation,
+             * while the statement here only ever touched revoked rows. So a
+             * link that simply lapsed was never cleaned up by the scheduled
+             * job — and the comment sitting above that statement described the
+             * repository's rule rather than its own.
+             *
+             * An admin pressing "clean up" on the sharing screen calls the
+             * correct one, which is why this was survivable; but the entire
+             * point of a scheduled job is that nobody has to press anything.
+             */
+            $removed = $app->container()
+                ->get(\Portal\Sharing\ShareRepository::class)
+                ->purgeExpired(self::SHARES_PER_RUN);
 
             $gates = Db::instance()->execute(
                 'DELETE FROM {gate_grants} WHERE expires_at < DATE_SUB(NOW(), INTERVAL 7 DAY)'

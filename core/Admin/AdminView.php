@@ -380,6 +380,7 @@ final class AdminView
         $videos = $data['videos'] ?? [];
 
         $rows = '';
+        $rowForms = '';
         foreach ($videos as $video) {
             $status = match ($video->status) {
                 'ready'      => '<span class="pill ok">Ready</span>',
@@ -394,39 +395,73 @@ final class AdminView
             $toggle = $video->isPublished ? 'unpublish' : 'publish';
             $toggleLabel = $video->isPublished ? 'Unpublish' : 'Publish';
 
+            /*
+             * The checkbox belongs to the bulk form that wraps the table, and
+             * the per-row form is nested inside it — which HTML does not allow.
+             * So the row's own buttons carry `form="video-row-N"` and their
+             * form element sits outside the table. Ugly, and the alternative is
+             * losing either the bulk bar or the single-row buttons.
+             */
             $rows .= sprintf(
                 '<tr>
+                   <td><label class="checkbox"><input type="checkbox" name="selected[]" value="%d"></label></td>
                    <td><a href="/admin/videos/%d"><strong>%s</strong></a><br><span class="muted">%s</span></td>
                    <td>%s</td>
                    <td>%s</td>
                    <td class="right">
                      <a class="btn tiny secondary" href="/admin/videos/%d">Edit</a>
-                     <form method="post" class="inline">
-                       <input type="hidden" name="_token" value="%s">
-                       <input type="hidden" name="id" value="%d">
-                       <button name="action" value="%s" class="btn tiny">%s</button>
-                       <button name="action" value="delete" class="btn tiny danger"
-                               onclick="return confirm(\'Move this video to trash?\')">Delete</button>
-                     </form>
+                     <button form="video-row-%d" name="action" value="%s" class="btn tiny">%s</button>
+                     <button form="video-row-%d" name="action" value="delete" class="btn tiny danger"
+                             onclick="return confirm(\'Move this video to trash?\')">Delete</button>
                    </td>
                  </tr>',
+                $video->id,
                 $video->id,
                 e($video->title),
                 e(Str::duration($video->duration) ?: '—'),
                 $status,
                 $published,
                 $video->id,
-                $token,
                 $video->id,
                 $toggle,
-                $toggleLabel
+                $toggleLabel,
+                $video->id
+            );
+
+            $rowForms .= sprintf(
+                '<form method="post" id="video-row-%d">
+                   <input type="hidden" name="_token" value="%s">
+                   <input type="hidden" name="id" value="%d">
+                 </form>',
+                $video->id,
+                $token,
+                $video->id
             );
         }
 
         if ($rows === '') {
-            $rows = '<tr><td colspan="4" class="muted">No videos yet. Upload one at your video provider, '
+            $rows = '<tr><td colspan="5" class="muted">No videos yet. Upload one at your video provider, '
                 . 'or wait for the next sync to pick them up.</td></tr>';
         }
+
+        // Category objects, not rows — the same shape the edit screen's
+        // checkboxes iterate a few hundred lines below.
+        $bulkCategories = '';
+        foreach ((array) ($data['categories'] ?? []) as $category) {
+            $bulkCategories .= sprintf(
+                '<option value="%d">%s</option>',
+                $category->id,
+                e(str_repeat('— ', max(0, $category->depth)) . $category->name)
+            );
+        }
+
+        $categoryPicker = $bulkCategories === ''
+            ? ''
+            : sprintf(
+                '<select name="bulk_category"><option value="">Category…</option>%s</select>
+                 <button name="bulk" value="categorise" class="btn tiny secondary">Add to category</button>',
+                $bulkCategories
+            );
 
         $total = (int) ($data['total'] ?? 0);
         $upload = $this->uploader($data);
@@ -447,10 +482,29 @@ final class AdminView
           <input type="search" name="q" value="{$search}" placeholder="Search titles and descriptions…">
           <button class="btn secondary">Search</button>
         </form>
-        <table>
-          <thead><tr><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr></thead>
-          <tbody>{$rows}</tbody>
-        </table>
+
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+          <table>
+            <thead>
+              <tr><th></th><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr>
+            </thead>
+            <tbody>{$rows}</tbody>
+          </table>
+
+          <div class="toolbar">
+            <span class="muted small">With the ticked videos:</span>
+            <button name="bulk" value="publish" class="btn tiny secondary">Publish</button>
+            <button name="bulk" value="unpublish" class="btn tiny secondary">Unpublish</button>
+            {$categoryPicker}
+            <button name="bulk" value="trash" class="btn tiny danger"
+                    onclick="return confirm('Move the ticked videos to trash?')">Move to trash</button>
+          </div>
+          <p class="muted small">Adding a category adds it — nothing already on a video is removed.
+             At most 200 at a time, so a long selection cannot be cut in half by a timeout.</p>
+        </form>
+
+        {$rowForms}
         HTML;
     }
 
@@ -1290,6 +1344,10 @@ final class AdminView
                      <form method="post" class="inline">
                        <input type="hidden" name="_token" value="%s">
                        <input type="hidden" name="id" value="%d">
+                       <button name="action" value="up" class="btn tiny secondary"
+                               title="Move up among its siblings">&uarr;</button>
+                       <button name="action" value="down" class="btn tiny secondary"
+                               title="Move down among its siblings">&darr;</button>
                        <button name="action" value="delete" class="btn tiny danger"
                                onclick="return confirm(\'Delete this category? Videos in it are kept.\')">Delete</button>
                      </form>
@@ -1317,6 +1375,9 @@ final class AdminView
         <p class="muted">Categories you create here take precedence over collections at your video
            provider. Importing brings collections in as a starting point; renaming one afterwards
            will not be undone by a later import.</p>
+
+        <p class="muted small">The arrows move a category among its siblings, which is the order the
+           site lists them in. They do not move it to a different parent — use Edit for that.</p>
 
         <div class="cols">
           <div>

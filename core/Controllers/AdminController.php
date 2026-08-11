@@ -7,6 +7,7 @@ namespace Portal\Controllers;
 use Portal\Admin\AdminView;
 use Portal\Auth\Capability;
 use Portal\Auth\UserRepository;
+use Portal\Content\BulkAction;
 use Portal\Content\CategoryRepository;
 use Portal\Content\RevisionRepository;
 use Portal\Content\ThumbnailPolicy;
@@ -278,6 +279,15 @@ final class AdminController extends Controller
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
 
+        /*
+         * A bulk submission before the single-video path, because it carries no
+         * `id` at all — falling through would 404 on a missing video rather
+         * than doing what the button says.
+         */
+        if ($request->input('bulk') !== null) {
+            return $this->bulkVideos($request, $videos);
+        }
+
         $id = (int) ($request->input('id') ?? 0);
         $video = $videos->find($id);
 
@@ -310,6 +320,116 @@ final class AdminController extends Controller
 
             return $this->back($request, $e->getMessage(), 'error');
         }
+    }
+
+    /**
+     * The same actions as the single-row buttons, over a selection.
+     *
+     * The sharing screens have had bulk actions since Phase 2 and the video
+     * library never has, so a site with four hundred videos publishes them one
+     * at a time.
+     *
+     * Each item is done on its own and counted. A transaction around the whole
+     * selection would be tidier and wrong: on shared hosting the request can be
+     * cut off by the execution limit, and rolling back two hundred videos
+     * because the two hundred and first timed out throws away work that
+     * succeeded. Per-item, with a report, means a person can see where it got
+     * to and run it again.
+     */
+    private function bulkVideos(Request $request, VideoRepository $videos): Response
+    {
+        $action = (string) ($request->input('bulk') ?? '');
+
+        if (!BulkAction::isKnown($action)) {
+            return $this->back($request, 'That is not something this screen can do.', 'error');
+        }
+
+        /*
+         * The same capability the single-row button checks. A bulk endpoint is
+         * exactly where somebody eventually forgets, and the consequence of
+         * forgetting here is worse — it is the whole library rather than one
+         * row.
+         */
+        $this->require((string) BulkAction::capability($action));
+
+        $raw = $request->inputArray('selected');
+        $ids = BulkAction::ids($raw);
+
+        if ($ids === []) {
+            return $this->back($request, 'Nothing was selected.', 'error');
+        }
+
+        $categoryId = (int) ($request->input('bulk_category') ?? 0);
+        if ($action === 'categorise' && $categoryId <= 0) {
+            return $this->back($request, 'Choose a category to add them to.', 'error');
+        }
+
+        $changed = 0;
+        $failures = [];
+
+        foreach ($ids as $id) {
+            $video = $videos->find($id);
+
+            if ($video === null) {
+                // Deleted between the page rendering and the button being
+                // pressed. Not an error worth stopping for, but worth counting.
+                $failures[] = '#' . $id . ' no longer exists';
+                continue;
+            }
+
+            try {
+                switch ($action) {
+                    case 'publish':
+                        $videos->update($id, ['is_published' => true, 'published_at' => date('Y-m-d H:i:s')]);
+                        break;
+
+                    case 'unpublish':
+                        $videos->update($id, ['is_published' => false]);
+                        break;
+
+                    case 'categorise':
+                        // Added to what it already has, not replacing it. A
+                        // bulk button that silently cleared every other
+                        // category would be the partial-save defect again, in
+                        // a place where it destroys taxonomy rather than a flag.
+                        $existing = $videos->categoryIds($id);
+                        if (!in_array($categoryId, $existing, true)) {
+                            $existing[] = $categoryId;
+                            $videos->setCategories($id, $existing);
+                        }
+                        break;
+
+                    case 'trash':
+                        $videos->softDelete($id);
+                        do_action('video_deleted', $id, $video->title);
+                        break;
+                }
+
+                $changed++;
+            } catch (Throwable $e) {
+                $failures[] = $video->title . ': ' . $e->getMessage();
+            }
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'video.bulk.' . $action,
+            null,
+            null,
+            $changed . ' of ' . count($ids)
+        );
+
+        $message = BulkAction::report($action, $changed, $failures);
+
+        if (BulkAction::wasTruncated($raw)) {
+            $message .= sprintf(
+                ' Only the first %d were handled — select fewer and run it again.',
+                BulkAction::MAX_PER_REQUEST
+            );
+        }
+
+        return $this->back($request, $message, $failures === [] ? 'success' : 'error');
     }
 
     private function saveVideo(
@@ -2335,6 +2455,22 @@ final class AdminController extends Controller
 
                 case 'restore-revision':
                     return $this->restoreRevision($request, RevisionRepository::CATEGORY, $id);
+
+                case 'up':
+                case 'down':
+                    /*
+                     * Silent on success, like the other ordering buttons — the
+                     * list itself is the feedback, and a flash after every
+                     * nudge would bury the change under a message about it.
+                     * Only the no-op is worth a word, because a button that
+                     * appears to do nothing otherwise looks broken.
+                     */
+                    $moved = $categories->move($id, $action === 'up' ? -1 : 1);
+
+                    return $this->back(
+                        $request,
+                        $moved ? '' : 'That one is already at the end of its level.'
+                    );
 
                 case 'update':
                     $this->revisions()->record(RevisionRepository::CATEGORY, $id, $this->user()?->email ?? '');

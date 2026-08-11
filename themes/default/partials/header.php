@@ -135,5 +135,28 @@ $announcements ??= [];
   </div>
 <?php endif ?>
 
+<?php
+/*
+ * On air.
+ *
+ * Above the content on every page, not only the homepage: somebody who arrives
+ * at a sermon from a search engine while the service is going out should be
+ * told, and the moment it matters is the one hour a week when it is happening.
+ *
+ * A link, not an embed. Loading a player into every page would be a second
+ * stream starting on top of whatever the person came to watch.
+ */
+$liveNow ??= null;
+?>
+<?php if (is_array($liveNow)): ?>
+  <div class="wrap">
+    <a class="live-banner" href="<?= e((string) ($liveNow['url'] ?? '/live')) ?>">
+      <span class="live-dot" aria-hidden="true"></span>
+      <span><strong>Live now</strong> — <?= e((string) $liveNow['title']) ?></span>
+      <span class="live-go">Watch &rarr;</span>
+    </a>
+  </div>
+<?php endif ?>
+
 <main>
   <div class="wrap">

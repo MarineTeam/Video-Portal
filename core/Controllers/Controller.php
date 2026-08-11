@@ -28,6 +28,17 @@ abstract class Controller
 {
     protected Container $container;
 
+    /**
+     * Resolved once per request.
+     *
+     * Both the navigation and the banner want it, and asking twice would put
+     * two queries on every themed page for one answer that cannot change
+     * between them.
+     *
+     * @var array{live: array<string, mixed>|null, scheduled: int}|null
+     */
+    private ?array $liveState = null;
+
     public function __construct()
     {
         $this->container = Container::instance();
@@ -145,6 +156,15 @@ abstract class Controller
             'announcements' => $this->announcements(),
 
             /*
+             * The stream that is on right now, or null. Shared rather than
+             * fetched per template because it belongs above the content on
+             * every page — somebody who lands on a sermon from a search engine
+             * while the service is going out should be told, and that is not a
+             * homepage-only claim.
+             */
+            'liveNow' => $this->liveState()['live'],
+
+            /*
              * The subscribe form's defaults, shared rather than repeated in
              * four listing actions. Each one overrides the scope; nothing has
              * to remember to supply the token or check the switch.
@@ -185,6 +205,58 @@ abstract class Controller
      *
      * @return list<array{id: int, title: string, body: string, level: string, dismissible: bool}>
      */
+    /**
+     * What is on air, and whether anything is scheduled.
+     *
+     * `liveNow()` has existed since Phase 5 and had no caller, which means a
+     * stream could be going out while every page on the site looked exactly as
+     * it does on a Tuesday. For a library whose live moment is a service people
+     * are trying to join, that is the one thing worth interrupting a page for.
+     *
+     * One query, and the same shape as announcements() beside it — that already
+     * runs on every themed page, so the cost is a known and accepted one rather
+     * than a new precedent. `upcoming()` is asked once and both answers come
+     * out of it; calling liveNow() separately would ask the same question twice.
+     *
+     * Wrapped whole. A banner is the least important thing on any page it
+     * appears on, and on an install predating migration 0016 the table is not
+     * there at all.
+     *
+     * @return array{live: array<string, mixed>|null, scheduled: int}
+     */
+    protected function liveState(): array
+    {
+        if ($this->liveState !== null) {
+            return $this->liveState;
+        }
+
+        try {
+            /** @var \Portal\Content\LiveStreamRepository $repo */
+            $repo = $this->container->get(\Portal\Content\LiveStreamRepository::class);
+
+            $user = $this->user();
+            $canWatch = $user !== null && ($user->isAdmin() || $user->authorized);
+
+            $rows = $repo->upcoming($canWatch);
+
+            $live = null;
+            foreach ($rows as $row) {
+                if (($row['state'] ?? '') === \Portal\Content\LiveStreamPolicy::LIVE) {
+                    $live = $row;
+                    break;
+                }
+            }
+
+            return $this->liveState = ['live' => $live, 'scheduled' => count($rows)];
+        } catch (\Throwable $e) {
+            error_log('Could not read live streams: ' . $e->getMessage());
+
+            // Cached too, so a missing table costs one failed query per request
+            // rather than one per caller.
+            return $this->liveState = ['live' => null, 'scheduled' => 0];
+        }
+    }
+
     protected function announcements(): array
     {
         try {
@@ -259,6 +331,21 @@ abstract class Controller
             ['label' => 'Library', 'href' => '/'],
             ['label' => 'Search',  'href' => '/search'],
         ];
+
+        /*
+         * Live is offered only when there is something to see. /live has
+         * existed since Phase 5 and has never been linked from anywhere, so on
+         * every install it has been reachable only by typing the address —
+         * but a permanent link to a page reading "nothing scheduled" is the
+         * other failure, and it is the one people stop clicking.
+         */
+        $live = $this->liveState();
+        if ($live['scheduled'] > 0) {
+            $items[] = [
+                'label' => $live['live'] !== null ? 'Live now' : 'Live',
+                'href'  => '/live',
+            ];
+        }
 
         /*
          * Saved is offered only to somebody who could actually open it. The

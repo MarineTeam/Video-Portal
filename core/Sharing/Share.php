@@ -131,8 +131,19 @@ final class Share
     /**
      * Is the row old enough to delete?
      *
-     * Only consulted by the cleanup job. Nothing user-facing may use this:
-     * being past the grace period is a storage concern, not an access one.
+     * The rule as PHP. The rule that actually runs is the WHERE clause in
+     * ShareRepository::purgeExpired(), because deleting a year of rows one
+     * object at a time is not a thing to do on a shared host — so this exists
+     * to be the readable statement of it, and a test asserts the two agree.
+     *
+     * They did not always. The scheduled job used to carry a third version
+     * that only removed revoked rows, so a link that simply lapsed was never
+     * cleaned up unless somebody pressed the button on the sharing screen.
+     * Two encodings of one rule is a maintenance cost; three is a bug waiting
+     * for the least-used one to drift.
+     *
+     * Nothing user-facing may use this: being past the grace period is a
+     * storage concern, not an access one.
      */
     public function isPastGrace(?DateTimeImmutable $now = null): bool
     {

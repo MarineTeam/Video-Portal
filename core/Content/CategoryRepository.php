@@ -441,6 +441,61 @@ final class CategoryRepository
      *
      * @param list<int> $orderedIds
      */
+    /**
+     * Move one category up or down among its siblings.
+     *
+     * reorder() has existed since Phase 1 and had no caller, so the `position`
+     * column the schema describes as "for manual ordering" has never been
+     * orderable — every category tree on every install has sat in whatever
+     * order it happened to be created in. This is what calls it.
+     *
+     * Sibling-scoped on purpose. A category's order only means anything against
+     * the ones beside it: moving "Sermons" up past "Sermons / 2019" would be
+     * asking a tree to behave like a list, and the answer would be different
+     * depending on which rows happened to be expanded.
+     *
+     * @param int $direction -1 for earlier, 1 for later
+     * @return bool whether anything moved — false at either end, which the
+     *              screen reports rather than claiming a change that did not
+     *              happen
+     */
+    public function move(int $id, int $direction): bool
+    {
+        $category = $this->find($id);
+
+        if ($category === null || ($direction !== -1 && $direction !== 1)) {
+            return false;
+        }
+
+        $siblings = $this->db->column(
+            'SELECT id FROM {categories}
+              WHERE ' . ($category->parentId === null ? 'parent_id IS NULL' : 'parent_id = ?') . '
+              ORDER BY position ASC, name ASC',
+            $category->parentId === null ? [] : [$category->parentId]
+        );
+
+        $siblings = array_values(array_map('intval', $siblings));
+        $index = array_search($id, $siblings, true);
+
+        if ($index === false) {
+            return false;
+        }
+
+        $target = $index + $direction;
+
+        // Already first or last. Not an error — somebody pressed the button at
+        // the end of the list, which is a normal thing to do.
+        if ($target < 0 || $target >= count($siblings)) {
+            return false;
+        }
+
+        [$siblings[$index], $siblings[$target]] = [$siblings[$target], $siblings[$index]];
+
+        $this->reorder($category->parentId, $siblings);
+
+        return true;
+    }
+
     public function reorder(?int $parentId, array $orderedIds): void
     {
         $this->db->transaction(function () use ($parentId, $orderedIds): void {

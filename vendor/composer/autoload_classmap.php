@@ -47,6 +47,7 @@ return array(
     'Portal\\Content\\AnnouncementRepository' => $baseDir . '/core/Content/AnnouncementRepository.php',
     'Portal\\Content\\AssetPolicy' => $baseDir . '/core/Content/AssetPolicy.php',
     'Portal\\Content\\AssetRepository' => $baseDir . '/core/Content/AssetRepository.php',
+    'Portal\\Content\\BulkAction' => $baseDir . '/core/Content/BulkAction.php',
     'Portal\\Content\\CaptionFile' => $baseDir . '/core/Content/CaptionFile.php',
     'Portal\\Content\\Category' => $baseDir . '/core/Content/Category.php',
     'Portal\\Content\\CategoryRepository' => $baseDir . '/core/Content/CategoryRepository.php',
