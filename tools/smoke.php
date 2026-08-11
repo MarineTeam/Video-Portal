@@ -6314,6 +6314,164 @@ check(
 
 @unlink($exportJar);
 
+/* -------------------------------------------------------- bulk actions
+ *
+ * The sharing screens have had these since Phase 2 and the video library never
+ * has, so a site with four hundred videos publishes them one at a time.
+ *
+ * The checks that matter are the permission one — a bulk endpoint is where
+ * somebody eventually forgets — and the one about adding a category ADDING it,
+ * because a bulk button that silently replaced a video's taxonomy would be the
+ * partial-save defect again, somewhere it destroys more than a flag.
+ */
+echo "\nBulk actions\n";
+
+$bulkNow = date('Y-m-d H:i:s');
+$bulkIds = [];
+foreach (['one', 'two', 'three'] as $name) {
+    $bulkIds[] = $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'smoke-bulk-' . $name,
+        'slug' => 'bulk-' . $name, 'title' => 'Bulk ' . ucfirst($name),
+        'status' => 'ready', 'is_published' => 0, 'duration' => 30,
+        'created_at' => $bulkNow, 'updated_at' => $bulkNow,
+    ]);
+}
+
+$bulkCategory = (int) $db->value('SELECT id FROM {categories} ORDER BY id LIMIT 1');
+$db->execute(
+    'INSERT INTO {video_categories} (video_id, category_id, is_primary, position) VALUES (?, ?, 1, 0)',
+    [$bulkIds[0], $bulkCategory]
+);
+
+$bulkScreen = getWithJar($baseUrl . '/admin/videos', $jar);
+check(
+    'The video list offers a bulk bar',
+    str_contains($bulkScreen['body'], 'name="selected[]"')
+        && str_contains($bulkScreen['body'], 'name="bulk" value="publish"'),
+    'the library still has to be published one row at a time'
+);
+
+$bulkToken = csrfFrom($bulkScreen['body']);
+
+$published = postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => $bulkToken,
+    'bulk'     => 'publish',
+    'selected' => array_map('strval', $bulkIds),
+], $jar);
+
+check('Bulk publish is accepted', $published['status'] === 302, "got {$published['status']}");
+check(
+    'and every selected video is published',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {videos} WHERE id IN (' . implode(',', $bulkIds) . ') AND is_published = 1'
+    ) === count($bulkIds),
+    'the button reported success and changed nothing'
+);
+check(
+    'and nothing outside the selection moved',
+    (int) $db->value('SELECT is_published FROM {videos} WHERE id = ?', [$videoRow]) === 1,
+    'a bulk action reached a video nobody ticked'
+);
+
+/*
+ * Adding a category adds it. The first of these already sits in one, so if the
+ * bulk action replaced rather than appended, that row would lose it — and a
+ * taxonomy quietly deleted is not something anybody notices until much later.
+ */
+$second = (int) $db->value('SELECT id FROM {categories} ORDER BY id DESC LIMIT 1');
+
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'        => $bulkToken,
+    'bulk'          => 'categorise',
+    'bulk_category' => (string) $second,
+    'selected'      => [(string) $bulkIds[0]],
+], $jar);
+
+check(
+    'Adding a category keeps the ones already there',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {video_categories} WHERE video_id = ?',
+        [$bulkIds[0]]
+    ) >= ($bulkCategory === $second ? 1 : 2),
+    'the bulk button replaced the taxonomy instead of adding to it'
+);
+
+/* An empty selection is refused rather than treated as "all of them". */
+$noneSelected = postWithJar($baseUrl . '/admin/videos', [
+    '_token' => $bulkToken,
+    'bulk'   => 'unpublish',
+], $jar);
+
+check(
+    'An empty selection does nothing',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {videos} WHERE id IN (' . implode(',', $bulkIds) . ') AND is_published = 1'
+    ) === count($bulkIds),
+    'submitting with nothing ticked unpublished the library'
+);
+
+/* An unknown action must not fall through to something that acts. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => $bulkToken,
+    'bulk'     => 'obliterate',
+    'selected' => array_map('strval', $bulkIds),
+], $jar);
+
+check(
+    'An unrecognised bulk action does nothing',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {videos} WHERE id IN (' . implode(',', $bulkIds) . ') AND deleted_at IS NULL'
+    ) === count($bulkIds),
+    'an unknown action fell through to a default that acted'
+);
+
+/*
+ * The permission. Publishing is PUBLISH_CONTENT and not MANAGE_VIDEOS — the
+ * single-capability editor holds the latter, so they may reach this screen and
+ * must still be refused this button.
+ */
+clearLoginThrottle($db);
+$bulkJar = sys_get_temp_dir() . '/portal-smoke-bulk-' . getmypid() . '.txt';
+@unlink($bulkJar);
+
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $bulkJar)['body']),
+    'email'    => 'nav-editor@smoke.test',
+    'password' => 'nav-editor-password-1234',
+], $bulkJar);
+
+$editorBulk = postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/admin/videos', $bulkJar)['body']),
+    'bulk'     => 'publish',
+    'selected' => array_map('strval', $bulkIds),
+], $bulkJar);
+
+check(
+    'Somebody who may edit but not publish is refused the bulk button',
+    $editorBulk['status'] === 403,
+    "got {$editorBulk['status']} — bulk publishing granted a permission the single-row button withholds"
+);
+
+/* And bulk trash works, which is also how these get cleaned up. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => $bulkToken,
+    'bulk'     => 'trash',
+    'selected' => array_map('strval', $bulkIds),
+], $jar);
+
+check(
+    'Bulk trash moves them all',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {videos} WHERE id IN (' . implode(',', $bulkIds) . ') AND deleted_at IS NOT NULL'
+    ) === count($bulkIds),
+    'the selection was not trashed'
+);
+
+foreach ($bulkIds as $id) {
+    $db->execute('DELETE FROM {videos} WHERE id = ?', [$id]);
+}
+@unlink($bulkJar);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');
