@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Portal\Controllers;
 
 use Portal\App;
+use Portal\Auth\Capability;
 use Portal\Auth\Guard;
 use Portal\Auth\User;
 use Portal\Config;
@@ -299,57 +300,158 @@ abstract class Controller
     }
 
     /**
-     * The admin navigation, filtered by what this person can actually do.
+     * The admin navigation, grouped into sections and filtered by what this
+     * person can actually do.
      *
      * Lives here rather than on one controller because several render inside
      * the admin shell, and two copies would drift — showing a link that leads
      * to a 403 reads as a broken site rather than a permission boundary.
      *
-     * @return list<array{label: string, path: string, key: string}>
+     * It used to be twenty flat links across a top bar, growing by one with
+     * every feature that shipped: a list you scanned rather than a structure
+     * you learned, and by the end the trash was reachable only from a
+     * conditional line on the videos screen. Eight sections down the left is
+     * the arrangement anybody who has run a WordPress site already knows. The
+     * point is not imitation — it is that people arrive knowing how to read it.
+     *
+     * Each entry names the SCREENS it owns rather than relying on its own key,
+     * because the screen names are what the shell is handed. Matching on the
+     * key alone meant that editing a video, a category, a series or a playlist
+     * left the entire navigation unhighlighted — four of the most-used screens
+     * in the product, each one leaving you unable to tell where you were.
+     *
+     * @return list<array{
+     *     label: string, path: string, key: string, icon: string,
+     *     screens: list<string>,
+     *     children: list<array{label: string, path: string, key: string, screens: list<string>}>
+     * }>
      */
     protected function adminNav(): array
     {
-        $items = [
-            ['label' => 'Dashboard',  'path' => '/admin',               'key' => 'dashboard',     'cap' => null],
-            ['label' => 'Videos',     'path' => '/admin/videos',        'key' => 'videos',        'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
-            ['label' => 'Categories', 'path' => '/admin/categories',    'key' => 'categories',    'cap' => \Portal\Auth\Capability::MANAGE_CATEGORIES],
-            ['label' => 'Series',     'path' => '/admin/series',        'key' => 'series',        'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
-            ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => \Portal\Auth\Capability::MANAGE_SERIES],
-            ['label' => 'Homepage',   'path' => '/admin/homepage',      'key' => 'home-rows',     'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
-            ['label' => 'Analytics',  'path' => '/admin/analytics',     'key' => 'analytics',     'cap' => \Portal\Auth\Capability::VIEW_ANALYTICS],
-            ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
-            ['label' => 'Live',       'path' => '/admin/live', 'key' => 'live', 'cap' => \Portal\Auth\Capability::MANAGE_VIDEOS],
-            ['label' => 'Webhooks',   'path' => '/admin/webhooks', 'key' => 'webhooks', 'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
-            ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => \Portal\Auth\Capability::MANAGE_SPEAKERS],
-            ['label' => 'Sharing',    'path' => '/admin/shares',        'key' => 'shares',        'cap' => \Portal\Auth\Capability::MANAGE_SHARES],
-            ['label' => 'Groups',     'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => \Portal\Auth\Capability::MANAGE_VIEWERS],
-            ['label' => 'People',     'path' => '/admin/users',         'key' => 'users',         'cap' => \Portal\Auth\Capability::MANAGE_USERS],
-            ['label' => 'Permissions', 'path' => '/admin/permissions',  'key' => 'permissions',   'cap' => \Portal\Auth\Capability::MANAGE_PERMISSIONS],
-            ['label' => 'Plugins',    'path' => '/admin/plugins',       'key' => 'plugins',       'cap' => \Portal\Auth\Capability::MANAGE_PLUGINS],
-            ['label' => 'Appearance', 'path' => '/admin/themes',        'key' => 'themes',        'cap' => \Portal\Auth\Capability::MANAGE_THEMES],
-            ['label' => 'Services',   'path' => '/admin/providers',     'key' => 'providers',     'cap' => \Portal\Auth\Capability::MANAGE_PROVIDERS],
-            ['label' => 'Settings',   'path' => '/admin/settings',      'key' => 'settings',      'cap' => \Portal\Auth\Capability::MANAGE_SETTINGS],
+        $sections = [
+            [
+                'label' => 'Dashboard', 'path' => '/admin', 'key' => 'dashboard', 'icon' => 'home',
+                'cap' => null, 'screens' => ['dashboard'], 'children' => [],
+            ],
+            [
+                'label' => 'Content', 'path' => '/admin/videos', 'key' => 'content', 'icon' => 'film',
+                'cap' => Capability::MANAGE_VIDEOS, 'screens' => [],
+                'children' => [
+                    ['label' => 'Videos',     'path' => '/admin/videos',        'key' => 'videos',        'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['videos', 'video-edit']],
+                    ['label' => 'Trash',      'path' => '/admin/videos/trash',  'key' => 'trash',         'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['trash']],
+                    ['label' => 'Categories', 'path' => '/admin/categories',    'key' => 'categories',    'cap' => Capability::MANAGE_CATEGORIES, 'screens' => ['categories', 'category-edit']],
+                    ['label' => 'Series',     'path' => '/admin/series',        'key' => 'series',        'cap' => Capability::MANAGE_SERIES,     'screens' => ['series', 'series-edit']],
+                    ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => Capability::MANAGE_SERIES,     'screens' => ['playlists', 'playlist-edit']],
+                    ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => Capability::MANAGE_SPEAKERS,   'screens' => ['speakers']],
+                    ['label' => 'Live',       'path' => '/admin/live',          'key' => 'live',          'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['live']],
+                    ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => Capability::MANAGE_SETTINGS,   'screens' => ['announcements']],
+                ],
+            ],
+            [
+                'label' => 'Sharing', 'path' => '/admin/shares', 'key' => 'sharing', 'icon' => 'link',
+                'cap' => Capability::MANAGE_SHARES, 'screens' => [],
+                'children' => [
+                    ['label' => 'Share links', 'path' => '/admin/shares',        'key' => 'shares',        'cap' => Capability::MANAGE_SHARES,  'screens' => ['shares', 'private-list']],
+                    ['label' => 'Groups',      'path' => '/admin/shares/groups', 'key' => 'viewer-groups', 'cap' => Capability::MANAGE_VIEWERS, 'screens' => ['viewer-groups']],
+                ],
+            ],
+            [
+                'label' => 'Analytics', 'path' => '/admin/analytics', 'key' => 'analytics', 'icon' => 'chart',
+                'cap' => Capability::VIEW_ANALYTICS, 'screens' => ['analytics'], 'children' => [],
+            ],
+            [
+                'label' => 'People', 'path' => '/admin/users', 'key' => 'people', 'icon' => 'people',
+                'cap' => Capability::MANAGE_USERS, 'screens' => [],
+                'children' => [
+                    ['label' => 'Accounts',    'path' => '/admin/users',       'key' => 'users',       'cap' => Capability::MANAGE_USERS,       'screens' => ['users']],
+                    ['label' => 'Permissions', 'path' => '/admin/permissions', 'key' => 'permissions', 'cap' => Capability::MANAGE_PERMISSIONS, 'screens' => ['permissions']],
+                ],
+            ],
+            [
+                'label' => 'Appearance', 'path' => '/admin/themes', 'key' => 'appearance', 'icon' => 'brush',
+                'cap' => Capability::MANAGE_THEMES, 'screens' => [],
+                'children' => [
+                    ['label' => 'Themes',   'path' => '/admin/themes',   'key' => 'themes',    'cap' => Capability::MANAGE_THEMES,   'screens' => ['themes']],
+                    ['label' => 'Homepage', 'path' => '/admin/homepage', 'key' => 'home-rows', 'cap' => Capability::MANAGE_SETTINGS, 'screens' => ['home-rows']],
+                ],
+            ],
+            [
+                'label' => 'Plugins', 'path' => '/admin/plugins', 'key' => 'plugins-group', 'icon' => 'plug',
+                'cap' => Capability::MANAGE_PLUGINS, 'screens' => [],
+                'children' => [
+                    ['label' => 'Installed', 'path' => '/admin/plugins', 'key' => 'plugins', 'cap' => Capability::MANAGE_PLUGINS, 'screens' => ['plugins']],
+                ],
+            ],
+            [
+                'label' => 'Settings', 'path' => '/admin/settings', 'key' => 'settings-group', 'icon' => 'cog',
+                'cap' => Capability::MANAGE_SETTINGS, 'screens' => [],
+                'children' => [
+                    ['label' => 'General',  'path' => '/admin/settings',  'key' => 'settings',  'cap' => Capability::MANAGE_SETTINGS,  'screens' => ['settings']],
+                    ['label' => 'Services', 'path' => '/admin/providers', 'key' => 'providers', 'cap' => Capability::MANAGE_PROVIDERS, 'screens' => ['providers']],
+                    ['label' => 'Webhooks', 'path' => '/admin/webhooks',  'key' => 'webhooks',  'cap' => Capability::MANAGE_SETTINGS,  'screens' => ['webhooks']],
+                ],
+            ],
         ];
 
-        $visible = [];
-        foreach ($items as $item) {
-            if ($item['cap'] === null || $this->guard()->can($item['cap'])) {
-                $visible[] = ['label' => $item['label'], 'path' => $item['path'], 'key' => $item['key']];
+        // Pages registered by plugins, filtered by the same capability rule, and
+        // filed under Plugins rather than dropped at the end. Without this a
+        // plugin could call addAdminPage() and get a working route that nothing
+        // on the site ever links to — a page reachable only by someone who read
+        // the source.
+        foreach ($this->pluginPages() as $page) {
+            foreach ($sections as $index => $section) {
+                if ($section['key'] === 'plugins-group') {
+                    $sections[$index]['children'][] = [
+                        'label'   => $page['title'],
+                        'path'    => $page['path'],
+                        'key'     => 'plugin:' . $page['plugin'],
+                        'cap'     => $page['capability'],
+                        'screens' => ['plugin:' . $page['plugin']],
+                    ];
+                }
             }
         }
 
-        // Pages registered by plugins, filtered by the same capability rule.
-        // Without this a plugin could call addAdminPage() and get a working
-        // route that nothing on the site ever links to — a page reachable only
-        // by someone who read the source.
-        foreach ($this->pluginPages() as $page) {
-            if ($this->guard()->can($page['capability'])) {
-                $visible[] = [
-                    'label' => $page['title'],
-                    'path'  => $page['path'],
-                    'key'   => 'plugin:' . $page['plugin'],
+        $visible = [];
+
+        foreach ($sections as $section) {
+            $children = [];
+            $screens = $section['screens'];
+
+            foreach ($section['children'] as $child) {
+                if ($child['cap'] !== null && !$this->guard()->can($child['cap'])) {
+                    continue;
+                }
+
+                $children[] = [
+                    'label'   => $child['label'],
+                    'path'    => $child['path'],
+                    'key'     => $child['key'],
+                    'screens' => $child['screens'],
                 ];
+                $screens = array_merge($screens, $child['screens']);
             }
+
+            /*
+             * A section survives if this person may see the section itself OR
+             * any one of its children. Requiring the section capability would
+             * hide Permissions from somebody who can assign permissions but
+             * cannot edit accounts — a split these roles genuinely allow.
+             */
+            if (($section['cap'] !== null && !$this->guard()->can($section['cap'])) && $children === []) {
+                continue;
+            }
+
+            $visible[] = [
+                'label' => $section['label'],
+                // A section with children opens at its first VISIBLE child, so
+                // clicking the heading can never land on a 403.
+                'path'     => $children === [] ? $section['path'] : $children[0]['path'],
+                'key'      => $section['key'],
+                'icon'     => $section['icon'],
+                'screens'  => $screens,
+                'children' => $children,
+            ];
         }
 
         return $visible;

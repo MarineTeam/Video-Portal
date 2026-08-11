@@ -74,15 +74,7 @@ final class AdminView
         $siteName = e((string) ($data['siteName'] ?? 'Video Portal'));
         $screen = (string) ($data['screen'] ?? '');
 
-        $nav = '';
-        foreach ((array) ($data['nav'] ?? []) as $item) {
-            $nav .= sprintf(
-                '<a href="%s"%s>%s</a>',
-                e((string) $item['path']),
-                $item['key'] === $screen ? ' class="active"' : '',
-                e((string) $item['label'])
-            );
-        }
+        $nav = $this->navigation((array) ($data['nav'] ?? []), $screen);
 
         $flash = '';
         if (is_array($data['flash'] ?? null)) {
@@ -115,6 +107,20 @@ final class AdminView
         do_action('admin_footer', $screen);
         $pluginFooter = (string) ob_get_clean();
 
+        $viewIcon = $this->navIcon('eye');
+        $outIcon = $this->navIcon('exit');
+        $menuIcon = $this->navIcon('menu');
+
+        /*
+         * The menu opens and closes with a checkbox rather than a script.
+         *
+         * Nothing else in this product makes navigation depend on JavaScript,
+         * and the admin area is the worst possible place to start: the screen
+         * that switches a broken theme back has to render when everything else
+         * is broken. The input stays focusable — visually hidden, not
+         * display:none — so it can still be reached by keyboard, with the focus
+         * ring drawn on the button beside it.
+         */
         return <<<HTML
         <!doctype html>
         <html lang="en">
@@ -126,21 +132,113 @@ final class AdminView
         <style>{$css}</style>
         </head>
         <body>
-        <header class="bar">
+        <input type="checkbox" id="menu-state" class="menu-state">
+        <header class="topbar">
+          <label for="menu-state" class="menu-button">{$menuIcon}<span>Menu</span></label>
           <a class="brand" href="/admin">{$siteName}</a>
-          <nav>{$nav}</nav>
-          <div class="spacer"></div>
-          <a href="/" class="muted">View site</a>
-          <a href="/auth/logout" class="muted">Sign out</a>
         </header>
-        <main>
-          {$flash}
-          {$body}
-        </main>
+        <div class="admin">
+          <nav id="adminmenu" aria-label="Admin">
+            <a class="brand sidebar-brand" href="/admin">{$siteName}</a>
+            <ul class="menu">{$nav}</ul>
+            <ul class="menu meta">
+              <li class="section"><a class="top" href="/">{$viewIcon}<span>View site</span></a></li>
+              <li class="section"><a class="top" href="/auth/logout">{$outIcon}<span>Sign out</span></a></li>
+            </ul>
+          </nav>
+          <main>
+            {$flash}
+            {$body}
+          </main>
+        </div>
         {$pluginFooter}
         </body>
         </html>
         HTML;
+    }
+
+    /**
+     * The sidebar.
+     *
+     * A section is current when the screen being rendered is one it or any of
+     * its children owns, and only a current section shows its children inline.
+     * The rest are one hover — or one Tab — away, which is what keeps eight
+     * headings from being twenty-six links again.
+     *
+     * @param list<array<string, mixed>> $items
+     */
+    private function navigation(array $items, string $screen): string
+    {
+        $html = '';
+
+        foreach ($items as $item) {
+            $current = in_array($screen, (array) ($item['screens'] ?? []), true);
+
+            $submenu = '';
+            foreach ((array) ($item['children'] ?? []) as $child) {
+                $childCurrent = in_array($screen, (array) ($child['screens'] ?? []), true);
+
+                $submenu .= sprintf(
+                    '<li%s><a href="%s"%s>%s</a></li>',
+                    $childCurrent ? ' class="current"' : '',
+                    e((string) $child['path']),
+                    $childCurrent ? ' aria-current="page"' : '',
+                    e((string) $child['label'])
+                );
+            }
+
+            $html .= sprintf(
+                '<li class="section%s"><a class="top" href="%s"%s>%s<span>%s</span></a>%s</li>',
+                $current ? ' current' : '',
+                e((string) $item['path']),
+                // Only a section with no children of its own is a page, so only
+                // that one can be the current page. On a section heading it
+                // would claim the child's link is where you are.
+                ($current && $submenu === '') ? ' aria-current="page"' : '',
+                $this->navIcon((string) ($item['icon'] ?? '')),
+                e((string) $item['label']),
+                $submenu === '' ? '' : '<ul class="submenu">' . $submenu . '</ul>'
+            );
+        }
+
+        return $html;
+    }
+
+    /**
+     * A navigation icon, inline.
+     *
+     * Inline because the alternative is either an icon font or a sprite file,
+     * and both are one more request that has to succeed before the admin area
+     * is legible — on a host where a mis-set MIME type or a stray .htaccess is
+     * the normal kind of failure. Marked aria-hidden: every icon sits beside
+     * its own label, so a screen reader announcing it twice is pure noise.
+     */
+    private function navIcon(string $name): string
+    {
+        $paths = match ($name) {
+            'home'   => '<path d="M3 9.4 10 3.2l7 6.2V17a1 1 0 0 1-1 1h-3.5v-5h-5v5H4a1 1 0 0 1-1-1z"/>',
+            'film'   => '<rect x="2.5" y="4.5" width="15" height="11" rx="1.5"/><path d="M8.2 8.2 12.8 10l-4.6 1.8z"/>',
+            'link'   => '<path d="M8.6 11.4a3 3 0 0 0 4.3 0l2.3-2.3a3 3 0 0 0-4.3-4.3l-1 1"/>'
+                      . '<path d="M11.4 8.6a3 3 0 0 0-4.3 0l-2.3 2.3a3 3 0 0 0 4.3 4.3l1-1"/>',
+            'chart'  => '<path d="M3 17h14"/><path d="M6 17V9.5"/><path d="M10 17V4.5"/><path d="M14 17v-5"/>',
+            'people' => '<circle cx="7.4" cy="7" r="2.6"/><path d="M2.6 16.5c0-2.7 2.1-4.4 4.8-4.4s4.8 1.7 4.8 4.4"/>'
+                      . '<path d="M13.2 4.8a2.6 2.6 0 0 1 0 4.4"/><path d="M14.4 12.4c1.8.5 3 2 3 4.1"/>',
+            'brush'  => '<path d="M13.9 3.6a2.1 2.1 0 0 1 3 3L9.4 14 5.6 15.4 7 11.6z"/><path d="M11.8 5.7l2.5 2.5"/>',
+            'plug'   => '<path d="M7.2 3v3.5"/><path d="M12.8 3v3.5"/>'
+                      . '<path d="M4.8 6.5h10.4v3.2a5.2 5.2 0 0 1-10.4 0z"/><path d="M10 14.9V18"/>',
+            'cog'    => '<circle cx="10" cy="10" r="2.6"/><path d="M10 2.4v2.2"/><path d="M10 15.4v2.2"/>'
+                      . '<path d="M2.4 10h2.2"/><path d="M15.4 10h2.2"/><path d="M4.6 4.6 6.2 6.2"/>'
+                      . '<path d="M13.8 13.8l1.6 1.6"/><path d="M15.4 4.6 13.8 6.2"/><path d="M6.2 13.8 4.6 15.4"/>',
+            'eye'    => '<path d="M1.8 10S4.8 4.8 10 4.8 18.2 10 18.2 10 15.2 15.2 10 15.2 1.8 10 1.8 10z"/>'
+                      . '<circle cx="10" cy="10" r="2.3"/>',
+            'exit'   => '<path d="M12 3.5H5.2a1.2 1.2 0 0 0-1.2 1.2v10.6a1.2 1.2 0 0 0 1.2 1.2H12"/>'
+                      . '<path d="M13.5 6.8 16.7 10l-3.2 3.2"/><path d="M16.4 10H8.2"/>',
+            'menu'   => '<path d="M3 5.5h14"/><path d="M3 10h14"/><path d="M3 14.5h14"/>',
+            default  => '<circle cx="10" cy="10" r="6.5"/>',
+        };
+
+        return '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"'
+             . ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $paths . '</svg>';
     }
 
     // ------------------------------------------------------------ dashboard
@@ -3531,16 +3629,60 @@ final class AdminView
                font:15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif; }
         a { color:#38bdf8; text-decoration:none; }
         a:hover { text-decoration:underline; }
-        .bar { display:flex; align-items:center; gap:1.25rem; padding:0 1.5rem; min-height:3.5rem;
-               background:#0f172a; border-bottom:1px solid rgba(148,163,184,.16); flex-wrap:wrap; }
-        .brand { font-weight:650; color:#e2e8f0; }
-        .bar nav { display:flex; gap:1rem; flex-wrap:wrap; }
-        .bar nav a { color:#94a3b8; font-size:.9375rem; }
-        .bar nav a.active, .bar nav a:hover { color:#e2e8f0; text-decoration:none; }
-        .spacer { flex:1; }
         .muted { color:#94a3b8; }
         .small { font-size:.8125rem; }
-        main { max-width:64rem; margin:0 auto; padding:2rem 1.5rem 4rem; }
+
+        /* ------------------------------------------------------- navigation */
+        /* Desktop first, with the phone layout in the media query at the end.
+           The sidebar is the wider case and reads better written out straight. */
+        .brand { font-weight:650; color:#e2e8f0; }
+        .admin { display:flex; align-items:flex-start; min-height:100vh; }
+        .topbar { display:none; }
+        /* Visually hidden but still focusable — see the comment at the markup. */
+        .menu-state { position:absolute; width:1px; height:1px; margin:-1px;
+                      padding:0; border:0; overflow:hidden; clip:rect(0 0 0 0); }
+        /* The bottom padding clears the query monitor's fixed bar. With eight
+           sections and one of them open the menu reaches the bottom of a laptop
+           viewport, and the bar would sit on top of Sign out. */
+        #adminmenu { flex:0 0 15rem; width:15rem; position:sticky; top:0; height:100vh;
+                     overflow-y:auto; background:#0f172a;
+                     border-right:1px solid rgba(148,163,184,.16); padding-bottom:3.5rem; }
+        #adminmenu .sidebar-brand { display:block; padding:1.125rem 1rem 1.25rem; font-size:1rem; }
+        #adminmenu .menu { list-style:none; margin:0; padding:0; }
+        #adminmenu .section { position:relative; }
+        #adminmenu .top { display:flex; align-items:center; gap:.625rem; padding:.5rem 1rem;
+                          color:#cbd5e1; font-size:.9375rem; border-left:3px solid transparent; }
+        #adminmenu .top svg { width:1.125rem; height:1.125rem; flex:0 0 auto; opacity:.75; }
+        #adminmenu .top:hover { color:#f8fafc; background:rgba(148,163,184,.1); text-decoration:none; }
+        #adminmenu .section.current > .top { color:#f8fafc; background:rgba(56,189,248,.1);
+                                            border-left-color:#38bdf8; font-weight:600; }
+        #adminmenu .section.current > .top svg { opacity:1; color:#38bdf8; }
+        #adminmenu .meta { margin-top:1rem; padding-top:.75rem;
+                           border-top:1px solid rgba(148,163,184,.14); }
+        #adminmenu .meta .top { color:#94a3b8; font-size:.875rem; }
+
+        /* A section's children show inline while you are inside it, and as a
+           flyout while you are not. :focus-within matters as much as :hover —
+           a menu that only opens under a mouse is one a keyboard cannot use. */
+        #adminmenu .submenu { list-style:none; margin:0; padding:.125rem 0 .5rem; display:none; }
+        #adminmenu .submenu a { display:block; padding:.3125rem 1rem; color:#94a3b8; font-size:.875rem; }
+        #adminmenu .submenu a:hover { color:#f8fafc; text-decoration:none; }
+        #adminmenu .submenu li.current > a { color:#38bdf8; font-weight:600; }
+        #adminmenu .section.current > .submenu { display:block; }
+        #adminmenu .section.current > .submenu a { padding-left:2.875rem; }
+        #adminmenu .section:hover > .submenu,
+        #adminmenu .section:focus-within > .submenu {
+              display:block; position:absolute; left:100%; top:0; min-width:11.5rem; z-index:30;
+              background:#152238; border:1px solid rgba(148,163,184,.2); border-radius:0 10px 10px 0;
+              padding:.375rem 0; box-shadow:0 14px 32px rgba(2,6,23,.55); }
+        /* The section you are already in keeps its inline list; turning it into
+           a flyout the moment the pointer crossed it would make the page jump. */
+        #adminmenu .section.current:hover > .submenu,
+        #adminmenu .section.current:focus-within > .submenu {
+              position:static; background:none; border:0; box-shadow:none;
+              padding:.125rem 0 .5rem; }
+
+        main { flex:1; min-width:0; max-width:76rem; padding:2rem 2rem 4rem; }
         h1 { font-size:1.5rem; margin:0 0 1.5rem; font-weight:650; letter-spacing:-.01em; }
         h2 { font-size:1.125rem; margin:2.5rem 0 1rem; font-weight:600; }
         h3 { font-size:1rem; margin:0 0 .375rem; font-weight:600; }
@@ -3622,6 +3764,35 @@ final class AdminView
                       transition:width .2s ease-out; }
         .upload-row.is-done .upload-bar { background:#22c55e; }
         .upload-row.is-error .upload-bar { background:#ef4444; }
+
+        /* ------------------------------------------------------- small screens */
+        @media (max-width:60rem) {
+          .admin { display:block; min-height:0; }
+          .topbar { display:flex; align-items:center; gap:1rem; padding:.625rem 1rem;
+                    background:#0f172a; border-bottom:1px solid rgba(148,163,184,.16);
+                    position:sticky; top:0; z-index:40; }
+          .menu-button { display:inline-flex; align-items:center; gap:.5rem; cursor:pointer;
+                         padding:.375rem .75rem; border-radius:8px; font-size:.875rem;
+                         font-weight:550; color:#e2e8f0;
+                         border:1px solid rgba(148,163,184,.3); }
+          .menu-button svg { width:1.125rem; height:1.125rem; }
+          .menu-state:focus-visible ~ .topbar .menu-button { outline:2px solid #38bdf8;
+                                                             outline-offset:2px; }
+          #adminmenu { display:none; position:static; width:auto; height:auto; overflow:visible;
+                       border-right:0; border-bottom:1px solid rgba(148,163,184,.16); }
+          .menu-state:checked ~ .admin #adminmenu { display:block; }
+          #adminmenu .sidebar-brand { display:none; }
+          /* Every submenu open, always. There is no hover on a touch screen, so
+             a flyout here would be a link a phone could not reach at all. */
+          #adminmenu .submenu,
+          #adminmenu .section:hover > .submenu,
+          #adminmenu .section:focus-within > .submenu {
+                display:block; position:static; background:none; border:0; box-shadow:none;
+                padding:.125rem 0 .5rem; }
+          #adminmenu .submenu a,
+          #adminmenu .section.current > .submenu a { padding-left:2.875rem; }
+          main { max-width:none; padding:1.5rem 1rem 3rem; }
+        }
         CSS;
     }
 }

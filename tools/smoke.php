@@ -5169,6 +5169,152 @@ check(
 
 $db->execute('DELETE FROM {settings} WHERE `key` = ?', ['last_migration_error']);
 
+/* ------------------------------------------------------------- navigation
+ *
+ * The sidebar is the only thing in the admin area that every screen renders,
+ * so a mistake in it is a mistake on every page at once.
+ *
+ * Three claims, and the first two could not be made about the flat bar it
+ * replaced. "Where am I" was answered by comparing the navigation key to the
+ * screen name, which meant that on the four edit screens — the ones you spend
+ * the most time on — the comparison matched nothing and the whole navigation
+ * went dark. "How do I get to the trash" was answered by a line on the videos
+ * screen that only appeared once something was already in it.
+ *
+ * The highlight is read out of the markup rather than looked for at a fixed
+ * offset, because the assertion worth making is "exactly one link says it is
+ * the current page, and it is the right one" — a check for a substring would
+ * pass just as happily with six of them.
+ */
+echo "\nNavigation\n";
+
+/** @return list<string> every href carrying aria-current, in document order */
+$currentLinks = static function (string $html): array {
+    // Deliberately tolerant about attribute order: a section heading carries a
+    // class before its href and a child does not, and a pattern that only
+    // matched one of those would silently stop seeing half the navigation.
+    preg_match_all('~<a [^>]*href="([^"]*)"[^>]*aria-current="page"~', $html, $matches);
+    return $matches[1];
+};
+
+$navDash = getWithJar($baseUrl . '/admin', $jar);
+
+check(
+    'The admin area renders a grouped sidebar',
+    str_contains($navDash['body'], 'id="adminmenu"')
+        && str_contains($navDash['body'], 'class="submenu"'),
+    'the sections are what keep twenty-six links readable'
+);
+check(
+    'The dashboard knows it is the dashboard',
+    $currentLinks($navDash['body']) === ['/admin'],
+    'nothing on the page says where you are'
+);
+
+$navVideos = getWithJar($baseUrl . '/admin/videos', $jar);
+check(
+    'The video library highlights Videos',
+    $currentLinks($navVideos['body']) === ['/admin/videos'],
+    'got: ' . implode(', ', $currentLinks($navVideos['body']))
+);
+
+$navEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check(
+    'The edit screen still opens',
+    $navEdit['status'] === 200,
+    "got {$navEdit['status']} — the check below would prove nothing"
+);
+check(
+    'Editing a video still highlights Videos',
+    $currentLinks($navEdit['body']) === ['/admin/videos'],
+    'this is the regression the grouping was built to fix — got: '
+        . implode(', ', $currentLinks($navEdit['body']))
+);
+check(
+    'and the section it lives in is open',
+    str_contains($navEdit['body'], 'class="section current"'),
+    'the children are hidden until their section is current, so this is what makes them visible'
+);
+
+/*
+ * The trash used to be reachable only from a conditional line on the videos
+ * screen, so somebody who had just deleted something and navigated away had no
+ * way back to it. Checked from a screen in a different section entirely.
+ */
+check(
+    'The trash is in the navigation from anywhere',
+    str_contains(getWithJar($baseUrl . '/admin/settings', $jar)['body'], '/admin/videos/trash'),
+    'it was findable only by someone who already knew where to look'
+);
+
+/*
+ * A section nobody in this seat can use is absent, not disabled. Driven as a
+ * person holding exactly one capability, because the administrator this script
+ * signs in as can see everything and would prove nothing.
+ */
+$navRoleAt = date('Y-m-d H:i:s');
+$navRoleId = (int) $db->insert('roles', [
+    'slug' => 'nav-editor', 'name' => 'Nav Editor', 'is_system' => 0,
+    'created_at' => $navRoleAt,
+]);
+$db->execute(
+    'INSERT INTO {role_capabilities} (role_id, capability_id)
+     SELECT ?, id FROM {capabilities} WHERE slug = ?',
+    [$navRoleId, 'manage_videos']
+);
+
+$db->insert('users', [
+    'email' => 'nav-editor@smoke.test', 'name' => 'Nav Editor',
+    'authorized' => 1, 'role_id' => $navRoleId,
+    'password_hash' => password_hash('nav-editor-password-1234', PASSWORD_DEFAULT),
+    'created_at' => $navRoleAt, 'updated_at' => $navRoleAt,
+]);
+
+$navJar = sys_get_temp_dir() . '/portal-smoke-nav-' . getmypid() . '.txt';
+@unlink($navJar);
+
+$navLogin = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'nav-editor@smoke.test',
+    'password' => 'nav-editor-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $navJar)['body']),
+], $navJar);
+
+check('A single-capability editor can sign in', $navLogin['status'] === 302, "got {$navLogin['status']}");
+
+$navLimited = getWithJar($baseUrl . '/admin/videos', $navJar);
+
+check(
+    'and reaches the admin area on one capability',
+    $navLimited['status'] === 200,
+    "got {$navLimited['status']} — the checks below would prove nothing"
+);
+check(
+    'Their sidebar carries the section they can use',
+    str_contains($navLimited['body'], '/admin/videos'),
+    'a person with manage_videos cannot find the videos'
+);
+check(
+    'and drops the sections they cannot',
+    !str_contains($navLimited['body'], '/admin/settings')
+        && !str_contains($navLimited['body'], '/admin/users')
+        && !str_contains($navLimited['body'], '/admin/permissions'),
+    'a link that leads to a 403 reads as a broken site rather than a boundary'
+);
+/*
+ * Content survives on manage_videos alone, but only the children that
+ * capability covers. Notices needs manage_settings and Categories needs
+ * manage_categories, so both have to be gone from a section that is otherwise
+ * present — which is the case a section-level check alone would miss.
+ */
+check(
+    'Filtering reaches inside a section, not just around it',
+    !str_contains($navLimited['body'], '/admin/announcements')
+        && !str_contains($navLimited['body'], '/admin/categories'),
+    'the section was filtered but its children were not'
+);
+
+@unlink($navJar);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');
