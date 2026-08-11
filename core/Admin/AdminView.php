@@ -110,6 +110,7 @@ final class AdminView
         $viewIcon = $this->navIcon('eye');
         $outIcon = $this->navIcon('exit');
         $menuIcon = $this->navIcon('menu');
+        $keyIcon = $this->navIcon('key');
 
         /*
          * The menu opens and closes with a checkbox rather than a script.
@@ -146,6 +147,7 @@ final class AdminView
             <a class="brand sidebar-brand" href="/admin">{$siteName}</a>
             <ul class="menu">{$nav}</ul>
             <ul class="menu meta">
+              <li class="section"><a class="top" href="/account/password">{$keyIcon}<span>Password</span></a></li>
               <li class="section"><a class="top" href="/">{$viewIcon}<span>View site</span></a></li>
               <li class="section"><a class="top" href="/auth/logout">{$outIcon}<span>Sign out</span></a></li>
             </ul>
@@ -243,6 +245,8 @@ final class AdminView
             'exit'   => '<path d="M12 3.5H5.2a1.2 1.2 0 0 0-1.2 1.2v10.6a1.2 1.2 0 0 0 1.2 1.2H12"/>'
                       . '<path d="M13.5 6.8 16.7 10l-3.2 3.2"/><path d="M16.4 10H8.2"/>',
             'menu'   => '<path d="M3 5.5h14"/><path d="M3 10h14"/><path d="M3 14.5h14"/>',
+            'key'    => '<circle cx="7" cy="13" r="3.2"/><path d="M9.3 10.7 16.5 3.5"/>'
+                      . '<path d="M14.2 5.8l1.8 1.8"/><path d="M12.6 7.4l1.8 1.8"/>',
             default  => '<circle cx="10" cy="10" r="6.5"/>',
         };
 

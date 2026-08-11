@@ -84,8 +84,7 @@ final class LocalProvider implements AuthProvider
 
     public function minPasswordLength(): int
     {
-        $length = (int) ($this->credentials['min_password_length'] ?? 12);
-        return max(8, $length);
+        return PasswordPolicy::minimum($this->credentials['min_password_length'] ?? null);
     }
 
     public function loginUrl(string $returnTo = '/'): string
@@ -178,20 +177,11 @@ final class LocalProvider implements AuthProvider
      */
     public function validatePassword(string $password): array
     {
-        $problems = [];
-
-        if (strlen($password) < $this->minPasswordLength()) {
-            $problems[] = sprintf('Use at least %d characters.', $this->minPasswordLength());
-        }
-
-        // A length floor plus a blocklist of the obvious catches far more real
-        // weak passwords than composition rules do, and annoys people less.
-        $common = ['password', 'password123', '123456789', 'qwertyuiop', 'letmein', 'welcome123', 'administrator'];
-        if (in_array(strtolower($password), $common, true)) {
-            $problems[] = 'That password is too common — pick something else.';
-        }
-
-        return $problems;
+        // The rule itself moved to PasswordPolicy so that UserRepository could
+        // enforce it on every write without needing a provider instance. Two
+        // copies of "what counts as a good password" is one copy that stops
+        // being true.
+        return PasswordPolicy::problems($password, $this->minPasswordLength());
     }
 
     public function test(): TestResult

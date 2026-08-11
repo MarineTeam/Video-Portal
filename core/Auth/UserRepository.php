@@ -135,6 +135,13 @@ final class UserRepository
             throw new RuntimeException("An account already exists for {$email}.");
         }
 
+        // An account with no password is normal — that is every account that
+        // signs in through a provider. An account WITH one has to have chosen
+        // an acceptable one, and this is the only path that creates them.
+        if ($password !== null) {
+            self::assertAcceptable($password, null);
+        }
+
         $now = date('Y-m-d H:i:s');
 
         $id = $this->db->insert('users', [
@@ -157,12 +164,45 @@ final class UserRepository
         return $user;
     }
 
-    public function setPassword(int $userId, string $password): void
+    /**
+     * Set or replace an account's password.
+     *
+     * Validated here rather than only at the form, because "the form checks it"
+     * is true right up until the second caller. This method had no callers at
+     * all until a change-password page existed, and the rule it enforces had
+     * none either — so the one password this product ever asked a human to
+     * choose went in unexamined.
+     *
+     * @throws RuntimeException when the password is not acceptable
+     */
+    public function setPassword(int $userId, string $password, ?int $minimum = null): void
     {
+        self::assertAcceptable($password, $minimum);
+
         $this->db->execute(
             'UPDATE {users} SET password_hash = ?, updated_at = NOW() WHERE id = ?',
             [LocalProvider::hashPassword($password), $userId]
         );
+    }
+
+    /**
+     * The one place that decides whether a password may be stored.
+     *
+     * Throwing rather than returning a list: every caller here is about to
+     * write, and a caller that wants to SHOW the reasons calls
+     * PasswordPolicy::problems() first and never reaches this. That keeps the
+     * helpful path and the safe path from being the same code, which is what
+     * lets the safe one be unconditional.
+     *
+     * @throws RuntimeException
+     */
+    private static function assertAcceptable(string $password, ?int $minimum): void
+    {
+        $problems = PasswordPolicy::problems($password, $minimum);
+
+        if ($problems !== []) {
+            throw new RuntimeException(implode(' ', $problems));
+        }
     }
 
     public function setAuthorized(int $userId, bool $authorized, ?string $by = null): void

@@ -5894,6 +5894,156 @@ check(
     'one deploy would keep clearing the cache on every request that followed'
 );
 
+/* ----------------------------------------------------------- passwords
+ *
+ * Two things that were built and unreachable. LocalProvider::validatePassword()
+ * had no callers, so the only password this product asks a person to choose —
+ * the administrator's, at install — was accepted whatever it was. And
+ * UserRepository::setPassword() had no callers either, which means there was no
+ * way to change a password at all: on a host with no shell, the break-glass
+ * credential could never be rotated.
+ *
+ * Driven through the real page, because a rule with a test and no caller is
+ * exactly the state this is fixing.
+ */
+echo "\nPasswords\n";
+
+$pwPage = getWithJar($baseUrl . '/account/password', $jar);
+check('The change-password page renders', $pwPage['status'] === 200, "got {$pwPage['status']}");
+check(
+    'It asks for the current password first',
+    str_contains($pwPage['body'], 'name="current_password"'),
+    'anybody with a borrowed session could change the password without knowing it'
+);
+check(
+    'and it is linked from the admin sidebar',
+    str_contains(getWithJar($baseUrl . '/admin', $jar)['body'], '/account/password'),
+    'a page nothing links to is one only somebody who read the source can find'
+);
+
+$pwToken = csrfFrom($pwPage['body']);
+
+/* The current password has to be right. */
+$wrongCurrent = postWithJar($baseUrl . '/account/password', [
+    '_token'           => $pwToken,
+    'current_password' => 'not-the-right-one-at-all',
+    'new_password'     => 'a perfectly fine new passphrase',
+    'confirm_password' => 'a perfectly fine new passphrase',
+], $jar);
+
+check(
+    'A wrong current password is refused',
+    str_contains($wrongCurrent['body'], 'not your current password'),
+    'knowing the old password is the only thing separating this from a takeover'
+);
+check(
+    'and the password did not change',
+    postWithJar($baseUrl . '/auth/login', [
+        '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', sys_get_temp_dir() . '/portal-smoke-pwcheck-' . getmypid() . '.txt')['body']),
+        'email'    => 'admin@smoke.test',
+        'password' => 'smoke-test-password-1234',
+    ], sys_get_temp_dir() . '/portal-smoke-pwcheck-' . getmypid() . '.txt')['status'] === 302,
+    'the refusal was cosmetic'
+);
+
+/* The rule that had no caller. */
+$tooWeak = postWithJar($baseUrl . '/account/password', [
+    '_token'           => $pwToken,
+    'current_password' => 'smoke-test-password-1234',
+    'new_password'     => 'short',
+    'confirm_password' => 'short',
+], $jar);
+
+check(
+    'A password that is too short is refused',
+    str_contains($tooWeak['body'], '12 characters'),
+    'the rule exists in code and nothing applies it — which was true until now'
+);
+
+$common = postWithJar($baseUrl . '/account/password', [
+    '_token'           => $pwToken,
+    'current_password' => 'smoke-test-password-1234',
+    'new_password'     => 'administrator',
+    'confirm_password' => 'administrator',
+], $jar);
+
+check(
+    'and so is one everybody tries first',
+    str_contains($common['body'], 'too common'),
+    'length alone does not save a password that is on every list'
+);
+
+$mismatch = postWithJar($baseUrl . '/account/password', [
+    '_token'           => $pwToken,
+    'current_password' => 'smoke-test-password-1234',
+    'new_password'     => 'a perfectly fine new passphrase',
+    'confirm_password' => 'a different fine passphrase',
+], $jar);
+
+check(
+    'A typo in the confirmation is caught',
+    str_contains($mismatch['body'], 'do not match'),
+    'a mistyped new password locks somebody out of their own account'
+);
+
+/* And the change itself. */
+$changed = postWithJar($baseUrl . '/account/password', [
+    '_token'           => $pwToken,
+    'current_password' => 'smoke-test-password-1234',
+    'new_password'     => 'a perfectly fine new passphrase',
+    'confirm_password' => 'a perfectly fine new passphrase',
+], $jar);
+
+check('Changing the password succeeds', $changed['status'] === 302, "got {$changed['status']}");
+check(
+    'and the session survives it',
+    getWithJar($baseUrl . '/admin', $jar)['status'] === 200,
+    'the person who just proved they know both passwords was thrown out'
+);
+
+$newJar = sys_get_temp_dir() . '/portal-smoke-newpw-' . getmypid() . '.txt';
+@unlink($newJar);
+clearLoginThrottle($db);
+
+check(
+    'The new password works',
+    postWithJar($baseUrl . '/auth/login', [
+        '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $newJar)['body']),
+        'email'    => 'admin@smoke.test',
+        'password' => 'a perfectly fine new passphrase',
+    ], $newJar)['status'] === 302,
+    'the change reported success and did nothing'
+);
+
+$oldJar = sys_get_temp_dir() . '/portal-smoke-oldpw-' . getmypid() . '.txt';
+@unlink($oldJar);
+clearLoginThrottle($db);
+
+check(
+    'and the old one does not',
+    postWithJar($baseUrl . '/auth/login', [
+        '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $oldJar)['body']),
+        'email'    => 'admin@smoke.test',
+        'password' => 'smoke-test-password-1234',
+    ], $oldJar)['status'] === 401,
+    'the old password still opens the account'
+);
+
+/*
+ * Put it back, because everything after this signs in with the original.
+ */
+postWithJar($baseUrl . '/account/password', [
+    '_token'           => csrfFrom(getWithJar($baseUrl . '/account/password', $jar)['body']),
+    'current_password' => 'a perfectly fine new passphrase',
+    'new_password'     => 'smoke-test-password-1234',
+    'confirm_password' => 'smoke-test-password-1234',
+], $jar);
+
+clearLoginThrottle($db);
+@unlink($newJar);
+@unlink($oldJar);
+@unlink(sys_get_temp_dir() . '/portal-smoke-pwcheck-' . getmypid() . '.txt');
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');
