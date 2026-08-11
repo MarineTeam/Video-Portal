@@ -583,14 +583,33 @@ if (!is_resource($serverProcess)) {
     exit(1);
 }
 
-// Wait for it to accept connections.
-for ($attempt = 0; $attempt < 40; $attempt++) {
+/*
+ * Wait until it ANSWERS, not until the port is open.
+ *
+ * The socket probe this replaced proved only that something had bound the
+ * port, which PHP's built-in server does before it can serve anything. On a
+ * cold checkout — a release worktree, where none of the files are in the OS
+ * cache yet — the first real request arrived too early and curl reported
+ * status 0. That surfaced as "GET / returns 200 — got 0" at the top of a
+ * release verification: four failures that look like a broken homepage and are
+ * nothing of the kind.
+ *
+ * The probe is a real request, so it also absorbs the cost of the first one:
+ * migrations run on first hit, and making a CHECK pay for that is how a slow
+ * upgrade turns into a mysterious timeout.
+ */
+$ready = false;
+for ($attempt = 0; $attempt < 60; $attempt++) {
     usleep(250_000);
-    $probe = @fsockopen('127.0.0.1', $serverPort, $errno, $errstr, 1);
-    if ($probe !== false) {
-        fclose($probe);
+    if (get($baseUrl . '/')['status'] > 0) {
+        $ready = true;
         break;
     }
+}
+
+if (!$ready) {
+    fwrite(STDERR, "The server never answered a request. See {$serverLog}\n");
+    exit(1);
 }
 
 echo "Serving on {$baseUrl}\n\n";
