@@ -22,6 +22,15 @@ final class Video
     public const STATUS_READY      = 'ready';
     public const STATUS_FAILED     = 'failed';
 
+    /**
+     * Every value the column accepts, for whitelisting input against.
+     *
+     * Listed here rather than rebuilt at each call site, so that adding a
+     * status means touching one place — and so a filter cannot silently accept
+     * a value the ENUM would reject.
+     */
+    public const STATUSES = [self::STATUS_PROCESSING, self::STATUS_READY, self::STATUS_FAILED];
+
     public function __construct(
         public readonly int $id,
         public readonly string $providerId,

@@ -8,6 +8,7 @@ use Portal\Db;
 use Portal\Http\HttpException;
 use Portal\Support\Str;
 use Portal\Video\VideoMeta;
+use Portal\Video\VideoProvider;
 use Throwable;
 
 /**
@@ -117,6 +118,25 @@ final class VideoRepository
         // cannot start reads as a broken site, not as "not ready yet".
         if (empty($filters['includeProcessing'])) {
             $conditions[] = "v.status = 'ready'";
+        }
+
+        /*
+         * An exact status, for the admin library's filter.
+         *
+         * Narrows what includeProcessing lets through rather than widening it,
+         * so it can never turn a public listing into one that shows broken
+         * videos: a caller that has not asked for processing videos still gets
+         * `status = 'ready'` above, and asking for 'failed' on top of that
+         * simply matches nothing.
+         *
+         * Whitelisted against the column's own enum. The value arrives from a
+         * query string, and an unrecognised one is ignored rather than passed
+         * through — a filter nobody can spell is better than a filter that
+         * silently returns everything.
+         */
+        if (!empty($filters['status']) && in_array($filters['status'], Video::STATUSES, true)) {
+            $conditions[] = 'v.status = ?';
+            $params[] = (string) $filters['status'];
         }
         if (empty($filters['includeUnpublished'])) {
             $conditions[] = 'v.is_published = 1';
@@ -727,6 +747,25 @@ final class VideoRepository
         return (int) $this->db->value('SELECT COUNT(*) FROM {videos} WHERE deleted_at IS NOT NULL');
     }
 
+    /**
+     * How many live videos are in one encoding state.
+     *
+     * Trashed rows are excluded: a video in the bin saying "failed" is not
+     * something anybody needs to be told about, and counting it would put a
+     * number on the Failed tab that the tab itself does not list.
+     */
+    public function countByStatus(string $status): int
+    {
+        if (!in_array($status, Video::STATUSES, true)) {
+            return 0;
+        }
+
+        return (int) $this->db->value(
+            'SELECT COUNT(*) FROM {videos} WHERE deleted_at IS NULL AND status = ?',
+            [$status]
+        );
+    }
+
     public function softDelete(int $id): void
     {
         $this->db->execute(
@@ -821,14 +860,7 @@ final class VideoRepository
                 continue;
             }
 
-            $this->db->update('videos', [
-                'duration'               => $meta->duration,
-                'thumbnail_file'         => $meta->thumbnailFile,
-                'status'                 => $meta->status,
-                'encode_progress'        => $meta->encodeProgress,
-                'provider_collection_id' => $meta->collectionId,
-                'updated_at'             => date('Y-m-d H:i:s'),
-            ], ['id' => $existing->id]);
+            $this->applyProviderFields($existing->id, $meta);
             $updated++;
         }
 
@@ -847,6 +879,72 @@ final class VideoRepository
         }
 
         return ['created' => $created, 'updated' => $updated, 'missing' => $missing];
+    }
+
+    /**
+     * Refresh one video against what the provider says about it.
+     *
+     * The recovery path for a video wrongly marked failed — including the ones
+     * marked by the bug where the sync job treated one page as the whole
+     * library. Waiting for the next sync to correct it is not enough on its
+     * own: a scheduled job is bounded and an admin looking at a video that
+     * should not say "Failed" needs an answer now, not eventually.
+     *
+     * Deliberately NOT a second copy of the sync rules. It applies exactly the
+     * same provider-owned fields through the same method, so the two cannot
+     * drift into disagreeing about what a sync is allowed to overwrite — the
+     * title above all, which stays local.
+     *
+     * @return array{found: bool, status: string}
+     */
+    public function recheckAgainstProvider(Video $video, VideoProvider $provider): array
+    {
+        $meta = $provider->getVideo($video->providerId);
+
+        /*
+         * Absent at the provider means failed, and this is the ONE place that
+         * conclusion is safe to draw: the provider was asked about this exact
+         * id and said 404. That is a different thing from "not in the page we
+         * happened to fetch", which is what the sync job used to treat as
+         * proof.
+         *
+         * A provider that is unreachable throws, and the caller reports that as
+         * "could not tell" rather than as a verdict — see the handler.
+         */
+        if ($meta === null) {
+            $this->db->update(
+                'videos',
+                ['status' => Video::STATUS_FAILED, 'updated_at' => date('Y-m-d H:i:s')],
+                ['id' => $video->id]
+            );
+
+            return ['found' => false, 'status' => Video::STATUS_FAILED];
+        }
+
+        $this->applyProviderFields($video->id, $meta);
+
+        return ['found' => true, 'status' => $meta->status];
+    }
+
+    /**
+     * The provider-owned fields, written in one place.
+     *
+     * Duration, thumbnail, status, encode progress and collection belong to the
+     * provider and are refreshed from it. The title does NOT: somebody who
+     * renamed final_v3_REALFINAL.mp4 to something readable must not have that
+     * undone, and the surest way to get it undone eventually is to have two
+     * methods that each decide separately what a sync may touch.
+     */
+    private function applyProviderFields(int $videoId, VideoMeta $meta): void
+    {
+        $this->db->update('videos', [
+            'duration'               => $meta->duration,
+            'thumbnail_file'         => $meta->thumbnailFile,
+            'status'                 => $meta->status,
+            'encode_progress'        => $meta->encodeProgress,
+            'provider_collection_id' => $meta->collectionId,
+            'updated_at'             => date('Y-m-d H:i:s'),
+        ], ['id' => $videoId]);
     }
 
     private function insertFromProvider(VideoMeta $meta, string $provider): int

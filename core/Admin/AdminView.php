@@ -444,6 +444,25 @@ final class AdminView
                 default      => '<span class="pill bad">Failed</span>',
             };
 
+            /*
+             * "Re-check" appears only on a video that is not ready, because
+             * that is the only state where the answer could change anything.
+             * Putting it on every row would make the common case noisier to
+             * serve a case that has nothing to say.
+             *
+             * It matters most for `failed`: until the sync job was fixed it
+             * read one page of a hundred videos and marked everything else
+             * failed, so on a large library there are rows saying Failed about
+             * videos that are perfectly fine, and this is what clears them.
+             */
+            $recheck = $video->status === 'ready'
+                ? ''
+                : sprintf(
+                    '<button form="video-row-%d" name="action" value="recheck" class="btn tiny secondary">'
+                    . 'Re-check</button> ',
+                    $video->id
+                );
+
             $published = $video->isPublished
                 ? '<span class="pill ok">Published</span>'
                 : '<span class="pill">Draft</span>';
@@ -466,7 +485,7 @@ final class AdminView
                    <td>%s</td>
                    <td class="right">
                      <a class="btn tiny secondary" href="/admin/videos/%d">Edit</a>
-                     <button form="video-row-%d" name="action" value="%s" class="btn tiny">%s</button>
+                     %s<button form="video-row-%d" name="action" value="%s" class="btn tiny">%s</button>
                      <button form="video-row-%d" name="action" value="delete" class="btn tiny danger"
                              onclick="return confirm(\'Move this video to trash?\')">Delete</button>
                    </td>
@@ -478,6 +497,7 @@ final class AdminView
                 $status,
                 $published,
                 $video->id,
+                $recheck,
                 $video->id,
                 $toggle,
                 $toggleLabel,
@@ -530,14 +550,52 @@ final class AdminView
                 $trashed
             );
 
+        /*
+         * Status tabs, with the failed COUNT on the tab.
+         *
+         * A library of any size makes a failed video unfindable by scrolling,
+         * and until the sync job was fixed there may be a lot of them — videos
+         * marked failed by a job that read one page and assumed the rest were
+         * gone. A tab with no number gives nobody a reason to press it, and the
+         * whole problem is not knowing they are there.
+         *
+         * The Failed tab is hidden at zero rather than shown greyed. A
+         * permanent "Failed (0)" trains people to skip that spot, which is
+         * exactly where the number has to be noticed on the day it changes.
+         */
+        $current = (string) ($data['status'] ?? '');
+        $currentAttr = e($current);
+        $failed  = (int) ($data['failed'] ?? 0);
+
+        $tabs = '';
+        $choices = ['' => 'All', 'ready' => 'Ready', 'processing' => 'Encoding'];
+        if ($failed > 0) {
+            $choices['failed'] = 'Failed (' . $failed . ')';
+        }
+
+        foreach ($choices as $value => $label) {
+            $query = $value === '' ? '' : '?status=' . rawurlencode($value);
+            $tabs .= sprintf(
+                '<a class="pill%s" href="/admin/videos%s">%s</a> ',
+                $value === $current ? ' ok' : '',
+                $query,
+                e($label)
+            );
+        }
+
         return <<<HTML
         <h1>Videos <span class="muted">({$total})</span></h1>
         {$trashLink}
         {$upload}
         <form method="get" class="toolbar">
           <input type="search" name="q" value="{$search}" placeholder="Search titles and descriptions…">
+          <!-- Carries the tab through a search. Without it, searching from the
+               Failed tab silently drops back to every video, and the results
+               look like the filter did nothing. -->
+          <input type="hidden" name="status" value="{$currentAttr}">
           <button class="btn secondary">Search</button>
         </form>
+        <p class="filters">{$tabs}</p>
 
         <form method="post">
           <input type="hidden" name="_token" value="{$token}">
@@ -3916,6 +3974,15 @@ final class AdminView
          */
         ul.plain li.warn { color:#fbbf24; }
         ul.plain li.warn::before { content:"! "; font-weight:700; }
+        /*
+         * Filter tabs. `a.pill` inherits the pill shape; these add the part
+         * that says it is pressable, and underline the selected one so the
+         * current filter is not carried by colour alone.
+         */
+        .filters { margin:0 0 1rem; }
+        .filters a { text-decoration:none; margin-right:.25rem; }
+        .filters a:hover { border-color:rgba(148,163,184,.6); }
+        .filters a.ok { text-decoration:underline; text-underline-offset:3px; }
         .tile .n { display:block; font-size:1.75rem; font-weight:650; }
         .tile .l { display:block; color:#94a3b8; font-size:.8125rem; }
         .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); gap:1rem; }
