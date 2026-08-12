@@ -504,6 +504,12 @@ abstract class Controller
                      */
                     ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => Capability::MANAGE_SERIES,     'screens' => ['playlists', 'playlist-edit'], 'siteWide' => true],
                     ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => Capability::MANAGE_SPEAKERS,   'screens' => ['speakers'], 'siteWide' => true],
+                    /*
+                     * Site-wide: renaming a tag rewrites every video carrying
+                     * it, so it is not an act that can be scoped to a category
+                     * the way editing one video is.
+                     */
+                    ['label' => 'Tags',       'path' => '/admin/tags',          'key' => 'tags',          'cap' => Capability::MANAGE_CATEGORIES, 'screens' => ['tags'], 'siteWide' => true],
                     ['label' => 'Live',       'path' => '/admin/live',          'key' => 'live',          'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['live'], 'siteWide' => true],
                     ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => Capability::MANAGE_SETTINGS,   'screens' => ['announcements']],
                 ],

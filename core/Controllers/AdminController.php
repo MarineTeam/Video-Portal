@@ -167,6 +167,16 @@ final class AdminController extends Controller
             'canUpload'  => $this->canUpload(),
             'trashed'    => $videos->trashedCount(),
             /*
+             * Tags for the whole page in ONE query, not one per row. The
+             * per-item call inside a foreach is the cost the batched version
+             * exists to avoid, and a listing is exactly where somebody reaches
+             * for it.
+             */
+            'tagsByVideo' => $this->tagRepo()->forItems(
+                'video',
+                array_map(static fn ($v): int => $v->id, $result['items'])
+            ),
+            /*
              * Counted, not inferred from the page on screen. A filter tab
              * reading "Failed" with no number beside it gives an admin no
              * reason to press it, and the whole point is that they may have
@@ -231,6 +241,15 @@ final class AdminController extends Controller
             'captionsSupported' => $this->captionProvider() !== null,
             'scripture'      => $this->scriptureForEdit($video->id),
             'tags'           => $this->tagText($video->id),
+            /*
+             * Every tag already in use, for the field's autocomplete.
+             *
+             * This is the main defence against the vocabulary problem a
+             * create-on-write design has: without seeing what exists, people
+             * invent "prayers" beside "prayer" and the two never meet again
+             * without somebody noticing and merging them by hand.
+             */
+            'tagChoices'     => $this->tagRepo()->all(),
         ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
     }
 
@@ -2554,6 +2573,82 @@ final class AdminController extends Controller
 
     // ------------------------------------------------------------- speakers
 
+    /**
+     * The tag vocabulary, with how much each label carries.
+     *
+     * Tags are created by being typed on a video, so this screen is not where
+     * they come from — it is where they get FIXED. Without it a typo spread
+     * across thirty videos means opening thirty videos, and near-duplicates
+     * ("prayer", "prayers", "Prayer") accumulate with nothing able to merge
+     * them. That is the whole cost of a vocabulary nobody curates first.
+     *
+     * MANAGE_CATEGORIES rather than MANAGE_VIDEOS, deliberately. Tagging one
+     * video is an edit to that video and stays with manage_videos; renaming a
+     * tag rewrites every video carrying it, which is vocabulary management —
+     * the same act as editing a category, and the same capability.
+     */
+    public function tags(Request $request): Response
+    {
+        $this->require(Capability::MANAGE_CATEGORIES);
+
+        return $this->admin('tags', [
+            'tags' => $this->tagRepo()->withCounts(),
+        ]);
+    }
+
+    public function saveTag(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_CATEGORIES);
+
+        $repo = $this->tagRepo();
+        $id = (int) ($request->input('id') ?? 0);
+        $action = $request->input('action') ?? 'rename';
+
+        if ($id <= 0) {
+            return $this->back($request, 'That tag does not exist.', 'error');
+        }
+
+        if ($action === 'delete') {
+            $repo->delete($id);
+            Audit::log($this->db(), $this->user()?->email, 'tag.delete', 'tag', (string) $id);
+
+            return $this->back($request, 'Tag removed. The content it was on is untouched.');
+        }
+
+        $name = trim((string) ($request->input('name') ?? ''));
+        if ($name === '') {
+            return $this->back($request, 'A tag needs a name.', 'error');
+        }
+
+        /*
+         * Renaming onto a tag that already exists MERGES the two, which is the
+         * usual reason to rename one at all. Said on the screen beforehand,
+         * because a merge cannot be undone by renaming back — the two sets of
+         * videos are one set afterwards and nothing recorded which was which.
+         */
+        $existing = $repo->findBySlug(\Portal\Support\Str::slug($name));
+        $merging = $existing !== null && $existing->id !== $id;
+
+        if (!$repo->rename($id, $name)) {
+            return $this->back($request, 'That name cannot be used as a tag.', 'error');
+        }
+
+        Audit::log($this->db(), $this->user()?->email, 'tag.rename', 'tag', (string) $id, $name);
+
+        return $this->back(
+            $request,
+            $merging
+                ? 'Merged into “' . $name . '”. Everything that carried either tag now carries this one.'
+                : 'Tag renamed to “' . $name . '”.'
+        );
+    }
+
+    private function tagRepo(): \Portal\Content\TagRepository
+    {
+        return $this->container->get(\Portal\Content\TagRepository::class);
+    }
+
     public function speakers(Request $request): Response
     {
         $this->require(Capability::MANAGE_SPEAKERS);
@@ -3195,6 +3290,10 @@ final class AdminController extends Controller
                 // Default '1': refusing somebody and giving them no way to ask
                 // is the state this replaces, not one worth preserving.
                 'allow_access_requests' => $this->config()->setting('allow_access_requests', '1'),
+                // Default '0'. A switch that closes the site must never be on
+                // because nobody set it.
+                'maintenance_mode'    => $this->config()->setting('maintenance_mode', '0'),
+                'maintenance_message' => $this->config()->setting('maintenance_message', ''),
             ],
             'subscriberCount' => $this->subscriberCount(),
             'cronJobs' => $cron->jobs(),
@@ -3261,6 +3360,9 @@ final class AdminController extends Controller
             'subscriptions_enabled'     => $checkbox('subscriptions_enabled', true),
             'require_verified_email'    => $checkbox('require_verified_email', false),
             'allow_access_requests'     => $checkbox('allow_access_requests', true),
+            'maintenance_mode'          => $checkbox('maintenance_mode', false),
+
+            'maintenance_message' => mb_substr(trim($request->input('maintenance_message') ?? ''), 0, 300),
 
             'podcast_author'      => trim($request->input('podcast_author') ?? ''),
             'podcast_owner_name'  => trim($request->input('podcast_owner_name') ?? ''),
@@ -3288,6 +3390,9 @@ final class AdminController extends Controller
             'token'    => $this->csrfToken(),
             'flash'    => $this->flash(),
             'nav'      => $this->adminNav(),
+            // Every admin screen, because the person who needs reminding that
+            // the site is shut is the one who has moved on to something else.
+            'maintenanceMode' => $this->config()->settingBool('maintenance_mode', false),
         ]))->private();
     }
 

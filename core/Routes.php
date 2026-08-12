@@ -204,6 +204,8 @@ final class Routes
         $router->post('/admin/webhooks', [AdminController::class, 'saveWebhook'], ['admin.area']);
         $router->get('/admin/speakers', [AdminController::class, 'speakers'], ['admin.area']);
         $router->post('/admin/speakers', [AdminController::class, 'saveSpeaker'], ['admin.area']);
+        $router->get('/admin/tags', [AdminController::class, 'tags'], ['admin.area']);
+        $router->post('/admin/tags', [AdminController::class, 'saveTag'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
         $router->post('/admin/users', [AdminController::class, 'saveUser'], ['admin.area']);
         $router->get('/admin/permissions', [AdminController::class, 'permissions'], ['admin.area']);

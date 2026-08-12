@@ -150,6 +150,8 @@ return array(
     'Portal\\Support\\Feed' => $baseDir . '/core/Support/Feed.php',
     'Portal\\Support\\Http' => $baseDir . '/core/Support/Http.php',
     'Portal\\Support\\HttpResponse' => $baseDir . '/core/Support/HttpResponse.php',
+    'Portal\\Support\\MaintenancePolicy' => $baseDir . '/core/Support/MaintenancePolicy.php',
+    'Portal\\Support\\MaintenanceView' => $baseDir . '/core/Support/MaintenanceView.php',
     'Portal\\Support\\PackageInstaller' => $baseDir . '/core/Support/PackageInstaller.php',
     'Portal\\Support\\RateLimit' => $baseDir . '/core/Support/RateLimit.php',
     'Portal\\Support\\Str' => $baseDir . '/core/Support/Str.php',
