@@ -1589,7 +1589,7 @@ check('Country restrictions is listed', str_contains($pluginsPage['body'], 'Coun
 
 $pluginToken = csrfFrom($pluginsPage['body']);
 
-foreach (['watermark', 'geo', 'comments', 'ratings'] as $slug) {
+foreach (['watermark', 'geo', 'comments', 'ratings', 'reactions'] as $slug) {
     $activated = postWithJar($baseUrl . '/admin/plugins', [
         '_token' => $pluginToken,
         'slug'   => $slug,
@@ -2226,6 +2226,96 @@ check(
     (int) $db->value('SELECT COUNT(*) FROM {rating_totals} WHERE video_id = ?', [$videoRow]) === 0,
     'the video would still show an average with no ratings behind it'
 );
+
+/* ---------------------------------------------------------------- reactions
+ *
+ * The last item on the plan's Phase 4 line — "ratings/reactions" — of which
+ * only ratings shipped.
+ *
+ * The integration tests pin the unique key, which is where the difference
+ * between the two actually lives. What only a real request can tell you is
+ * whether the widget reaches the page at all: a plugin that fatals on load is
+ * caught, logged, and silently deactivated, which looks exactly like a plugin
+ * that works and has nothing to say.
+ */
+echo "\nReactions\n";
+
+$reactPage = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+
+check(
+    'The reaction row appears under the video',
+    str_contains($reactPage['body'], 'id="reactions"'),
+    'the plugin activated and its hook never fired'
+);
+check(
+    'and offers the buttons in words, not only pictures',
+    str_contains($reactPage['body'], 'Amen') && str_contains($reactPage['body'], 'This moved me'),
+    'an emoji with no label is unreadable to a screen reader'
+);
+
+$reactToken = csrfFrom($reactPage['body']);
+
+postWithJar($baseUrl . '/reactions/' . $videoRow, ['_token' => $reactToken, 'kind' => 'amen'], $jar);
+postWithJar($baseUrl . '/reactions/' . $videoRow, ['_token' => $reactToken, 'kind' => 'thankful'], $jar);
+
+/*
+ * THE claim, and the whole reason this is not a second rating system: a rating
+ * replaces, a reaction accumulates. Somebody may mean both things at once.
+ */
+check(
+    'One person can leave several kinds at once',
+    (int) $db->value('SELECT COUNT(*) FROM {reactions} WHERE video_id = ?', [$videoRow]) === 2,
+    'the second reaction replaced the first — that is a rating, not a reaction'
+);
+
+$afterReact = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'and the page shows them as pressed',
+    substr_count($afterReact['body'], 'aria-pressed="true"') === 2,
+    'nothing tells a person which ones are already theirs'
+);
+
+/* Pressing the same button again takes it back — the only way to undo one. */
+postWithJar($baseUrl . '/reactions/' . $videoRow, [
+    '_token' => csrfFrom($afterReact['body']),
+    'kind'   => 'amen',
+], $jar);
+
+check(
+    'Pressing the same one again removes it',
+    (int) $db->value('SELECT COUNT(*) FROM {reactions} WHERE video_id = ? AND kind = ?', [$videoRow, 'amen']) === 0,
+    'a reaction left by mistake could never be taken back'
+);
+check(
+    'and leaves the others alone',
+    (int) $db->value('SELECT COUNT(*) FROM {reactions} WHERE video_id = ?', [$videoRow]) === 1,
+    'undoing one reaction cleared the lot'
+);
+
+$noCsrfReact = postWithJar($baseUrl . '/reactions/' . $videoRow, ['kind' => 'amen'], $jar);
+check('Reacting without a CSRF token is refused', $noCsrfReact['status'] === 419, "got {$noCsrfReact['status']}");
+
+/* A made-up kind is ignored rather than stored. */
+postWithJar($baseUrl . '/reactions/' . $videoRow, [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body']),
+    'kind'   => 'shrug',
+], $jar);
+
+check(
+    'An unrecognised reaction is ignored',
+    (int) $db->value('SELECT COUNT(*) FROM {reactions} WHERE kind = ?', ['shrug']) === 0,
+    'a hand-made request wrote a kind no button offers'
+);
+
+/* A signed-out visitor reads the counts and is given nothing to press. */
+$reactAnon = get($baseUrl . '/watch/' . $videoSlug);
+check(
+    'A signed-out visitor is not offered the buttons',
+    !str_contains($reactAnon['body'], 'action="/reactions/'),
+    'an anonymous reaction is one anybody can leave as often as they clear a cookie'
+);
+
+$db->execute('DELETE FROM {reactions} WHERE video_id = ?', [$videoRow]);
 
 echo "\nPlaylists and saved videos\n";
 
