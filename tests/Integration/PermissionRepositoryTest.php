@@ -58,7 +58,7 @@ final class PermissionRepositoryTest extends DatabaseTestCase
         self::assertFalse($this->capabilities->can($user, Capability::MANAGE_VIDEOS));
 
         $this->permissions->setRoleCapabilities($viewer, [
-            Capability::VIEW_CONTENT,
+            Capability::MANAGE_SHARES,
             Capability::MANAGE_VIDEOS,
         ]);
         $this->capabilities->flush();
@@ -92,13 +92,13 @@ final class PermissionRepositoryTest extends DatabaseTestCase
         $viewer = $this->roleId('viewer');
 
         $this->permissions->setRoleCapabilities($viewer, [
-            Capability::VIEW_CONTENT,
+            Capability::MANAGE_SHARES,
             'become_root',
         ]);
 
         $roles = array_column($this->permissions->roles(), 'capabilities', 'slug');
 
-        self::assertSame([Capability::VIEW_CONTENT], $roles['viewer']);
+        self::assertSame([Capability::MANAGE_SHARES], $roles['viewer']);
     }
 
     // ----------------------------------------------------------------- groups

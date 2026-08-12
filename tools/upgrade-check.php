@@ -227,6 +227,34 @@ $db->insert('users', [
     'authorized' => 1, 'created_at' => $now, 'updated_at' => $now,
 ]);
 
+/*
+ * The permission rows an older install really has, including `view_content` —
+ * the capability that was enforced nowhere and is removed by 0019.
+ *
+ * Seeded explicitly because a migration that DELETEs rows proves nothing
+ * against a database that never had them: the statement succeeds, matches
+ * zero, and the check passes for the wrong reason. That is the same shape as
+ * the clearLoginThrottle bug in the smoke script, where a DELETE matching
+ * nothing looked like it had worked.
+ */
+$db->execute(
+    "INSERT INTO {capabilities} (slug, description) VALUES
+       ('view_content', 'Watch published videos'),
+       ('manage_videos', 'Upload, edit, and delete videos')"
+);
+$db->execute("INSERT INTO {roles} (slug, name, is_system, created_at) VALUES ('viewer', 'Viewer', 1, ?)", [$now]);
+$db->execute(
+    'INSERT INTO {role_capabilities} (role_id, capability_id)
+     SELECT r.id, c.id FROM {roles} r, {capabilities} c
+      WHERE r.slug = ? AND c.slug IN (?, ?)',
+    ['viewer', 'view_content', 'manage_videos']
+);
+$db->execute(
+    'INSERT INTO {grants} (subject_type, subject_id, email, capability_id, scope_type, scope_id, created_at)
+     SELECT "user", 1, "", c.id, "site", 0, NOW() FROM {capabilities} c WHERE c.slug = ?',
+    ['view_content']
+);
+
 echo "Seeded {$videoCount} video(s), {$publishedCount} of them not deleted.\n\n";
 
 // --------------------------------------------------------------- the upgrade
@@ -335,6 +363,85 @@ check(
     'Existing series did not become sequential',
     (int) $db->value('SELECT COUNT(*) FROM {series} WHERE sequential <> 0') === 0
 );
+/*
+ * 0019: a capability that was enforced nowhere, removed from installs that
+ * already stored it.
+ *
+ * Checked in three places, because the row can be orphaned in three ways and
+ * a permissions screen listing a capability nothing can grant is worse than
+ * one that never offered it. The precondition above seeded all three.
+ */
+echo "\nRemoved capability\n";
+
+check(
+    'view_content is gone from the vocabulary',
+    (int) $db->value('SELECT COUNT(*) FROM {capabilities} WHERE slug = ?', ['view_content']) === 0
+);
+/*
+ * COUNTED, not checked for orphans.
+ *
+ * The first version of these asked "does any role_capabilities row point at a
+ * capability that no longer exists" — which passes when the migration worked
+ * AND when it did nothing at all, since with the capability still present
+ * there are no orphans either way. Deleting the whole migration left them
+ * green. Vacuous in exactly the shape this project keeps finding.
+ *
+ * The viewer role was seeded with two capabilities and must come out with one.
+ * A number that has to change cannot be satisfied by nothing happening.
+ */
+check(
+    'and the role that carried it kept only its other capability',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {role_capabilities} rc
+           JOIN {roles} r ON r.id = rc.role_id
+          WHERE r.slug = ?',
+        ['viewer']
+    ) === 1,
+    'the viewer role was seeded with two and should have one left'
+);
+check(
+    'and the individual grant of it is gone',
+    (int) $db->value('SELECT COUNT(*) FROM {grants}') === 0,
+    'the only grant seeded was view_content, so anything left is it'
+);
+
+/*
+ * And no dangling references either way — the failure a narrow DELETE would
+ * leave, where the capability goes and its dependents do not. Those render on
+ * the permissions screen as blank rows nobody can remove.
+ */
+check(
+    'with no row left pointing at a capability that does not exist',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {role_capabilities} rc
+           LEFT JOIN {capabilities} c ON c.id = rc.capability_id
+          WHERE c.id IS NULL'
+    ) === 0
+        && (int) $db->value(
+            'SELECT COUNT(*) FROM {grants} g
+               LEFT JOIN {capabilities} c ON c.id = g.capability_id
+              WHERE c.id IS NULL'
+        ) === 0,
+    'an orphaned row renders on the permissions screen and cannot be cleared'
+);
+check(
+    'while the capabilities beside it survived',
+    (int) $db->value('SELECT COUNT(*) FROM {capabilities} WHERE slug = ?', ['manage_videos']) === 1,
+    'the DELETE was not narrow enough — it took the rest of the vocabulary with it'
+);
+check(
+    'and so did the role rows for them',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {role_capabilities} rc
+           JOIN {capabilities} c ON c.id = rc.capability_id
+          WHERE c.slug = ?',
+        ['manage_videos']
+    ) === 1,
+    'the role lost a capability it should have kept'
+);
+
+echo "\nColumn defaults\n";
+
 check(
     'Existing videos did not become premieres',
     (int) $db->value('SELECT COUNT(*) FROM {videos} WHERE premiere <> 0') === 0,

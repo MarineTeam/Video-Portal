@@ -157,10 +157,14 @@ final class Capabilities
             return true;
         }
 
+        /*
+         * Every capability now counts. There used to be a skip for
+         * VIEW_CONTENT, because holding it was true of every approved account
+         * and would have let everybody into the admin area — but it was
+         * enforced nowhere and has been removed from the vocabulary, so the
+         * exception has nothing left to except.
+         */
         foreach (array_keys(Capability::all()) as $capability) {
-            if ($capability === Capability::VIEW_CONTENT) {
-                continue;
-            }
             // A scoped grant is also a reason to see the admin area, even
             // though the site-wide answer is no — which is the same question
             // every admin listing asks, so it is asked in one place.

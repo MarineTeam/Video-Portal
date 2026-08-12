@@ -70,17 +70,37 @@ final class CapabilitiesTest extends DatabaseTestCase
     {
         $pending = $this->makeUser('pending@example.com', 'editor', authorized: false);
 
-        self::assertFalse($this->capabilities->can($pending, Capability::VIEW_CONTENT));
+        // Both carried by the editor role, and neither survives the account
+        // being unapproved.
+        self::assertFalse($this->capabilities->can($pending, Capability::PUBLISH_CONTENT));
         self::assertFalse($this->capabilities->can($pending, Capability::MANAGE_VIDEOS));
     }
 
-    public function testAuthorizedViewerHoldsOnlyViewContent(): void
+    /**
+     * An approved viewer holds NOTHING, and that is the design.
+     *
+     * Watching is not a capability — it follows from the account being approved
+     * and the content being visible. There used to be a `view_content`
+     * capability which every viewer held and which was enforced nowhere; this
+     * asserts the state after removing it, which is the state that was always
+     * true in practice.
+     */
+    public function testAnApprovedViewerHoldsNoCapabilitiesAtAll(): void
     {
         $viewer = $this->makeUser('viewer@example.com', Capability::ROLE_VIEWER, authorized: true);
 
-        self::assertTrue($this->capabilities->can($viewer, Capability::VIEW_CONTENT));
-        self::assertFalse($this->capabilities->can($viewer, Capability::MANAGE_VIDEOS));
-        self::assertFalse($this->capabilities->can($viewer, Capability::MANAGE_USERS));
+        foreach (array_keys(Capability::all()) as $capability) {
+            self::assertFalse(
+                $this->capabilities->can($viewer, $capability),
+                "A viewer should not hold {$capability}"
+            );
+        }
+
+        // And is therefore given no reason to see the admin area. This is the
+        // check that would have caught removing the old view_content exception
+        // from canSeeAdmin() while the capability still existed — which would
+        // have let every approved account in.
+        self::assertFalse($this->capabilities->canSeeAdmin($viewer));
     }
 
     public function testRoleCapabilitiesApplySiteWide(): void

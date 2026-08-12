@@ -40,9 +40,24 @@ final class Capability
     public const VIEW_AUDIT_LOG     = 'view_audit_log';
     public const VIEW_ANALYTICS     = 'view_analytics';
 
-    // Viewing. Held by every authorized viewer; the thing an unapproved
-    // account conspicuously lacks.
-    public const VIEW_CONTENT = 'view_content';
+    /*
+     * There was a VIEW_CONTENT here, commented "held by every authorized
+     * viewer; the thing an unapproved account conspicuously lacks". Both halves
+     * of that were false, and it was enforced NOWHERE.
+     *
+     * Watching is gated on `users.authorized` — the approval flag an
+     * administrator sets on the People screen — plus the content's own
+     * visibility. An unapproved account lacks it because can() refuses every
+     * capability to an unauthorized user, not because of this one. So granting
+     * or revoking it changed nothing in either direction, while appearing on
+     * the permissions screen as a real control.
+     *
+     * Removed rather than enforced. Making it real would have meant two
+     * mechanisms deciding one thing, and the standing rule here is that two
+     * implementations of a permission rule eventually disagree — with the
+     * failure being an approved viewer who cannot watch, reported as the site
+     * being broken. Approval is the documented flow and the one people use.
+     */
 
     /**
      * Every capability with a description, seeded at install.
@@ -52,7 +67,6 @@ final class Capability
     public static function all(): array
     {
         return [
-            self::VIEW_CONTENT        => 'Watch published videos',
             self::MANAGE_CATEGORIES   => 'Create, edit, and reorder categories',
             self::MANAGE_SERIES       => 'Create and edit series',
             self::MANAGE_VIDEOS       => 'Upload, edit, and delete videos',
@@ -123,7 +137,6 @@ final class Capability
                 'name'        => 'Editor',
                 'description' => 'Manages content across the whole site, but not users or settings.',
                 'capabilities' => [
-                    self::VIEW_CONTENT,
                     self::MANAGE_CATEGORIES,
                     self::MANAGE_SERIES,
                     self::MANAGE_VIDEOS,
@@ -139,17 +152,23 @@ final class Capability
                 'name'        => 'Contributor',
                 'description' => 'Uploads and edits videos, but cannot publish them.',
                 'capabilities' => [
-                    self::VIEW_CONTENT,
                     self::MANAGE_VIDEOS,
                     self::MANAGE_FILES,
                 ],
             ],
+            /*
+             * Viewer holds NOTHING, and that is the whole design rather than an
+             * oversight.
+             *
+             * Watching is not a capability here — it follows from the account
+             * being approved and the content being visible. Viewer exists so
+             * that an approved person has a role which grants no admin power at
+             * all, which is exactly what an empty list says.
+             */
             'viewer' => [
-                'name'        => 'Viewer',
-                'description' => 'Watches published videos. The default for an approved account.',
-                'capabilities' => [
-                    self::VIEW_CONTENT,
-                ],
+                'name'         => 'Viewer',
+                'description'  => 'Watches published videos. The default for an approved account.',
+                'capabilities' => [],
             ],
         ];
     }
