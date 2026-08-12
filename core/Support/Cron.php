@@ -46,6 +46,21 @@ final class Cron
      */
     private const SHARES_PER_RUN = 500;
 
+    /**
+     * How far videos.sync will page before giving up.
+     *
+     * 20 x 100 = 2,000 videos, which covers this product's scale with room to
+     * spare. The cap exists because pseudo-cron runs inside a visitor's page
+     * view: an unbounded loop over a huge library is a request the host kills,
+     * and a killed request is exactly how you get a partial list.
+     *
+     * Hitting it is not silent. The missing-video check is skipped and the job
+     * message says so, because "we did not look" and "nothing was missing" are
+     * different answers and only one of them is safe to act on.
+     */
+    private const SYNC_MAX_PAGES = 20;
+    private const SYNC_PER_PAGE  = 100;
+
     /** @var array<string, callable(App):string> */
     private array $handlers = [];
 
@@ -67,16 +82,61 @@ final class Cron
             $provider = $app->container()->get(VideoProvider::class);
             $repository = $app->container()->get(VideoRepository::class);
 
-            // Bounded: a very large library must not turn one page view into a
-            // multi-minute request that the host kills halfway through.
-            $page = $provider->listVideos(1, 100);
-            $result = $repository->syncFromProvider($page->items);
+            /*
+             * Pages through, rather than reading page one and calling it the
+             * library.
+             *
+             * This used to fetch a single page of 100 and hand it straight to
+             * syncFromProvider(), which marks everything ABSENT from the list
+             * as failed. So on any library over a hundred videos, every run
+             * condemned the tail of it — silently, on a schedule, with nothing
+             * in the audit log. It survived only because nothing here has run
+             * against a library that big.
+             *
+             * Still bounded. An unbounded loop is how one page view becomes a
+             * multi-minute request that a shared host kills halfway through,
+             * and being killed halfway is what produces a partial list in the
+             * first place.
+             */
+            $items = [];
+            $complete = false;
+            $pagesRead = 0;
 
+            for ($n = 1; $n <= self::SYNC_MAX_PAGES; $n++) {
+                $page = $provider->listVideos($n, self::SYNC_PER_PAGE);
+                $pagesRead++;
+
+                foreach ($page->items as $item) {
+                    $items[] = $item;
+                }
+
+                // The provider itself says whether anything is left. Inferring
+                // it from a short page would be wrong the moment a page comes
+                // back short for any other reason.
+                if (!$page->hasMore()) {
+                    $complete = true;
+                    break;
+                }
+            }
+
+            $result = $repository->syncFromProvider($items, 'bunny', $complete);
+
+            /*
+             * The cap being hit is reported, not swallowed. It means the
+             * missing-video check did not run, which an admin looking at a
+             * video that ought to have disappeared needs to know.
+             */
             return sprintf(
-                '%d new, %d updated, %d missing.',
+                '%d new, %d updated, %d missing%s.',
                 $result['created'],
                 $result['updated'],
-                $result['missing']
+                $result['missing'],
+                $complete
+                    ? ''
+                    : sprintf(
+                        ' — stopped after %d pages, so videos removed at the provider were not detected',
+                        $pagesRead
+                    )
             );
         };
 
@@ -292,6 +352,10 @@ final class Cron
      */
     public function runDue(): array
     {
+        // Before selecting what is due, make sure everything that COULD be due
+        // has a row. See ensurePluginJobs().
+        $this->ensurePluginJobs();
+
         $due = $this->db->all(
             'SELECT slug FROM {cron_jobs}
               WHERE is_enabled = 1
@@ -410,14 +474,60 @@ final class Cron
     }
 
     /**
+     * Give every plugin-declared schedule a row, so it can become due.
+     *
+     * `PluginContext::addCronJob()` has existed since Phase 1 and put the
+     * handler in a map on PluginManager. Nothing ever wrote a `{cron_jobs}`
+     * row for it, and runDue() selects FROM that table — so a plugin's
+     * scheduled job was registered, resolvable by slug, fully tested, and
+     * never once due. No plugin cron job in this product has ever run.
+     *
+     * This is the same defect that shipped for `notifications.send` in Phase 4,
+     * recorded then as "a job with no row is never due, so it does nothing,
+     * silently, forever". `ensureCoreJobs()` fixed it for core jobs and the
+     * plugin half was missed, which is what an uncalled `ensureJob()` sitting
+     * beside it was evidence of.
+     *
+     * Called from the runner rather than from activation, because activation
+     * already happened for every plugin currently installed — fixing it at
+     * activation would leave exactly the sites that have the bug still having
+     * it until somebody deactivated and reactivated.
+     */
+    private function ensurePluginJobs(): void
+    {
+        try {
+            /** @var PluginManager $plugins */
+            $plugins = $this->app->container()->get(PluginManager::class);
+
+            foreach ($plugins->cronJobs() as $slug => $job) {
+                $this->ensureJob($slug, (int) $job['interval']);
+            }
+        } catch (Throwable $e) {
+            // Fails quiet and does not stop the core jobs from running. A
+            // plugin that cannot be read is not a reason to stop purging
+            // sessions.
+            error_log('Portal: could not register plugin cron jobs: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Register a job row for a plugin-declared schedule.
+     *
+     * INSERT IGNORE, not ON DUPLICATE KEY UPDATE. This runs on every cron tick,
+     * and re-asserting `is_enabled = 1` would silently switch back on any job an
+     * admin had deliberately turned off — every few minutes, with the Cron
+     * screen showing it enabled and no clue as to who kept doing it.
+     *
+     * The cost is that changing a plugin's declared interval does not move an
+     * existing row. That is the right way round: the admin's stored schedule
+     * outranks the plugin's suggestion, and the suggestion only ever applied at
+     * the moment the row was created anyway.
      */
     public function ensureJob(string $slug, int $intervalSeconds): void
     {
         $this->db->execute(
-            'INSERT INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)
-             VALUES (?, ?, NOW(), 1)
-             ON DUPLICATE KEY UPDATE interval_seconds = VALUES(interval_seconds), is_enabled = 1',
+            'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)
+             VALUES (?, ?, NOW(), 1)',
             [$slug, max(60, $intervalSeconds)]
         );
     }

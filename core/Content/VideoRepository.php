@@ -782,11 +782,27 @@ final class VideoRepository
      *    would destroy categorisation and share history if that response were
      *    ever wrong.
      *
+     * $listIsComplete is the whole safety of that last rule, and it defaults to
+     * FALSE.
+     *
+     * "Not in this list" only means "gone from the provider" when the list is
+     * every video the provider has. The scheduled job passed page one — a
+     * hundred items — and this marked everything else failed, so any library
+     * over a hundred videos had the tail of it condemned every fifteen minutes.
+     * On a site where cron actually fires, that is a video vanishing from the
+     * public listing with nothing in the audit log and nobody having touched it.
+     *
+     * Defaulting to false means a caller that has not thought about this cannot
+     * cause the damage; the caller that has, says so.
+     *
      * @param list<VideoMeta> $providerVideos
      * @return array{created: int, updated: int, missing: int}
      */
-    public function syncFromProvider(array $providerVideos, string $provider = 'bunny'): array
-    {
+    public function syncFromProvider(
+        array $providerVideos,
+        string $provider = 'bunny',
+        bool $listIsComplete = false
+    ): array {
         $created = 0;
         $updated = 0;
         $seen = [];
@@ -817,7 +833,7 @@ final class VideoRepository
         }
 
         $missing = 0;
-        if ($seen !== []) {
+        if ($listIsComplete && $seen !== []) {
             $placeholders = implode(',', array_fill(0, count($seen), '?'));
             $missing = $this->db->execute(
                 "UPDATE {videos}

@@ -275,12 +275,68 @@ final class AdminView
             $tiles .= sprintf('<div%s><span class="n">%d</span><span class="l">%s</span></div>', $highlight, $value, e($label));
         }
 
+        /*
+         * Three states, not two. This list used to print the slug of whatever
+         * was selected and nothing else, so "Mail: resend" looked identical
+         * whether or not there was an API key behind it — and with no key, every
+         * share link and approval request was dropped in silence.
+         *
+         * Nothing selected  -> not set up
+         * Selected, missing -> a warning naming the empty fields AND what it costs
+         * Selected, filled  -> the slug, as before
+         *
+         * The missing fields are named because "email is not configured" sends
+         * somebody to a screen with eight boxes on it and no idea which one.
+         */
         $providers = '';
         foreach ((array) ($data['providers'] ?? []) as $kind => $info) {
+            $slug    = (string) ($info['slug'] ?? '');
+            $missing = (array) ($info['missing'] ?? []);
+
+            if ($slug === '') {
+                $providers .= sprintf(
+                    '<li class="warn">%s: <strong>not set up</strong> — %s. '
+                    . '<a href="/admin/providers">Choose one</a>.</li>',
+                    e(ucfirst((string) $kind)),
+                    e((string) ($info['cost'] ?? ''))
+                );
+                continue;
+            }
+
+            if ($missing !== []) {
+                $providers .= sprintf(
+                    '<li class="warn">%s: <strong>%s</strong> — needs %s, so %s. '
+                    . '<a href="/admin/providers">Finish setting it up</a>.</li>',
+                    e(ucfirst((string) $kind)),
+                    e($slug),
+                    e(implode(', ', array_map('strval', $missing))),
+                    e((string) ($info['cost'] ?? ''))
+                );
+                continue;
+            }
+
+            /*
+             * Every field filled and the provider still says it cannot work —
+             * on this host, that is `mail()` disabled under PHP's mail
+             * provider. No field is named, because naming one would send
+             * somebody to re-type a From address that is already right.
+             */
+            if (($info['refused'] ?? false) === true) {
+                $providers .= sprintf(
+                    '<li class="warn">%s: <strong>%s</strong> is set up but reports it cannot send, '
+                    . 'so %s. Something on this server is blocking it — '
+                    . '<a href="/admin/providers">try a different one and test it</a>.</li>',
+                    e(ucfirst((string) $kind)),
+                    e($slug),
+                    e((string) ($info['cost'] ?? ''))
+                );
+                continue;
+            }
+
             $providers .= sprintf(
                 '<li>%s: <strong>%s</strong></li>',
                 e(ucfirst((string) $kind)),
-                e((string) ($info['slug'] ?? 'not configured'))
+                e($slug)
             );
         }
 
@@ -3852,6 +3908,14 @@ final class AdminView
         .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(9rem,1fr)); gap:1rem; }
         .tile { background:#0f172a; border:1px solid rgba(148,163,184,.16); border-radius:12px; padding:1.25rem; }
         .tile.warn { border-color:rgba(245,158,11,.45); }
+        /*
+         * Not colour alone. A service that needs finishing has to be legible to
+         * somebody who cannot distinguish amber from grey, and on the print or
+         * high-contrast rendering where the colour is dropped entirely — so the
+         * marker is a character in the box as well as a tint on the text.
+         */
+        ul.plain li.warn { color:#fbbf24; }
+        ul.plain li.warn::before { content:"! "; font-weight:700; }
         .tile .n { display:block; font-size:1.75rem; font-weight:650; }
         .tile .l { display:block; color:#94a3b8; font-size:.8125rem; }
         .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); gap:1rem; }

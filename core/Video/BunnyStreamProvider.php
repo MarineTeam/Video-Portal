@@ -201,29 +201,18 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
         );
     }
 
-    /**
-     * Every video in the library, following pagination.
+    /*
+     * There was a listAllVideos() here that paged through the library behind a
+     * cap. It had no callers, and the one place that needed it — videos.sync —
+     * had been reading page one and treating it as the whole library, which is
+     * what marked every video past the first hundred as failed.
      *
-     * Capped at 5 pages (500 videos). An unbounded loop here is how a large
-     * library turns one page render into a 30-second request that a shared
-     * host kills halfway through.
-     *
-     * @return list<VideoMeta>
+     * The loop now lives in Cron, once, against the VideoProvider INTERFACE
+     * rather than this class: a second video provider would otherwise have to
+     * reimplement paging to be syncable, and the version that got missed is
+     * always the one that quietly corrupts data. It also has to know whether it
+     * reached the end, which a method returning a flat array cannot say.
      */
-    public function listAllVideos(int $maxPages = 5, int $perPage = 100): array
-    {
-        $first = $this->listVideos(1, $perPage);
-        $all = $first->items;
-
-        $pages = min($first->totalPages(), $maxPages);
-        for ($page = 2; $page <= $pages; $page++) {
-            foreach ($this->listVideos($page, $perPage)->items as $item) {
-                $all[] = $item;
-            }
-        }
-
-        return $all;
-    }
 
     public function getVideo(string $providerId): ?VideoMeta
     {

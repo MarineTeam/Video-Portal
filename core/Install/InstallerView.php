@@ -103,8 +103,14 @@ final class InstallerView
 
         $rows = '';
         foreach ($checks as $check) {
-            $state = $check->satisfied ? 'pass' : ($check->isBlocking() ? 'fail' : 'warn');
-            $icon = $check->satisfied ? '&check;' : ($check->isBlocking() ? '&times;' : '!');
+            /*
+             * isWarning() rather than "not blocking", which is the same answer
+             * spelled a second way. Requirement already names both states, and
+             * a rule written once here and once there is a rule that can drift
+             * — the drift showing up as a missing extension rendered as a tick.
+             */
+            $state = $check->satisfied ? 'pass' : ($check->isWarning() ? 'warn' : 'fail');
+            $icon = $check->satisfied ? '&check;' : ($check->isWarning() ? '!' : '&times;');
 
             $rows .= '<li class="' . $state . '">';
             $rows .= '<span class="icon">' . $icon . '</span>';
