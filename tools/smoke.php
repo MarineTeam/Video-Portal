@@ -1589,7 +1589,7 @@ check('Country restrictions is listed', str_contains($pluginsPage['body'], 'Coun
 
 $pluginToken = csrfFrom($pluginsPage['body']);
 
-foreach (['watermark', 'geo', 'comments', 'ratings', 'reactions'] as $slug) {
+foreach (['watermark', 'geo', 'comments', 'ratings', 'reactions', 'playback'] as $slug) {
     $activated = postWithJar($baseUrl . '/admin/plugins', [
         '_token' => $pluginToken,
         'slug'   => $slug,
@@ -3330,6 +3330,185 @@ check(
     str_contains($watchWithChapters['body'], '?t=870'),
     'a chapter nobody can click is a caption'
 );
+
+/* ---------------------------------------------------------------- playback
+ *
+ * Skip-to-the-sermon and up-next. The policy tests pin where the button goes;
+ * only a real request can tell you whether the plugin loads and its hook fires
+ * — a plugin that throws on load is caught, logged and silently deactivated,
+ * which looks exactly like one that works and has nothing to say.
+ *
+ * Placed here because it needs the chapters the section above just created.
+ */
+echo "\nPlayback\n";
+
+/* The stored chapters are Welcome / The reading… / Questions, so the default
+   titles match nothing. Renamed to what a service recording really looks like. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($chapterEditAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'chapters',
+    'chapters' => "0:00 Welcome\n2:15 Notices\n15:00 Sermon: Romans 8",
+], $jar);
+
+$watchSkip = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+
+check(
+    'The skip button appears when a chapter matches',
+    str_contains($watchSkip['body'], 'data-pb-seek="900"'),
+    'the plugin activated and its hook never fired'
+);
+check(
+    'and it names where it goes',
+    str_contains($watchSkip['body'], 'Skip to Sermon: Romans 8'),
+    '"skip intro" is inaccurate and rude about the part somebody led'
+);
+check(
+    'and it works without JavaScript',
+    str_contains($watchSkip['body'], 'href="?t=900"'),
+    'a button that only exists for people whose scripts loaded'
+);
+check(
+    'and the script that upgrades it is served',
+    get($baseUrl . '/plugin-asset/playback/playback.js')['status'] === 200,
+    'the widget is on the page and its behaviour is a 404'
+);
+
+/*
+ * A chapter at 0:00 is never the target, whatever it is called — a button that
+ * seeks to the start of what you are already watching reads as broken.
+ */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($chapterEditAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'chapters',
+    'chapters' => "0:00 Sermon\n10:00 Questions",
+], $jar);
+
+check(
+    'A chapter at the start is not offered as a skip',
+    !str_contains(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body'], 'data-pb-seek'),
+    'the button would jump somebody to 0:00 and appear to do nothing'
+);
+
+/*
+ * Up next, on a series made for the purpose.
+ *
+ * The first version borrowed $videoRow and the run's existing series, and got
+ * two things wrong at once. It restored series_id to NULL rather than to what
+ * it had been, which broke a podcast-feed check three hundred lines later — a
+ * failure with no visible connection to the thing that caused it. And it
+ * asserted on the episode's TITLE, which appears elsewhere on the page, so the
+ * check passed while the card itself was missing.
+ *
+ * Two purpose-made videos in a purpose-made series: nothing shared to restore,
+ * and the assertions can name the card rather than a string that happens to be
+ * near it.
+ */
+$pbNow = date('Y-m-d H:i:s');
+$pbSeries = (int) $db->insert('series', [
+    'slug' => 'pb-series', 'title' => 'Playback Series',
+    'is_published' => 1, 'created_at' => $pbNow, 'updated_at' => $pbNow,
+]);
+
+$pbFirst = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-pb-1',
+    'slug' => 'pb-episode-one', 'title' => 'Playback Episode One',
+    'status' => 'ready', 'is_published' => 1, 'duration' => 60,
+    'series_id' => $pbSeries, 'series_position' => 0,
+    'created_at' => $pbNow, 'updated_at' => $pbNow,
+]);
+$pbNext = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-pb-2',
+    'slug' => 'pb-episode-two', 'title' => 'Playback Episode Two',
+    'status' => 'ready', 'is_published' => 1, 'duration' => 60,
+    'series_id' => $pbSeries, 'series_position' => 1,
+    'created_at' => $pbNow, 'updated_at' => $pbNow,
+]);
+
+$watchNext = getWithJar($baseUrl . '/watch/pb-episode-one', $jar);
+
+check(
+    'Up next offers the following episode',
+    str_contains($watchNext['body'], 'class="pb-next-title"')
+        && str_contains($watchNext['body'], '/watch/pb-episode-two'),
+    'a series that stops at the end of every episode is a series nobody finishes'
+);
+check(
+    'and it is hidden until the video ends',
+    preg_match('~<div class="pb-next"[^>]*\shidden~', $watchNext['body']) === 1,
+    'a permanent "up next" card under a video somebody just started'
+);
+check(
+    'and the last episode offers nothing',
+    !str_contains(getWithJar($baseUrl . '/watch/pb-episode-two', $jar)['body'], 'class="pb-next-title"'),
+    'the end of a series pointed somewhere'
+);
+
+/*
+ * THE visibility property. forSeries() does not filter member-only or the
+ * schedule window, so a plugin using it would name a members-only episode to a
+ * signed-out visitor. This goes through the ordinary listing query instead.
+ */
+$db->execute('UPDATE {videos} SET member_only = 1 WHERE id = ?', [$pbNext]);
+
+check(
+    'A members-only next episode is not named to a stranger',
+    !str_contains(get($baseUrl . '/watch/pb-episode-one')['body'], 'pb-episode-two'),
+    'up next became a second way to see what the listing hides'
+);
+
+$db->execute('DELETE FROM {videos} WHERE id IN (?, ?)', [$pbFirst, $pbNext]);
+$db->execute('DELETE FROM {series} WHERE id = ?', [$pbSeries]);
+
+/* The settings screen, and that it is linked. */
+$pbAdmin = getWithJar($baseUrl . '/admin/playback', $jar);
+check('The playback settings page renders', $pbAdmin['status'] === 200, "got {$pbAdmin['status']}");
+check(
+    'and it says both work without JavaScript',
+    str_contains($pbAdmin['body'], 'work without it'),
+    'a feature that needs scripting should say what happens without it'
+);
+
+/* Switching one off leaves the other alone — the reason they are one plugin. */
+postWithJar($baseUrl . '/admin/playback', [
+    '_token'       => csrfFrom($pbAdmin['body']),
+    'next_enabled' => '1',
+    'skip_titles'  => 'Sermon',
+    'next_countdown' => '10',
+], $jar);
+
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($chapterEditAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'chapters',
+    'chapters' => "0:00 Welcome\n15:00 Sermon",
+], $jar);
+
+check(
+    'Turning skip off removes the button',
+    !str_contains(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body'], 'data-pb-seek'),
+    'the switch is decorative'
+);
+
+/* Back on, so nothing downstream sees a half-configured plugin. */
+postWithJar($baseUrl . '/admin/playback', [
+    '_token'         => csrfFrom(getWithJar($baseUrl . '/admin/playback', $jar)['body']),
+    'skip_enabled'   => '1',
+    'next_enabled'   => '1',
+    'skip_titles'    => 'Sermon, Message, Teaching, Talk',
+    'next_countdown' => '10',
+], $jar);
+
+/* Restore the chapter fixture the checks below expect. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($chapterEditAfter['body']),
+    'id'       => (string) $videoRow,
+    'action'   => 'chapters',
+    'chapters' => "Chapters:\n0:00 Welcome\n2:15 The reading from Psalm 1:1\n14:30 Questions",
+], $jar);
+
+echo "\nChapters, continued\n";
 
 /* Text with no timestamps at all is a format mistake, and says so. */
 postWithJar($baseUrl . '/admin/videos', [

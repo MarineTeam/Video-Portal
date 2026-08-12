@@ -21,6 +21,7 @@
 !/plugins/comments/
 !/plugins/ratings/
 !/plugins/reactions/
+!/plugins/playback/
 !/plugins/query-monitor/
 !/plugins/push/
 !/plugins/provider-stats/
