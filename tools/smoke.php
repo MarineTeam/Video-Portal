@@ -6533,6 +6533,125 @@ check(
 
 $db->execute('DELETE FROM {transcripts} WHERE video_id = ?', [$videoRow]);
 
+/* ------------------------------------------------------------- restoring it
+ *
+ * The export shipped saying it was "a record, not a restore", because writing
+ * an importer needed answers to real questions. Those are answered now, and the
+ * whole feature only means anything as a ROUND TRIP — so this uploads the file
+ * the previous checks just downloaded, through the actual form.
+ */
+$libraryFile = sys_get_temp_dir() . '/portal-smoke-library-' . getmypid() . '.ndjson';
+file_put_contents($libraryFile, $exported['body']);
+
+$settingsScreen = getWithJar($baseUrl . '/admin/settings', $jar);
+
+check(
+    'The settings screen offers to restore a library',
+    str_contains($settingsScreen['body'], 'name="library"'),
+    'a backup nothing can read back is a record, not a backup'
+);
+
+/*
+ * Imported into the site it came from, so EVERYTHING collides. That is the
+ * check worth having: the safety property is that nothing is overwritten, and
+ * the strongest way to prove it is to import a file over its own source and
+ * find the library unchanged.
+ */
+$before = (int) $db->value('SELECT COUNT(*) FROM {videos}');
+$beforeTitle = (string) $db->value('SELECT title FROM {videos} WHERE id = ?', [$videoRow]);
+
+$restored = uploadWithJar(
+    $baseUrl . '/admin/settings/content/import',
+    ['_token' => csrfFrom($settingsScreen['body'])],
+    'library',
+    $libraryFile,
+    $jar,
+    'application/x-ndjson'
+);
+
+check('Restoring a library is accepted', $restored['status'] === 302, "got {$restored['status']}");
+check(
+    'and importing over the same site adds nothing',
+    (int) $db->value('SELECT COUNT(*) FROM {videos}') === $before,
+    'every video was duplicated — the conflict check did not match'
+);
+check(
+    'and changes nothing that was already here',
+    (string) $db->value('SELECT title FROM {videos} WHERE id = ?', [$videoRow]) === $beforeTitle,
+    'THE safety property: an import overwrote a library it was supposed to leave alone'
+);
+check(
+    'and says what it skipped',
+    str_contains(getWithJar($baseUrl . '/admin/settings', $jar)['body'], 'already here'),
+    'a report of nothing done reads as the feature being broken'
+);
+
+/*
+ * Now the restore that matters: into a site missing something. One category is
+ * deleted and the same file imported again, which is the shape of recovering
+ * from a mistake.
+ */
+$db->execute('DELETE FROM {categories} WHERE slug = ?', ['restore-me']);
+$db->insert('categories', [
+    'slug' => 'restore-me', 'name' => 'Restore Me', 'path' => '/', 'depth' => 0,
+    'position' => 970, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$withNew = getWithJar($baseUrl . '/admin/settings/content', $jar);
+file_put_contents($libraryFile, $withNew['body']);
+
+$db->execute('DELETE FROM {categories} WHERE slug = ?', ['restore-me']);
+
+uploadWithJar(
+    $baseUrl . '/admin/settings/content/import',
+    ['_token' => csrfFrom(getWithJar($baseUrl . '/admin/settings', $jar)['body'])],
+    'library',
+    $libraryFile,
+    $jar,
+    'application/x-ndjson'
+);
+
+$restoredId = (int) ($db->value('SELECT id FROM {categories} WHERE slug = ?', ['restore-me']) ?? 0);
+
+check(
+    'A deleted category comes back',
+    $restoredId > 0,
+    'the import reported success and restored nothing'
+);
+check(
+    'and its path is rebuilt for its NEW id',
+    (string) $db->value('SELECT path FROM {categories} WHERE id = ?', [$restoredId]) === '/' . $restoredId . '/',
+    'a copied path points at the old site’s tree, and descendant lookups are a LIKE on that prefix'
+);
+
+/* A settings export is not a library, and saying so beats importing zero things. */
+$wrongFile = sys_get_temp_dir() . '/portal-smoke-wrongfile-' . getmypid() . '.json';
+file_put_contents($wrongFile, '{"settings":{"site_name":"Not a library"}}');
+
+uploadWithJar(
+    $baseUrl . '/admin/settings/content/import',
+    ['_token' => csrfFrom(getWithJar($baseUrl . '/admin/settings', $jar)['body'])],
+    'library',
+    $wrongFile,
+    $jar,
+    'application/json'
+);
+
+check(
+    'The wrong file is named as the wrong file',
+    str_contains(getWithJar($baseUrl . '/admin/settings', $jar)['body'], 'Download the library'),
+    '"imported 0 videos" reads as the feature being broken rather than the file being wrong'
+);
+check(
+    'and it changed nothing',
+    (int) $db->value('SELECT COUNT(*) FROM {videos}') === $before,
+    'an unrelated file was allowed to write'
+);
+
+@unlink($libraryFile);
+@unlink($wrongFile);
+$db->execute('DELETE FROM {categories} WHERE slug = ?', ['restore-me']);
+
 /*
  * The gate. This carries every unpublished and members-only video in the
  * library, so it is a site-owner action — checked from the single-capability

@@ -4001,14 +4001,27 @@ final class AdminView
            one line of JSON each — including the unpublished and members-only ones. On a host with no
            shell, it is the only way to get a copy of what you catalogued out of the database.
            Transcripts are a separate button because they can be fifty times the size.</p>
-        <p class="muted small"><strong>It is a record, not a restore.</strong> Nothing reads it back:
-           putting it into a site would need rules for a slug that already exists and a provider id
-           from somebody else's account, and guessing at those quietly is worse than not offering it.
-           Keep it the way you would keep a printed catalogue.</p>
+        <form method="post" action="/admin/settings/content/import" enctype="multipart/form-data" class="toolbar">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="file" name="library" accept=".ndjson,.json,text/plain,application/json" required>
+          <button class="btn secondary">Restore a library</button>
+        </form>
+        <p class="muted small"><strong>Nothing is ever overwritten.</strong> Anything already here —
+           matched on its address, or on the same video at your provider — is left exactly as it is and
+           counted as skipped. There is no “replace” option, deliberately: the primary use is restoring
+           a site that lost its database, where nothing collides, and the cost of getting a replace
+           wrong is a year of cataloguing gone with no way back on a host with no database console.
+           To genuinely replace something, delete it first and import again.</p>
+        <p class="muted small">Videos come back pointing at the same files at your video service, so a
+           restore only plays if this install has credentials for the same library. Ones that were in
+           the trash come back in the trash. Anything the file mentions and this site does not have —
+           a category, a series — is simply left off rather than invented.</p>
+
+        <h2>Move this site's setup elsewhere</h2>
         <form method="post" action="/admin/settings/import" enctype="multipart/form-data" class="toolbar">
           <input type="hidden" name="_token" value="{$token}">
           <input type="file" name="settings" accept=".json,application/json" required>
-          <button class="btn secondary">Import</button>
+          <button class="btn secondary">Import settings</button>
         </form>
         <p class="muted small">Importing applies theme customisations to whichever theme is active here,
            not the one named in the file — bringing settings across should never silently change how the

@@ -226,6 +226,7 @@ final class Routes
         $router->get('/admin/settings/export', [AdminController::class, 'exportSettings'], ['admin.area']);
         $router->get('/admin/settings/content', [AdminController::class, 'exportContent'], ['admin.area']);
         $router->post('/admin/settings/import', [AdminController::class, 'importSettings'], ['admin.area']);
+        $router->post('/admin/settings/content/import', [AdminController::class, 'importContent'], ['admin.area']);
 
         // ---------------------------------------------------------- upload
 
