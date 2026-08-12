@@ -241,7 +241,26 @@ final class TagRepository
         foreach ($names as $name) {
             $ids[] = $this->idFor($name);
         }
-        $ids = array_values(array_unique(array_filter($ids)));
+
+        /*
+         * The cap is enforced HERE, not only in parse().
+         *
+         * parse() bounds what one form submits, which was enough while a form
+         * was the only way in. Bulk tagging MERGES what a video already has
+         * with what is being added, so two lists each inside the limit can
+         * cross it together — and a rule that lives in the caller is a rule the
+         * next caller forgets, which is exactly what the password policy was
+         * moved into the repository to stop.
+         *
+         * Applied after the ids are resolved, so duplicate spellings collapse
+         * before anything is counted: adding "Prayer" to a video that already
+         * has "prayer" costs nothing against the limit.
+         */
+        $ids = array_slice(
+            array_values(array_unique(array_filter($ids))),
+            0,
+            self::MAX_PER_ITEM
+        );
 
         $this->db->execute(
             'DELETE FROM {taggables} WHERE taggable_type = ? AND taggable_id = ?',

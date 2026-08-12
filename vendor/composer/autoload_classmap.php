@@ -54,6 +54,7 @@ return array(
     'Portal\\Content\\ChapterParser' => $baseDir . '/core/Content/ChapterParser.php',
     'Portal\\Content\\ChapterRepository' => $baseDir . '/core/Content/ChapterRepository.php',
     'Portal\\Content\\ContentExport' => $baseDir . '/core/Content/ContentExport.php',
+    'Portal\\Content\\ContentImport' => $baseDir . '/core/Content/ContentImport.php',
     'Portal\\Content\\HomeRow' => $baseDir . '/core/Content/HomeRow.php',
     'Portal\\Content\\HomeRowRepository' => $baseDir . '/core/Content/HomeRowRepository.php',
     'Portal\\Content\\LiveStreamPolicy' => $baseDir . '/core/Content/LiveStreamPolicy.php',

@@ -460,6 +460,16 @@ final class AdminView
          * glance rather than one video at a time. Read from a map the
          * controller built in one query — the closure only looks things up.
          */
+        /*
+         * The same suggestion list the edit screen uses, for the bulk box.
+         * Without it, bulk tagging is the fastest possible way to spread a
+         * near-duplicate across two hundred videos at once.
+         */
+        $tagChoices = '';
+        foreach ((array) ($data['tagChoices'] ?? []) as $choice) {
+            $tagChoices .= '<option value="' . $this->attr($choice->name) . '">';
+        }
+
         $tagsByVideo = (array) ($data['tagsByVideo'] ?? []);
         $tagsFor = static function (int $videoId) use ($tagsByVideo): string {
             $tags = $tagsByVideo[$videoId] ?? [];
@@ -652,11 +662,18 @@ final class AdminView
             <button name="bulk" value="publish" class="btn tiny secondary">Publish</button>
             <button name="bulk" value="unpublish" class="btn tiny secondary">Unpublish</button>
             {$categoryPicker}
+            <input type="text" name="bulk_tags" list="tag-choices" placeholder="Tags…" size="18">
+            <button name="bulk" value="tag" class="btn tiny secondary">Add tags</button>
             <button name="bulk" value="trash" class="btn tiny danger"
                     onclick="return confirm('Move the ticked videos to trash?')">Move to trash</button>
           </div>
-          <p class="muted small">Adding a category adds it — nothing already on a video is removed.
-             At most 200 at a time, so a long selection cannot be cut in half by a timeout.</p>
+          <datalist id="tag-choices">{$tagChoices}</datalist>
+          <p class="muted small">Adding a category or a tag ADDS it — nothing already on a video is
+             removed. That is the opposite of the boxes on a video's own edit screen, which show the
+             complete list and so treat an empty one as "remove them all"; a bulk bar shows only what
+             is being added and knows nothing about what each video already carries.</p>
+          <p class="muted small">At most 200 at a time, so a long selection cannot be cut in half by a
+             timeout.</p>
         </form>
 
         {$rowForms}
@@ -4001,14 +4018,27 @@ final class AdminView
            one line of JSON each — including the unpublished and members-only ones. On a host with no
            shell, it is the only way to get a copy of what you catalogued out of the database.
            Transcripts are a separate button because they can be fifty times the size.</p>
-        <p class="muted small"><strong>It is a record, not a restore.</strong> Nothing reads it back:
-           putting it into a site would need rules for a slug that already exists and a provider id
-           from somebody else's account, and guessing at those quietly is worse than not offering it.
-           Keep it the way you would keep a printed catalogue.</p>
+        <form method="post" action="/admin/settings/content/import" enctype="multipart/form-data" class="toolbar">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="file" name="library" accept=".ndjson,.json,text/plain,application/json" required>
+          <button class="btn secondary">Restore a library</button>
+        </form>
+        <p class="muted small"><strong>Nothing is ever overwritten.</strong> Anything already here —
+           matched on its address, or on the same video at your provider — is left exactly as it is and
+           counted as skipped. There is no “replace” option, deliberately: the primary use is restoring
+           a site that lost its database, where nothing collides, and the cost of getting a replace
+           wrong is a year of cataloguing gone with no way back on a host with no database console.
+           To genuinely replace something, delete it first and import again.</p>
+        <p class="muted small">Videos come back pointing at the same files at your video service, so a
+           restore only plays if this install has credentials for the same library. Ones that were in
+           the trash come back in the trash. Anything the file mentions and this site does not have —
+           a category, a series — is simply left off rather than invented.</p>
+
+        <h2>Move this site's setup elsewhere</h2>
         <form method="post" action="/admin/settings/import" enctype="multipart/form-data" class="toolbar">
           <input type="hidden" name="_token" value="{$token}">
           <input type="file" name="settings" accept=".json,application/json" required>
-          <button class="btn secondary">Import</button>
+          <button class="btn secondary">Import settings</button>
         </form>
         <p class="muted small">Importing applies theme customisations to whichever theme is active here,
            not the one named in the file — bringing settings across should never silently change how the

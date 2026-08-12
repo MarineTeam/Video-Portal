@@ -82,6 +82,7 @@ class ComposerStaticInitae9cdb4486d610beb9cff40d8f421199
         'Portal\\Content\\ChapterParser' => __DIR__ . '/../..' . '/core/Content/ChapterParser.php',
         'Portal\\Content\\ChapterRepository' => __DIR__ . '/../..' . '/core/Content/ChapterRepository.php',
         'Portal\\Content\\ContentExport' => __DIR__ . '/../..' . '/core/Content/ContentExport.php',
+        'Portal\\Content\\ContentImport' => __DIR__ . '/../..' . '/core/Content/ContentImport.php',
         'Portal\\Content\\HomeRow' => __DIR__ . '/../..' . '/core/Content/HomeRow.php',
         'Portal\\Content\\HomeRowRepository' => __DIR__ . '/../..' . '/core/Content/HomeRowRepository.php',
         'Portal\\Content\\LiveStreamPolicy' => __DIR__ . '/../..' . '/core/Content/LiveStreamPolicy.php',

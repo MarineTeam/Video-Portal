@@ -28,11 +28,17 @@ use Portal\Db;
  * Batched for the same reason. Peak memory is one batch, whether the library
  * holds fifty videos or fifty thousand.
  *
- * What this is NOT: a restore. There is no importer, and writing one is a
- * different job with real questions behind it — what happens to a slug that
+ * This used to say it was a record and not a restore, because writing an
+ * importer needed answers to real questions — what happens to a slug that
  * already exists, whether a provider id from another account means anything,
- * how to merge rather than clobber. Said plainly on the screen that offers it,
- * because "export" invites the assumption that something can read it back.
+ * how to merge rather than clobber. ContentImport answers them: nothing is ever
+ * overwritten, ids are remapped rather than reused, and a reference the file
+ * names but the site does not have is dropped rather than invented.
+ *
+ * The dependency order below is what makes that possible in ONE PASS, and it
+ * stopped being a nicety the moment something read this back. A video refers to
+ * its series, speaker and categories by the ids they had here, so an importer
+ * has to have seen and remapped those before it meets the video.
  */
 final class ContentExport
 {
@@ -69,9 +75,19 @@ final class ContentExport
             'note'       => 'One JSON object per line. This is a record of the library, not a restore file.',
         ];
 
-        // No created_at on this table — it has never had one.
+        /*
+         * No created_at on this table — it has never had one.
+         *
+         * The visibility flags were missing until an importer was written and
+         * the gap became a harm rather than an omission: restoring a hidden or
+         * members-only category as public republishes something that was taken
+         * down on purpose. Adding fields is backward-compatible — an older file
+         * simply lacks them and the importer defaults.
+         */
         yield from $this->table('category', 'categories', [
-            'id', 'parent_id', 'slug', 'name', 'description', 'path', 'depth', 'position',
+            'id', 'parent_id', 'slug', 'name', 'description', 'image_url',
+            'path', 'depth', 'position',
+            'is_published', 'member_only', 'hidden',
         ]);
 
         yield from $this->table('series', 'series', [

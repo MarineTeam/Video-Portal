@@ -176,6 +176,10 @@ final class AdminController extends Controller
                 'video',
                 array_map(static fn ($v): int => $v->id, $result['items'])
             ),
+            // Suggestions for the bulk tag box. Without them, bulk tagging is
+            // the fastest way to spread "prayers" beside "prayer" across two
+            // hundred videos at once.
+            'tagChoices'  => $this->tagRepo()->all(),
             /*
              * Counted, not inferred from the page on screen. A filter tab
              * reading "Failed" with no number beside it gives an admin no
@@ -472,6 +476,27 @@ final class AdminController extends Controller
             $this->require(Capability::MANAGE_CATEGORIES, 'category', $categoryId);
         }
 
+        /*
+         * Parsed ONCE, before the loop.
+         *
+         * Running the parser per video would do the same work two hundred
+         * times, and — worse — a name that parses to nothing would be
+         * discovered on video one and again on video two hundred, with the
+         * refusal message arriving after half the library had been touched.
+         */
+        $tagNames = [];
+        if ($action === 'tag') {
+            $tagNames = \Portal\Content\TagRepository::parse((string) ($request->input('bulk_tags') ?? ''));
+
+            if ($tagNames === []) {
+                return $this->back(
+                    $request,
+                    'Type at least one tag. Nothing here can be used as one — a tag needs a letter or a number.',
+                    'error'
+                );
+            }
+        }
+
         $changed = 0;
         $failures = [];
 
@@ -520,6 +545,28 @@ final class AdminController extends Controller
                             $existing[] = $categoryId;
                             $videos->setCategories($id, $existing);
                         }
+                        break;
+
+                    case 'tag':
+                        /*
+                         * ADDS, the same as categorise above and the opposite
+                         * of the tag field on the edit screen.
+                         *
+                         * The difference is what the person can see. A form
+                         * shows the complete current list, so an empty box
+                         * means "remove them all" and replacing is right. A
+                         * bulk bar shows the names being ADDED and nothing
+                         * about what each of two hundred videos already
+                         * carries — so replacing there would silently wipe
+                         * tagging nobody was looking at.
+                         */
+                        $tags = $this->tagRepo();
+                        $current = array_map(
+                            static fn ($tag): string => $tag->name,
+                            $tags->forItem('video', $id)
+                        );
+
+                        $tags->setFor('video', $id, array_merge($current, $tagNames));
                         break;
 
                     case 'trash':
@@ -899,6 +946,113 @@ final class AdminController extends Controller
                 'attachment; filename="video-portal-settings-' . date('Y-m-d') . '.json"'
             )
             ->private();
+    }
+
+    /**
+     * Read a library export back in.
+     *
+     * The export has said since it shipped that it is a record and not a
+     * restore, because writing this needed answers to real questions. The
+     * answer to the biggest one — what happens to a slug that already exists —
+     * is that nothing is ever overwritten. See ContentImport.
+     */
+    public function importContent(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+        $this->require(Capability::MANAGE_SETTINGS);
+
+        /** @var array<string, mixed> $file */
+        $file = (array) ($request->files['library'] ?? []);
+        $tmp = (string) ($file['tmp_name'] ?? '');
+        $error = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
+
+        /*
+         * The size limit gets its own message, because it is the failure this
+         * will actually hit. A library export is the biggest file this product
+         * ever produces and shared hosts cap uploads at 2MB by default — and
+         * PHP reports that as an empty $_FILES entry, which reads as "no file
+         * was chosen" and sends somebody looking at their file picker.
+         */
+        if ($error === UPLOAD_ERR_INI_SIZE || $error === UPLOAD_ERR_FORM_SIZE) {
+            return $this->back($request, sprintf(
+                'That file is larger than this server accepts (%s). Ask your host to raise '
+                . 'upload_max_filesize and post_max_size, or import the library in pieces.',
+                ini_get('upload_max_filesize') ?: 'the configured limit'
+            ), 'error');
+        }
+
+        if ($tmp === '' || !is_uploaded_file($tmp)) {
+            return $this->back($request, 'No file was chosen.', 'error');
+        }
+
+        $handle = @fopen($tmp, 'rb');
+        if ($handle === false) {
+            return $this->back($request, 'That file could not be read.', 'error');
+        }
+
+        try {
+            $result = (new \Portal\Content\ContentImport(
+                $this->db(),
+                $this->container->get(CategoryRepository::class)
+            ))->read($handle);
+        } finally {
+            fclose($handle);
+        }
+
+        $counts = $result['counts'];
+        $added = $counts['categories'] + $counts['series'] + $counts['speakers'] + $counts['videos'];
+
+        /*
+         * A file that produced nothing is reported as a probable wrong file,
+         * not as a successful import of zero things. "Imported 0 videos" reads
+         * as the feature being broken; naming the likely cause does not.
+         */
+        if ($added === 0 && $counts['skipped'] === 0) {
+            return $this->back(
+                $request,
+                'Nothing in that file could be read. It should be the .ndjson file from '
+                . '“Download the library” — a settings export will not work here.',
+                'error'
+            );
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'content.import',
+            null,
+            null,
+            sprintf('%d added, %d already here', $added, $counts['skipped'])
+        );
+
+        $message = sprintf(
+            'Imported %d categor%s, %d series, %d speaker%s and %d video%s. '
+            . '%d record%s already here and %s left alone.',
+            $counts['categories'],
+            $counts['categories'] === 1 ? 'y' : 'ies',
+            $counts['series'],
+            $counts['speakers'],
+            $counts['speakers'] === 1 ? '' : 's',
+            $counts['videos'],
+            $counts['videos'] === 1 ? '' : 's',
+            $counts['skipped'],
+            $counts['skipped'] === 1 ? '' : 's',
+            $counts['skipped'] === 1 ? 'was' : 'were'
+        );
+
+        if ($counts['transcripts'] > 0) {
+            $message .= sprintf(' %d transcript(s) came with them.', $counts['transcripts']);
+        }
+
+        if ($counts['failed'] > 0) {
+            $message .= sprintf(
+                ' %d line(s) could not be read%s',
+                $counts['failed'],
+                $result['problems'] === [] ? '.' : ': ' . implode('; ', $result['problems'])
+            );
+        }
+
+        return $this->back($request, $message, $counts['failed'] > 0 ? 'error' : 'success');
     }
 
     public function importSettings(Request $request): Response
