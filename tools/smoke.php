@@ -46,6 +46,32 @@ $baseUrl = "http://127.0.0.1:{$serverPort}";
 $passed = 0;
 $failed = 0;
 
+/**
+ * How long any single request may take.
+ *
+ * Generous on purpose. The sign-in and change-password endpoints hash a
+ * password, which is CPU-bound BY DESIGN, and PHP's built-in server is
+ * single-threaded — so on a machine doing anything else, one of those requests
+ * legitimately takes tens of seconds. At the old 15 seconds curl gave up first
+ * and returned status 0, and the run then reported things like "the refusal was
+ * cosmetic": a confident claim about a security property, produced by a busy
+ * laptop.
+ *
+ * A timeout this long cannot mask a hang either, because a genuinely hung
+ * request still fails — it just takes a minute to say so, which is a fair price
+ * for never again diagnosing a defect that was really a busy CPU.
+ */
+const SMOKE_TIMEOUT = 90;
+
+/**
+ * Transport failures, counted separately from assertion failures.
+ *
+ * A request that never completed is not evidence about the application, and
+ * the run says so at the end rather than letting the reader work it out from
+ * a page of unrelated-looking failures.
+ */
+$transportFailures = [];
+
 function check(string $label, bool $ok, string $detail = ''): void
 {
     global $passed, $failed;
@@ -57,6 +83,25 @@ function check(string $label, bool $ok, string $detail = ''): void
         $failed++;
         echo "  FAIL  {$label}" . ($detail !== '' ? " — {$detail}" : '') . "\n";
     }
+}
+
+/**
+ * Record a request that never got an answer, and say what curl said.
+ *
+ * Status 0 means the response never arrived — a timeout, a refused connection,
+ * a killed server. Every check downstream of one is then measuring the wreckage
+ * rather than the application: a lost session turns every later admin request
+ * into a 302, and forty checks report forty different imaginary defects.
+ *
+ * Noted at the point it happens, so the log names the cause once rather than
+ * leaving it to be inferred from the symptoms.
+ */
+function noteTransportFailure(string $url, string $error): void
+{
+    global $transportFailures;
+
+    $transportFailures[] = $url . ' — ' . ($error !== '' ? $error : 'no response');
+    echo "  !!    NO RESPONSE from {$url} — {$error}\n";
 }
 
 /**
@@ -150,7 +195,7 @@ function postJsonWithJar(string $url, array $payload, string $jar): array
         CURLOPT_HEADER         => true,
         CURLOPT_COOKIEJAR      => $jar,
         CURLOPT_COOKIEFILE     => $jar,
-        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_TIMEOUT        => SMOKE_TIMEOUT,
         CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_POST           => true,
         CURLOPT_POSTFIELDS     => (string) json_encode($payload),
@@ -159,6 +204,9 @@ function postJsonWithJar(string $url, array $payload, string $jar): array
 
     $raw = (string) curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    if ($status === 0) {
+        noteTransportFailure((string) $url, curl_error($ch));
+    }
     $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
@@ -197,12 +245,15 @@ function uploadWithJar(
         ],
         CURLOPT_COOKIEJAR      => $jar,
         CURLOPT_COOKIEFILE     => $jar,
-        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_TIMEOUT        => SMOKE_TIMEOUT,
         CURLOPT_FOLLOWLOCATION => false,
     ]);
 
     $raw = (string) curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    if ($status === 0) {
+        noteTransportFailure((string) $url, curl_error($ch));
+    }
     $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
@@ -222,7 +273,7 @@ function withJar(string $url, string $jar, ?string $body, array $headers = []): 
         CURLOPT_HEADER         => true,
         CURLOPT_COOKIEJAR      => $jar,
         CURLOPT_COOKIEFILE     => $jar,
-        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_TIMEOUT        => SMOKE_TIMEOUT,
         // Only what a caller asks for. A Referer matters where the handler
         // redirects back to where the person came from, which curl does not
         // send on its own.
@@ -238,6 +289,9 @@ function withJar(string $url, string $jar, ?string $body, array $headers = []): 
 
     $raw = (string) curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    if ($status === 0) {
+        noteTransportFailure((string) $url, curl_error($ch));
+    }
     $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
@@ -283,11 +337,14 @@ function send(string $url, string $method, string $body, string $contentType): a
         CURLOPT_CUSTOMREQUEST  => $method,
         CURLOPT_POSTFIELDS     => $body,
         CURLOPT_HTTPHEADER     => ['Content-Type: ' . $contentType],
-        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_TIMEOUT        => SMOKE_TIMEOUT,
     ]);
 
     $raw = (string) curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    if ($status === 0) {
+        noteTransportFailure((string) $url, curl_error($ch));
+    }
     $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
@@ -306,11 +363,14 @@ function get(string $url, bool $followRedirects = false): array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HEADER         => true,
         CURLOPT_FOLLOWLOCATION => $followRedirects,
-        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_TIMEOUT        => SMOKE_TIMEOUT,
     ]);
 
     $raw = (string) curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    if ($status === 0) {
+        noteTransportFailure((string) $url, curl_error($ch));
+    }
     $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
@@ -6879,6 +6939,128 @@ $db->execute(
 $db->execute('DELETE FROM {users} WHERE email = ?', ['newcomer@smoke.test']);
 @unlink($signupJar);
 
+/* ------------------------------------------------- failed videos, and recovery
+ *
+ * The sync job used to read one page of a hundred videos and mark everything
+ * else failed, so on a library of any size there are rows saying "Failed" about
+ * videos that are perfectly fine. The job is fixed, but the rows it already
+ * wrote are still there, and nothing corrected them.
+ *
+ * Two halves, both driven through the screen: FINDING them (a status filter,
+ * because scrolling a large library is not a way to find anything) and CLEARING
+ * them (asking the provider about one video and believing the answer).
+ */
+echo "\nFailed videos\n";
+
+$failedAt = date('Y-m-d H:i:s');
+$failedId = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-failed-1',
+    'slug' => 'wrongly-condemned', 'title' => 'Wrongly Condemned',
+    'status' => 'failed', 'is_published' => 1, 'duration' => 42,
+    'created_at' => $failedAt, 'updated_at' => $failedAt,
+]);
+
+$allVideos = getWithJar($baseUrl . '/admin/videos', $jar);
+
+check(
+    'The video list offers a status filter',
+    str_contains($allVideos['body'], 'href="/admin/videos?status=failed"'),
+    'a failed video is findable only by scrolling, which on a real library means not at all'
+);
+check(
+    'and the failed tab carries its count',
+    str_contains($allVideos['body'], 'Failed (1)'),
+    'a tab with no number gives nobody a reason to press it — and not knowing is the whole problem'
+);
+
+$failedOnly = getWithJar($baseUrl . '/admin/videos?status=failed', $jar);
+
+check(
+    'Filtering to failed shows the failed video',
+    str_contains($failedOnly['body'], 'Wrongly Condemned'),
+    "got {$failedOnly['status']}"
+);
+check(
+    'and hides the ones that are fine',
+    !str_contains($failedOnly['body'], 'A Test Video'),
+    'the filter rendered but did not filter'
+);
+
+/*
+ * The safety property, driven publicly: a failed video must not appear on the
+ * public site whatever the query string says. `status` narrows an admin listing
+ * and can never widen a visitor's.
+ */
+check(
+    'and a failed video stays off the public site',
+    !str_contains(get($baseUrl . '/?status=failed')['body'], 'Wrongly Condemned'),
+    'a query parameter put a broken video on the homepage'
+);
+
+/*
+ * Re-check, against a provider that cannot be reached.
+ *
+ * This install carries placeholder bunny.net credentials, so getVideo() makes a
+ * real outbound call that fails. That is not a limitation of the check — it is
+ * the single most important of the four outcomes, and the only one this
+ * environment can stage honestly.
+ *
+ * "We could not ask" and "it is gone" look identical to a caught exception and
+ * lead to opposite actions. What must be true here is that NOTHING was written:
+ * a network failure may not condemn a video, and may not quietly mark a healthy
+ * one as broken. The provider-said-404 and provider-said-ready paths are
+ * covered in ContentTest, where the provider can be made to answer.
+ *
+ * The first version of these checks asserted the 404 outcome, on the mistaken
+ * belief that this script installs a fake provider. It installs the real one.
+ */
+check(
+    'A video that is not ready offers a re-check button',
+    str_contains($failedOnly['body'], 'value="recheck"'),
+    'no way to ask the provider, so a wrongly-failed video stays failed forever'
+);
+check(
+    'and a ready video does not',
+    !str_contains(getWithJar($baseUrl . '/admin/videos?status=ready', $jar)['body'], 'value="recheck"'),
+    'a button on every row to serve the rows that have nothing to say'
+);
+
+/*
+ * Moved to `processing` before the re-check, so the outcome is a real
+ * TRANSITION.
+ *
+ * Re-checking a video that is already failed and asserting it is still failed
+ * passes just as happily when the handler does nothing at all — the exact shape
+ * of vacuous assertion this project keeps finding. processing -> failed can
+ * only happen if the provider was asked and the answer was written.
+ */
+$db->execute('UPDATE {videos} SET status = ? WHERE id = ?', ['processing', $failedId]);
+
+$rechecked = postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($failedOnly['body']),
+    'action' => 'recheck',
+    'id'     => (string) $failedId,
+], $jar);
+
+check('Re-checking a video is accepted', $rechecked['status'] === 302, "got {$rechecked['status']}");
+check(
+    'and an unreachable provider changes nothing',
+    (string) $db->value('SELECT status FROM {videos} WHERE id = ?', [$failedId]) === 'processing',
+    'a network failure was treated as a verdict about the video'
+);
+check(
+    'and nothing was written to the audit log',
+    (int) $db->value('SELECT COUNT(*) FROM {audit_log} WHERE action = ?', ['video.recheck']) === 0,
+    'an attempt that changed nothing was recorded as though it had'
+);
+check(
+    'and the screen says it could not ask, rather than giving a verdict',
+    str_contains(getWithJar($baseUrl . '/admin/videos?status=processing', $jar)['body'], 'Could not reach'),
+    'the one message that must not be rounded off into "this video is gone"'
+);
+
+$db->execute('DELETE FROM {videos} WHERE id = ?', [$failedId]);
+
 /* ------------------------------------------------------------ scoped grants
  *
  * Phase 1's verification list, item 8: "Grant manage_videos scoped to one
@@ -7152,10 +7334,13 @@ $badMethod = (function () use ($baseUrl): array {
     $ch = curl_init($baseUrl . '/');
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true,
-        CURLOPT_CUSTOMREQUEST => 'DELETE', CURLOPT_TIMEOUT => 10,
+        CURLOPT_CUSTOMREQUEST => 'DELETE', CURLOPT_TIMEOUT => SMOKE_TIMEOUT,
     ]);
     $raw = (string) curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    if ($status === 0) {
+        noteTransportFailure($baseUrl . '/ (DELETE)', curl_error($ch));
+    }
     curl_close($ch);
     return ['status' => $status, 'raw' => $raw];
 })();
@@ -7167,5 +7352,34 @@ check('405 carries an Allow header', stripos($badMethod['raw'], 'Allow:') !== fa
 echo "\n";
 echo str_repeat('-', 50) . "\n";
 printf("%d passed, %d failed\n", $passed, $failed);
+
+/*
+ * If any request never got a response, say so LOUDLY and separately.
+ *
+ * A run with a transport failure in it is not evidence about the application.
+ * One lost response is enough to invalidate everything after it: the change-
+ * password endpoint signs every session out and issues a new one, so a reply
+ * that never arrives leaves the cookie jar holding a session that no longer
+ * exists, and every later admin request answers 302. That reads as dozens of
+ * unrelated features breaking at once.
+ *
+ * This happened twice while building the video re-check, both times because
+ * something else on the machine was busy — password hashing is CPU-bound by
+ * design and the built-in server is single-threaded. The first diagnosis was
+ * wrong both times, because the checks reported what they always report.
+ */
+if ($transportFailures !== []) {
+    echo "\n";
+    echo str_repeat('!', 50) . "\n";
+    printf("%d request(s) never got a response:\n", count($transportFailures));
+    foreach ($transportFailures as $failure) {
+        echo '  ' . $failure . "\n";
+    }
+    echo "\nTHIS RUN IS NOT EVIDENCE ABOUT THE APPLICATION.\n";
+    echo "A lost response invalidates every check after it — a change-password\n";
+    echo "reply that never arrives leaves the cookie jar holding a dead session,\n";
+    echo "and everything downstream answers 302. Re-run on an idle machine\n";
+    echo "before believing any failure above.\n";
+}
 
 exit($failed === 0 ? 0 : 1);

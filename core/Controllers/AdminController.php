@@ -133,12 +133,25 @@ final class AdminController extends Controller
         $videos = $this->container->get(VideoRepository::class);
 
         $page = max(1, (int) ($request->query('page') ?? 1));
+
+        /*
+         * Whitelisted here as well as in the repository. Not belt and braces —
+         * this one decides which tab renders as selected, and an unrecognised
+         * value must fall back to "All" rather than highlighting nothing while
+         * the list quietly shows everything.
+         */
+        $status = (string) ($request->query('status') ?? '');
+        if (!in_array($status, \Portal\Content\Video::STATUSES, true)) {
+            $status = '';
+        }
+
         $result = $videos->query([
             'includeUnpublished' => true,
             'includeProcessing'  => true,
             'includeHidden'      => true,
             'includeMemberOnly'  => true,
             'search'             => $request->query('q') ?? '',
+            'status'             => $status,
         ], $page, 25);
 
         /** @var CategoryRepository $categories */
@@ -149,9 +162,17 @@ final class AdminController extends Controller
             'total'      => $result['total'],
             'page'       => $page,
             'search'     => $request->query('q') ?? '',
+            'status'     => $status,
             'categories' => $categories->all(true),
             'canUpload'  => $this->canUpload(),
             'trashed'    => $videos->trashedCount(),
+            /*
+             * Counted, not inferred from the page on screen. A filter tab
+             * reading "Failed" with no number beside it gives an admin no
+             * reason to press it, and the whole point is that they may have
+             * failed videos they do not know about.
+             */
+            'failed'     => $videos->countByStatus(\Portal\Content\Video::STATUS_FAILED),
         ]);
     }
 
@@ -521,6 +542,9 @@ final class AdminController extends Controller
                 $videos->update($id, ['is_published' => false]);
                 Audit::log($this->db(), $this->user()?->email, 'video.unpublish', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video unpublished.');
+
+            case 'recheck':
+                return $this->recheckVideo($request, $videos, $video, $id);
 
             case 'restore-revision':
                 return $this->restoreRevision($request, RevisionRepository::VIDEO, $id);
@@ -1679,6 +1703,66 @@ final class AdminController extends Controller
      * the extension against the allowlist. Reading a 500MB temp file to
      * discover it is too large is how a shared host runs out of memory.
      */
+    /**
+     * Ask the provider what it currently says about one video.
+     *
+     * The recovery path for a video marked failed. Until the sync job was
+     * fixed it read one page of a hundred and marked everything else failed,
+     * so on a large library there are rows saying "Failed" about videos that
+     * are perfectly fine. Waiting for the corrected job to come round is not an
+     * answer for somebody looking at one of them now.
+     *
+     * FOUR outcomes, and the fourth is the point.
+     *
+     * Ready, still encoding, and genuinely gone are three verdicts the provider
+     * gave. An unreachable provider is NOT a verdict — and it is the one this
+     * screen must never round off, because "we could not ask" and "it is gone"
+     * look identical to a caught exception and lead to opposite actions. The
+     * repository only writes `failed` on a real 404; a thrown error never
+     * reaches it.
+     */
+    private function recheckVideo(Request $request, VideoRepository $videos, \Portal\Content\Video $video, int $id): Response
+    {
+        try {
+            $result = $videos->recheckAgainstProvider(
+                $video,
+                $this->container->get(\Portal\Video\VideoProvider::class)
+            );
+        } catch (Throwable $e) {
+            return $this->back($request, sprintf(
+                'Could not reach your video service, so nothing was changed and “%s” still says what it said: %s',
+                $video->title,
+                $e->getMessage()
+            ), 'error');
+        }
+
+        Audit::log($this->db(), $this->user()?->email, 'video.recheck', 'video', (string) $id, $video->title);
+
+        if (!$result['found']) {
+            return $this->back($request, sprintf(
+                '“%s” is not at your video service any more, so it is marked failed. '
+                . 'The record here is kept — its categories and share history are intact.',
+                $video->title
+            ), 'error');
+        }
+
+        return match ($result['status']) {
+            \Portal\Content\Video::STATUS_READY => $this->back(
+                $request,
+                sprintf('“%s” is fine — your video service has it ready.', $video->title)
+            ),
+            \Portal\Content\Video::STATUS_PROCESSING => $this->back(
+                $request,
+                sprintf('“%s” is still encoding. Check again in a few minutes.', $video->title)
+            ),
+            default => $this->back(
+                $request,
+                sprintf('Your video service reports “%s” as failed at their end.', $video->title),
+                'error'
+            ),
+        };
+    }
+
     private function attachFile(Request $request, int $videoId): Response
     {
         $upload = $_FILES['attachment'] ?? null;

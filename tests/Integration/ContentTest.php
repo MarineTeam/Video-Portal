@@ -499,6 +499,143 @@ final class ContentTest extends DatabaseTestCase
         self::assertSame(Video::STATUS_READY, $onPage->status);
     }
 
+    // -------------------------------------------------------------- recheck
+
+    /**
+     * The recovery path for a video the sync bug marked failed.
+     *
+     * Three of the four outcomes are verdicts the provider gave. The fourth —
+     * an unreachable provider — is the one this must never round off, and it
+     * gets its own test below.
+     */
+    public function testRecheckClearsAVideoTheProviderStillHas(): void
+    {
+        $this->videos->syncFromProvider([
+            new VideoMeta(id: 'abc-1', title: 'Wrongly condemned', status: VideoMeta::STATUS_READY),
+        ], 'bunny', true);
+
+        // Put it in the state the old sync job left videos past page one in.
+        $video = $this->videos->findByProviderId('abc-1');
+        self::assertNotNull($video);
+        $this->db()->execute('UPDATE {videos} SET status = ? WHERE id = ?', ['failed', $video->id]);
+
+        $provider = new \Portal\Tests\Support\RecordingVideoProvider();
+        $provider->videos['abc-1'] = new VideoMeta(
+            id: 'abc-1',
+            title: 'Wrongly condemned',
+            status: VideoMeta::STATUS_READY,
+            duration: 900,
+        );
+
+        $result = $this->videos->recheckAgainstProvider(
+            $this->videos->find($video->id) ?? $video,
+            $provider
+        );
+
+        self::assertTrue($result['found']);
+        self::assertSame(VideoMeta::STATUS_READY, $result['status']);
+
+        $after = $this->videos->find($video->id);
+        self::assertNotNull($after);
+        self::assertSame(Video::STATUS_READY, $after->status, 'The re-check did not clear the failed status.');
+        self::assertSame(900, $after->duration, 'Provider-owned fields should refresh with it.');
+    }
+
+    /**
+     * A 404 IS a verdict. This is the one place "gone" may be concluded,
+     * because the provider was asked about this exact id and said no.
+     */
+    public function testRecheckMarksFailedWhenTheProviderRealisticallyDoesNotHaveIt(): void
+    {
+        $this->videos->syncFromProvider([
+            new VideoMeta(id: 'abc-1', title: 'Actually gone', status: VideoMeta::STATUS_READY),
+        ], 'bunny', true);
+
+        $video = $this->videos->findByProviderId('abc-1');
+        self::assertNotNull($video);
+
+        // The provider has no entry for it, so getVideo() returns null.
+        $result = $this->videos->recheckAgainstProvider($video, new \Portal\Tests\Support\RecordingVideoProvider());
+
+        self::assertFalse($result['found']);
+
+        $after = $this->videos->find($video->id);
+        self::assertNotNull($after, 'The row must survive — categories and share history are on it.');
+        self::assertSame(Video::STATUS_FAILED, $after->status);
+    }
+
+    /**
+     * The case the whole design turns on.
+     *
+     * "We could not ask" and "it is gone" look identical to a caught exception
+     * and lead to opposite actions. A network failure must leave the stored
+     * status exactly as it was — including leaving a READY video ready, which
+     * is the direction that would be destructive.
+     */
+    public function testAnUnreachableProviderIsNotAVerdict(): void
+    {
+        $this->videos->syncFromProvider([
+            new VideoMeta(id: 'abc-1', title: 'Perfectly fine', status: VideoMeta::STATUS_READY),
+        ], 'bunny', true);
+
+        $video = $this->videos->findByProviderId('abc-1');
+        self::assertNotNull($video);
+
+        $provider = new \Portal\Tests\Support\RecordingVideoProvider();
+        $provider->failWith = 'Connection timed out';
+
+        try {
+            $this->videos->recheckAgainstProvider($video, $provider);
+            self::fail('The failure must propagate so the handler can say "could not tell".');
+        } catch (\RuntimeException $e) {
+            self::assertSame('Connection timed out', $e->getMessage());
+        }
+
+        $after = $this->videos->find($video->id);
+        self::assertNotNull($after);
+        self::assertSame(
+            Video::STATUS_READY,
+            $after->status,
+            'An unreachable provider was treated as the video being gone.'
+        );
+    }
+
+    // ----------------------------------------------------- the status filter
+
+    public function testTheStatusFilterNarrowsAndNeverWidens(): void
+    {
+        $this->makeVideo('Ready one',  null, ['status' => 'ready',  'is_published' => 1]);
+        $this->makeVideo('Failed one', null, ['status' => 'failed', 'is_published' => 1]);
+
+        $admin = $this->videos->query(
+            ['includeUnpublished' => true, 'includeProcessing' => true, 'status' => 'failed'],
+            1,
+            25
+        );
+        self::assertSame(1, $admin['total']);
+        self::assertSame('Failed one', $admin['items'][0]->title);
+
+        /*
+         * The safety property: asking a PUBLIC listing for failed videos must
+         * return nothing, not open a hole. includeProcessing is absent, so
+         * `status = 'ready'` still applies and the two conditions cannot both
+         * be satisfied.
+         */
+        $public = $this->videos->query(['status' => 'failed'], 1, 25);
+        self::assertSame(0, $public['total'], 'The filter widened a public listing.');
+
+        // An unrecognised value is ignored rather than passed to the ENUM.
+        $bogus = $this->videos->query(
+            ['includeUnpublished' => true, 'includeProcessing' => true, 'status' => 'nonsense'],
+            1,
+            25
+        );
+        self::assertSame(2, $bogus['total']);
+
+        self::assertSame(1, $this->videos->countByStatus(Video::STATUS_FAILED));
+        self::assertSame(0, $this->videos->countByStatus('nonsense'));
+    }
+
     public function testSoftDeleteHidesTheVideoButKeepsTheRow(): void
     {
         $video = $this->makeVideo('Doomed', null, ['status' => 'ready', 'is_published' => 1]);

@@ -69,9 +69,34 @@ final class RecordingVideoProvider implements VideoProvider
         return new VideoPage([], $page, $perPage, 0);
     }
 
+    /**
+     * What getVideo() should answer, keyed by provider id.
+     *
+     * Absent means 404 — the provider genuinely does not have it — which is the
+     * only state from which "this video is gone" may be concluded.
+     *
+     * @var array<string, VideoMeta>
+     */
+    public array $videos = [];
+
+    /**
+     * Set to throw instead of answering, for the case that matters most: a
+     * provider that cannot be reached is NOT a provider saying the video is
+     * missing, and code that rounds one into the other deletes things.
+     */
+    public ?string $failWith = null;
+
+    public int $getVideoCalls = 0;
+
     public function getVideo(string $providerId): ?VideoMeta
     {
-        return null;
+        $this->getVideoCalls++;
+
+        if ($this->failWith !== null) {
+            throw new \RuntimeException($this->failWith);
+        }
+
+        return $this->videos[$providerId] ?? null;
     }
 
     public function embedUrl(string $providerId, int $ttlSeconds = 10800): string
