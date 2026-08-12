@@ -6787,6 +6787,270 @@ $db->execute(
 $db->execute('DELETE FROM {users} WHERE email = ?', ['newcomer@smoke.test']);
 @unlink($signupJar);
 
+/* ------------------------------------------------------------ scoped grants
+ *
+ * Phase 1's verification list, item 8: "Grant manage_videos scoped to one
+ * category; confirm edit works inside it and 403s outside it."
+ *
+ * Until now it 403'd in BOTH directions. Scoped grants have been storable since
+ * Phase 1 — the permissions screen has had a "Limited to" dropdown all along —
+ * and no check anywhere passed a scope, so `Capabilities::resolve()` was only
+ * ever asked the site-wide question, which it answers false for a grant on a
+ * category. The holder could enter the admin area, because canSeeAdmin() has
+ * always matched a grant regardless of its scope, and was then refused every
+ * screen inside it.
+ *
+ * This runs over real HTTP because that is the only thing here that can tell
+ * "the resolver is correct" from "a person can do this". CapabilitiesTest has
+ * covered the resolver since Phase 1 and passed throughout the whole period the
+ * feature did not work.
+ */
+echo "\nScoped grants\n";
+
+$scopeAt = date('Y-m-d H:i:s');
+
+$scopeInside = (int) $db->insert('categories', [
+    'slug' => 'scope-inside', 'name' => 'Scope Inside', 'path' => '/', 'depth' => 0,
+    'position' => 950, 'created_at' => $scopeAt, 'updated_at' => $scopeAt,
+]);
+$scopeOutside = (int) $db->insert('categories', [
+    'slug' => 'scope-outside', 'name' => 'Scope Outside', 'path' => '/', 'depth' => 0,
+    'position' => 951, 'created_at' => $scopeAt, 'updated_at' => $scopeAt,
+]);
+/* A child of the granted category, to prove inheritance over HTTP too. */
+$scopeChild = (int) $db->insert('categories', [
+    'slug' => 'scope-child', 'name' => 'Scope Child', 'parent_id' => $scopeInside,
+    'path' => '/' . $scopeInside . '/', 'depth' => 1, 'position' => 10,
+    'created_at' => $scopeAt, 'updated_at' => $scopeAt,
+]);
+
+$scopeVideos = [];
+foreach (['inside' => $scopeChild, 'outside' => $scopeOutside] as $where => $categoryId) {
+    $scopeVideos[$where] = (int) $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'smoke-scope-' . $where,
+        'slug' => 'scope-' . $where, 'title' => 'Scope ' . ucfirst($where),
+        'status' => 'ready', 'is_published' => 1, 'duration' => 60,
+        'created_at' => $scopeAt, 'updated_at' => $scopeAt,
+    ]);
+    $db->insert('video_categories', [
+        'video_id' => $scopeVideos[$where], 'category_id' => $categoryId, 'is_primary' => 1,
+    ]);
+}
+
+/*
+ * The viewer role, so the account holds nothing site-wide. An editor role would
+ * make every check below pass for the wrong reason.
+ */
+$db->insert('users', [
+    'email' => 'scoped@smoke.test', 'name' => 'Scoped Editor',
+    'authorized' => 1,
+    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash('scoped-editor-password-1234', PASSWORD_DEFAULT),
+    'created_at' => $scopeAt, 'updated_at' => $scopeAt,
+]);
+$scopedUserId = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['scoped@smoke.test']);
+
+$db->execute(
+    'INSERT INTO {grants} (subject_type, subject_id, email, capability_id, scope_type, scope_id, created_at)
+     VALUES ("user", ?, "", (SELECT id FROM {capabilities} WHERE slug = ?), "category", ?, NOW())',
+    [$scopedUserId, 'manage_videos', $scopeInside]
+);
+
+$scopeJar = sys_get_temp_dir() . '/portal-smoke-scope-' . getmypid() . '.txt';
+@unlink($scopeJar);
+
+clearLoginThrottle($db);
+$scopeLogin = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'scoped@smoke.test',
+    'password' => 'scoped-editor-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $scopeJar)['body']),
+], $scopeJar);
+
+check('A category-scoped editor can sign in', $scopeLogin['status'] === 302, "got {$scopeLogin['status']}");
+
+/*
+ * The listing first, because it is the only route to the videos they hold. If
+ * this 403s, every check below is unreachable in practice and the ones that
+ * pass would be measuring nothing.
+ */
+$scopeList = getWithJar($baseUrl . '/admin/videos', $scopeJar);
+check(
+    'and reaches the video list on a scoped grant alone',
+    $scopeList['status'] === 200,
+    "got {$scopeList['status']} — a grant they cannot act on is a grant that does not exist"
+);
+check(
+    'and their sidebar has the section it lives in',
+    str_contains($scopeList['body'], '/admin/videos'),
+    'the admin area opened onto nothing'
+);
+/*
+ * Screens with no scoped form must NOT appear. A playlist and a live stream are
+ * not values of grants.scope_type, so there is no such thing as a grant on one
+ * and the link would land on a 403 — which reads as a broken site rather than a
+ * boundary. This is the check that stops canAnywhere() being applied blindly.
+ */
+check(
+    'while screens that have no scoped form stay hidden',
+    !str_contains($scopeList['body'], '/admin/playlists')
+        && !str_contains($scopeList['body'], '/admin/live'),
+    'a link that 403s for everybody holding only a scope'
+);
+
+/*
+ * The claim itself, both directions.
+ *
+ * Every CSRF token below comes from the listing, which is asserted 200 just
+ * above, rather than from whichever page the check is about. A token read out
+ * of a page that 404'd is empty, and the POST then answers 419 — so a routing
+ * mistake would be reported here as a CSRF failure, which is the wrong place to
+ * start looking.
+ */
+$editInside = getWithJar($baseUrl . '/admin/videos/' . $scopeVideos['inside'], $scopeJar);
+check(
+    'Editing a video inside the granted category is allowed',
+    $editInside['status'] === 200,
+    "got {$editInside['status']} — item 8 of the Phase 1 verification list"
+);
+check(
+    'and inheritance carried it down to a sub-category',
+    $editInside['status'] === 200 && str_contains($editInside['body'], 'Scope Inside'),
+    'the video sits in a CHILD of the granted category; a grant that stops at one level is not inheritance'
+);
+
+$editOutside = getWithJar($baseUrl . '/admin/videos/' . $scopeVideos['outside'], $scopeJar);
+check(
+    'and a video outside it is refused',
+    $editOutside['status'] === 403,
+    "got {$editOutside['status']} — 200 means the scope is decorative"
+);
+
+/*
+ * Reading is not the boundary that matters; saving is. Checked separately
+ * because the edit screen and the save handler are different methods, and the
+ * one that writes is the one worth being sure about.
+ */
+$scopeSaveOutside = postWithJar($baseUrl . '/admin/videos', [
+    '_token'      => csrfFrom($scopeList['body']),
+    'action'      => 'save',
+    'id'          => (string) $scopeVideos['outside'],
+    '_whole_form' => '1',
+    'title'       => 'Renamed by somebody without permission',
+], $scopeJar);
+
+check(
+    'Saving a video outside the scope is refused',
+    $scopeSaveOutside['status'] === 403,
+    "got {$scopeSaveOutside['status']}"
+);
+check(
+    'and the refusal actually prevented the write',
+    (string) $db->value('SELECT title FROM {videos} WHERE id = ?', [$scopeVideos['outside']]) === 'Scope Outside',
+    'a 403 that still saved — the status is not the assertion'
+);
+
+/*
+ * `categories[]` is sent deliberately. `_whole_form` means "this form carries
+ * everything", so omitting it CLEARS the video's categories — and a video with
+ * no category has left the granted scope, which the checks further down would
+ * then report as the scope refusing a video it holds.
+ *
+ * That is how the destination check below was found: this POST silently moved
+ * the video out of scope, and the bulk check at the end failed for a reason
+ * that had nothing to do with bulk.
+ */
+$scopeSaveInside = postWithJar($baseUrl . '/admin/videos', [
+    '_token'       => csrfFrom($scopeList['body']),
+    'action'       => 'save',
+    'id'           => (string) $scopeVideos['inside'],
+    '_whole_form'  => '1',
+    'title'        => 'Renamed from inside the scope',
+    'categories'   => [(string) $scopeChild],
+], $scopeJar);
+
+check(
+    'Saving a video inside the scope is allowed',
+    $scopeSaveInside['status'] === 302,
+    "got {$scopeSaveInside['status']}"
+);
+check(
+    'and the change was written',
+    (string) $db->value('SELECT title FROM {videos} WHERE id = ?', [$scopeVideos['inside']])
+        === 'Renamed from inside the scope',
+    'a 302 that saved nothing reads as success'
+);
+
+/*
+ * The one way a scope can be used to reach OUTSIDE itself: hold one category,
+ * and move a video you hold into somebody else's. Filing needs permission on
+ * where it is going, not only on the thing being filed — the same rule as
+ * reparenting a category and as the bulk categorise button.
+ */
+$scopeReloc = postWithJar($baseUrl . '/admin/videos', [
+    '_token'      => csrfFrom($scopeList['body']),
+    'action'      => 'save',
+    'id'          => (string) $scopeVideos['inside'],
+    '_whole_form' => '1',
+    'title'       => 'Renamed from inside the scope',
+    'categories'  => [(string) $scopeChild, (string) $scopeOutside],
+], $scopeJar);
+
+check(
+    'Filing a video into a category outside the scope is refused',
+    $scopeReloc['status'] === 403,
+    "got {$scopeReloc['status']} — a scope you can move things out of is not a boundary"
+);
+check(
+    'and the video stayed where it was',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {video_categories} WHERE video_id = ? AND category_id = ?',
+        [$scopeVideos['inside'], $scopeOutside]
+    ) === 0,
+    'the refusal came after the write'
+);
+
+/*
+ * Publishing is a separate capability, and the scoped grant did not include it.
+ * A scope that quietly widened the capabilities it carries would be worse than
+ * no scope at all.
+ */
+$scopePublish = postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($scopeList['body']),
+    'action' => 'publish',
+    'id'     => (string) $scopeVideos['inside'],
+], $scopeJar);
+
+check(
+    'A scope does not confer capabilities it was not granted',
+    $scopePublish['status'] === 403,
+    "got {$scopePublish['status']} — manage_videos in a category is not publish_content in it"
+);
+
+/*
+ * Bulk is the endpoint where this is easiest to get wrong, because one press
+ * covers many objects. It must do exactly what pressing every single-row button
+ * would have done: act on the rows they hold, refuse the rest, and say so.
+ */
+$scopeBulk = postWithJar($baseUrl . '/admin/videos', [
+    '_token'   => csrfFrom($scopeList['body']),
+    'bulk'     => 'trash',
+    'selected' => [(string) $scopeVideos['inside'], (string) $scopeVideos['outside']],
+], $scopeJar);
+
+check('A bulk action from a scoped editor is accepted', $scopeBulk['status'] === 302, "got {$scopeBulk['status']}");
+check(
+    'and it trashed the video inside the scope',
+    $db->value('SELECT deleted_at FROM {videos} WHERE id = ?', [$scopeVideos['inside']]) !== null,
+    'the rows they DO hold were refused along with the rest'
+);
+check(
+    'and left the one outside it alone',
+    $db->value('SELECT deleted_at FROM {videos} WHERE id = ?', [$scopeVideos['outside']]) === null,
+    'bulk is a way around the per-object check — the whole library, not one row'
+);
+
+@unlink($scopeJar);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

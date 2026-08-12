@@ -109,6 +109,40 @@ final class Capabilities
     }
 
     /**
+     * Does this person hold $capability site-wide, or attached to any one
+     * object?
+     *
+     * This is the question a LISTING asks — "is there anything on this screen
+     * you could act on" — where there is no single object to name. It is
+     * deliberately weaker than can(): a grant on one category answers yes, and
+     * says nothing about any particular video.
+     *
+     * Never authorise a change with it. can($cap, $type, $id) is the question
+     * that decides whether somebody may touch a thing, and it is the one every
+     * action asks. This only decides whether the door is worth opening.
+     */
+    public function canAnywhere(?User $user, string $capability): bool
+    {
+        if ($this->can($user, $capability)) {
+            return true;
+        }
+
+        // can() has already excluded anonymous and unauthorized accounts; both
+        // return false above and neither can hold a grant.
+        if ($user === null || !$user->authorized) {
+            return false;
+        }
+
+        // A site-only capability has no scoped form, so the site-wide answer
+        // above was the whole question.
+        if (!Capability::isScopable($capability)) {
+            return false;
+        }
+
+        return $this->hasAnyScopedGrant($user, $capability);
+    }
+
+    /**
      * Does this person have any reason to see the admin area at all?
      *
      * Used to decide whether to render the admin link. Every individual admin
@@ -127,12 +161,10 @@ final class Capabilities
             if ($capability === Capability::VIEW_CONTENT) {
                 continue;
             }
-            if ($this->can($user, $capability)) {
-                return true;
-            }
             // A scoped grant is also a reason to see the admin area, even
-            // though the site-wide check above says no.
-            if ($this->hasAnyScopedGrant($user, $capability)) {
+            // though the site-wide answer is no — which is the same question
+            // every admin listing asks, so it is asked in one place.
+            if ($this->canAnywhere($user, $capability)) {
                 return true;
             }
         }

@@ -101,6 +101,59 @@ abstract class Controller
     }
 
     /**
+     * Would this navigation entry's screen let this person in?
+     *
+     * The nav has to ask exactly what the screen asks, or it renders links that
+     * 403 or hides ones that would work. `siteWide` marks the screens with no
+     * scoped form; see defaultNav().
+     *
+     * @param array{cap: string|null, siteWide?: bool} $entry
+     */
+    private function mayReach(array $entry): bool
+    {
+        if ($entry['cap'] === null) {
+            return true;
+        }
+
+        return ($entry['siteWide'] ?? false)
+            ? $this->guard()->can($entry['cap'])
+            : $this->guard()->canAnywhere($entry['cap']);
+    }
+
+    /**
+     * Enforce a capability on a LISTING, where there is no single object to ask
+     * about — site-wide, or anywhere at all.
+     *
+     * Scoped grants were storable from Phase 1 and enforced nowhere, so every
+     * check asked the site-wide question and `resolve()` answers that with false
+     * for a grant attached to a category. A category-scoped editor could enter
+     * the admin area — canSeeAdmin() matches any grant regardless of scope — and
+     * then hit 403 on every screen inside it, including the list that is the
+     * only route to the videos they were granted.
+     *
+     * So a listing admits anyone holding the capability ANYWHERE, and the
+     * individual actions ask about the individual object.
+     *
+     * The consequence, stated rather than hidden: LISTINGS ARE NOT FILTERED. A
+     * category-scoped editor sees every video in the library and can only open
+     * and change their own. Filtering would mean a permission check per row —
+     * each one walking that video's series and categories — which is a few
+     * hundred queries on a fifty-row page. The alternative of filtering in SQL
+     * means a second implementation of the resolver, and two implementations of
+     * a permission rule eventually disagree; the failure mode there is a screen
+     * that shows more than the resolver would allow, which is worse than a
+     * screen that shows things whose buttons refuse.
+     */
+    protected function requireAnywhere(string $capability): void
+    {
+        if ($this->guard()->canAnywhere($capability)) {
+            return;
+        }
+
+        throw HttpException::forbidden('You do not have permission to do that.');
+    }
+
+    /**
      * Render through the active theme.
      *
      * @param list<string>         $candidates
@@ -438,9 +491,20 @@ abstract class Controller
                     ['label' => 'Trash',      'path' => '/admin/videos/trash',  'key' => 'trash',         'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['trash']],
                     ['label' => 'Categories', 'path' => '/admin/categories',    'key' => 'categories',    'cap' => Capability::MANAGE_CATEGORIES, 'screens' => ['categories', 'category-edit']],
                     ['label' => 'Series',     'path' => '/admin/series',        'key' => 'series',        'cap' => Capability::MANAGE_SERIES,     'screens' => ['series', 'series-edit']],
-                    ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => Capability::MANAGE_SERIES,     'screens' => ['playlists', 'playlist-edit']],
-                    ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => Capability::MANAGE_SPEAKERS,   'screens' => ['speakers']],
-                    ['label' => 'Live',       'path' => '/admin/live',          'key' => 'live',          'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['live']],
+                    /*
+                     * `siteWide` marks a screen that has no scoped form, so the
+                     * navigation asks the same question the screen asks. A
+                     * playlist and a live stream are not values of
+                     * `grants.scope_type` — there is no such thing as a grant on
+                     * one — so a category-scoped editor holds nothing here and
+                     * the link would land on a 403.
+                     *
+                     * Everything without the flag is filtered with canAnywhere,
+                     * matching requireAnywhere() on the screen itself.
+                     */
+                    ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => Capability::MANAGE_SERIES,     'screens' => ['playlists', 'playlist-edit'], 'siteWide' => true],
+                    ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => Capability::MANAGE_SPEAKERS,   'screens' => ['speakers'], 'siteWide' => true],
+                    ['label' => 'Live',       'path' => '/admin/live',          'key' => 'live',          'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['live'], 'siteWide' => true],
                     ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => Capability::MANAGE_SETTINGS,   'screens' => ['announcements']],
                 ],
             ],
@@ -516,7 +580,16 @@ abstract class Controller
             $screens = $section['screens'];
 
             foreach ($section['children'] as $child) {
-                if ($child['cap'] !== null && !$this->guard()->can($child['cap'])) {
+                /*
+                 * canAnywhere, matching what the screens themselves now ask.
+                 * A category-scoped editor holds nothing site-wide, so the
+                 * site-wide question would render them an admin area with an
+                 * empty sidebar and no route to the videos they were granted.
+                 *
+                 * Except where the screen has no scoped form at all — see
+                 * `siteWide` above — in which case the link would 403.
+                 */
+                if ($child['cap'] !== null && !$this->mayReach($child)) {
                     continue;
                 }
 
@@ -535,7 +608,7 @@ abstract class Controller
              * hide Permissions from somebody who can assign permissions but
              * cannot edit accounts — a split these roles genuinely allow.
              */
-            if (($section['cap'] !== null && !$this->guard()->can($section['cap'])) && $children === []) {
+            if (($section['cap'] !== null && !$this->mayReach($section)) && $children === []) {
                 continue;
             }
 

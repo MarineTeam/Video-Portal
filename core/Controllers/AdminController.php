@@ -112,7 +112,7 @@ final class AdminController extends Controller
 
     public function videos(Request $request): Response
     {
-        $this->require(Capability::MANAGE_VIDEOS);
+        $this->requireAnywhere(Capability::MANAGE_VIDEOS);
 
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
@@ -151,8 +151,6 @@ final class AdminController extends Controller
      */
     public function editVideo(Request $request, array $params): Response
     {
-        $this->require(Capability::MANAGE_VIDEOS);
-
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
 
@@ -160,6 +158,25 @@ final class AdminController extends Controller
         if ($video === null) {
             throw HttpException::notFound('That video does not exist.');
         }
+
+        /*
+         * Asked ABOUT this video, not in general.
+         *
+         * Scoped grants have been storable since Phase 1 — the permissions
+         * screen has a "Limited to" dropdown offering a category or a series —
+         * and no check anywhere passed a scope, so `can()` was always asked the
+         * site-wide question. resolve() answers that with false for a scoped
+         * grant, which meant a category-scoped editor could enter the admin
+         * area (canSeeAdmin matches any grant regardless of scope) and then got
+         * 403 on every screen inside it.
+         *
+         * The video has to be loaded first, because the question is about the
+         * object. Ordering a permission check after a lookup is normally the
+         * wrong way round; here the lookup is what makes the check answerable,
+         * and find() reveals nothing — a 404 for a missing video is the same
+         * answer everybody gets.
+         */
+        $this->require(Capability::MANAGE_VIDEOS, 'video', $video->id);
 
         /** @var CategoryRepository $categories */
         $categories = $this->container->get(CategoryRepository::class);
@@ -274,7 +291,6 @@ final class AdminController extends Controller
     public function updateVideo(Request $request): Response
     {
         $this->verifyCsrf($request);
-        $this->require(Capability::MANAGE_VIDEOS);
 
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
@@ -283,6 +299,10 @@ final class AdminController extends Controller
          * A bulk submission before the single-video path, because it carries no
          * `id` at all — falling through would 404 on a missing video rather
          * than doing what the button says.
+         *
+         * Bulk checks each video separately, inside bulkVideos(). Asking the
+         * site-wide question here first would refuse a scoped editor the whole
+         * button rather than the rows they may not touch.
          */
         if ($request->input('bulk') !== null) {
             return $this->bulkVideos($request, $videos);
@@ -294,6 +314,8 @@ final class AdminController extends Controller
         if ($video === null) {
             throw HttpException::notFound('That video does not exist.');
         }
+
+        $this->require(Capability::MANAGE_VIDEOS, 'video', $video->id);
 
         $action = $request->input('action') ?? 'save';
 
@@ -349,8 +371,13 @@ final class AdminController extends Controller
          * exactly where somebody eventually forgets, and the consequence of
          * forgetting here is worse — it is the whole library rather than one
          * row.
+         *
+         * Anywhere, not site-wide: the real check is per video, below, and
+         * a scoped editor must be able to press the button for the rows they do
+         * hold. This only refuses somebody who holds the capability nowhere.
          */
-        $this->require((string) BulkAction::capability($action));
+        $capability = (string) BulkAction::capability($action);
+        $this->requireAnywhere($capability);
 
         $raw = $request->inputArray('selected');
         $ids = BulkAction::ids($raw);
@@ -360,8 +387,15 @@ final class AdminController extends Controller
         }
 
         $categoryId = (int) ($request->input('bulk_category') ?? 0);
-        if ($action === 'categorise' && $categoryId <= 0) {
-            return $this->back($request, 'Choose a category to add them to.', 'error');
+        if ($action === 'categorise') {
+            if ($categoryId <= 0) {
+                return $this->back($request, 'Choose a category to add them to.', 'error');
+            }
+
+            // Filing something somewhere needs permission on WHERE, as well as
+            // on the thing being filed. Checked once — it is the same category
+            // for every row.
+            $this->require(Capability::MANAGE_CATEGORIES, 'category', $categoryId);
         }
 
         $changed = 0;
@@ -374,6 +408,21 @@ final class AdminController extends Controller
                 // Deleted between the page rendering and the button being
                 // pressed. Not an error worth stopping for, but worth counting.
                 $failures[] = '#' . $id . ' no longer exists';
+                continue;
+            }
+
+            /*
+             * Asked about each video, so a bulk press does exactly what pressing
+             * every single-row button would have done — no more.
+             *
+             * Refused rows are counted and named rather than aborting the run.
+             * The list on screen is not filtered by scope (see
+             * Controller::requireAnywhere), so a scoped editor selecting a page
+             * of videos will legitimately include some they cannot touch, and
+             * throwing 403 would mean the button never works for them at all.
+             */
+            if (!$this->guard()->can($capability, 'video', $id)) {
+                $failures[] = $video->title . ': not yours to change';
                 continue;
             }
 
@@ -447,13 +496,13 @@ final class AdminController extends Controller
                 return $this->back($request, 'Video moved to trash.');
 
             case 'publish':
-                $this->require(Capability::PUBLISH_CONTENT);
+                $this->require(Capability::PUBLISH_CONTENT, 'video', $id);
                 $videos->update($id, ['is_published' => true, 'published_at' => date('Y-m-d H:i:s')]);
                 Audit::log($this->db(), $this->user()?->email, 'video.publish', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video published.');
 
             case 'unpublish':
-                $this->require(Capability::PUBLISH_CONTENT);
+                $this->require(Capability::PUBLISH_CONTENT, 'video', $id);
                 $videos->update($id, ['is_published' => false]);
                 Audit::log($this->db(), $this->user()?->email, 'video.unpublish', 'video', (string) $id, $video->title);
                 return $this->back($request, 'Video unpublished.');
@@ -461,10 +510,24 @@ final class AdminController extends Controller
             case 'restore-revision':
                 return $this->restoreRevision($request, RevisionRepository::VIDEO, $id);
 
+            /*
+             * MANAGE_FILES, which until now was declared, described on the
+             * permissions screen, handed to two roles, and enforced by nothing.
+             * Attachments were governed by MANAGE_VIDEOS alone, so withholding
+             * it stopped nobody and granting it let nobody do anything — a
+             * switch on a screen that was wired to no lamp.
+             *
+             * In ADDITION to the video check updateVideo() has already made,
+             * not instead of it: uploading a file to this host is a different
+             * risk from renaming a video, which is why the capability exists
+             * separately.
+             */
             case 'attach':
+                $this->require(Capability::MANAGE_FILES, 'video', $id);
                 return $this->attachFile($request, $id);
 
             case 'detach':
+                $this->require(Capability::MANAGE_FILES, 'video', $id);
                 $this->container
                     ->get(\Portal\Content\AssetRepository::class)
                     ->delete((int) ($request->input('asset') ?? 0));
@@ -595,6 +658,34 @@ final class AdminController extends Controller
 
                 if ($whole) {
                     $categoryIds = array_map('intval', $request->inputArray('categories'));
+
+                    /*
+                     * Filing a video somewhere needs permission on WHERE, and
+                     * not only on the video — the same rule the category
+                     * reparent and the bulk categorise button follow.
+                     *
+                     * Without it, holding one category is enough to move any
+                     * video you hold into somebody else's section, which is the
+                     * one way a scope can be used to reach outside itself.
+                     *
+                     * Only categories being ADDED are checked. Asking about the
+                     * ones already there would refuse a scoped editor their own
+                     * save whenever a video also sits somewhere they do not
+                     * hold — a normal state, since a video can be in several
+                     * categories and only one of them need be theirs.
+                     *
+                     * MANAGE_VIDEOS on the destination, not MANAGE_CATEGORIES:
+                     * the question is whether you may put VIDEOS there, not
+                     * whether you may rename the category. Requiring the latter
+                     * would refuse every contributor, whose role carries
+                     * manage_videos and deliberately not manage_categories —
+                     * turning a scope fix into a broken form for a role that
+                     * has nothing to do with scopes.
+                     */
+                    foreach (array_diff($categoryIds, $videos->categoryIds($id)) as $added) {
+                        $this->require(Capability::MANAGE_VIDEOS, 'category', $added);
+                    }
+
                     $videos->setCategories($id, $categoryIds);
                 }
 
@@ -1078,7 +1169,7 @@ final class AdminController extends Controller
 
     public function trash(Request $request): Response
     {
-        $this->require(Capability::MANAGE_VIDEOS);
+        $this->requireAnywhere(Capability::MANAGE_VIDEOS);
 
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
@@ -1097,7 +1188,6 @@ final class AdminController extends Controller
     public function updateTrash(Request $request): Response
     {
         $this->verifyCsrf($request);
-        $this->require(Capability::MANAGE_VIDEOS);
 
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
@@ -1108,6 +1198,13 @@ final class AdminController extends Controller
         if ($video === null) {
             return $this->back($request, 'That video is not in the trash.', 'error');
         }
+
+        /*
+         * Trashing does not detach a video from its series or its categories —
+         * only `deleted_at` is set — so the scope a grant was attached to still
+         * resolves, and the person who could delete it can restore it.
+         */
+        $this->require(Capability::MANAGE_VIDEOS, 'video', $video->id);
 
         if (($request->input('action') ?? '') === 'restore') {
             $videos->restore($id);
@@ -1146,7 +1243,7 @@ final class AdminController extends Controller
 
     public function series(Request $request): Response
     {
-        $this->require(Capability::MANAGE_SERIES);
+        $this->requireAnywhere(Capability::MANAGE_SERIES);
 
         return $this->admin('series', [
             'series'     => $this->seriesRepo()->all(true),
@@ -1157,12 +1254,13 @@ final class AdminController extends Controller
     /** @param array<string, string> $params */
     public function editSeries(Request $request, array $params): Response
     {
-        $this->require(Capability::MANAGE_SERIES);
-
         $series = $this->seriesRepo()->find((int) ($params['id'] ?? 0));
         if ($series === null) {
             throw HttpException::notFound('That series does not exist.');
         }
+
+        // About this series: a grant on the category it sits in covers it.
+        $this->require(Capability::MANAGE_SERIES, 'series', $series->id);
 
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
@@ -1179,11 +1277,32 @@ final class AdminController extends Controller
     public function saveSeries(Request $request): Response
     {
         $this->verifyCsrf($request);
-        $this->require(Capability::MANAGE_SERIES);
 
         $repo = $this->seriesRepo();
         $action = $request->input('action') ?? 'create';
         $id = (int) ($request->input('id') ?? 0);
+
+        /*
+         * These actions name a series they are changing, so each is asked about
+         * that series. Anything else falls to `default:` below, which CREATES —
+         * so the list is written out rather than tested for the word "create".
+         * Asking `$action !== 'create'` would let a made-up action name arrive
+         * with a scoped id, pass the scoped check, and then create a series
+         * that nobody had site-wide permission to create.
+         *
+         * Creating names no scope yet: create() takes a title and the category
+         * is chosen on the edit screen afterwards. So the site-wide question is
+         * the honest one, and a category-scoped editor can change the series in
+         * their category without being able to invent new ones — the correct
+         * reading of a grant that names a place.
+         */
+        $scoped = ['delete', 'restore-revision', 'update', 'episodes', 'up', 'down'];
+
+        if (in_array($action, $scoped, true) && $id > 0) {
+            $this->require(Capability::MANAGE_SERIES, 'series', $id);
+        } else {
+            $this->require(Capability::MANAGE_SERIES);
+        }
 
         try {
             switch ($action) {
@@ -2403,7 +2522,7 @@ final class AdminController extends Controller
 
     public function categories(Request $request): Response
     {
-        $this->require(Capability::MANAGE_CATEGORIES);
+        $this->requireAnywhere(Capability::MANAGE_CATEGORIES);
 
         /** @var CategoryRepository $categories */
         $categories = $this->container->get(CategoryRepository::class);
@@ -2417,8 +2536,6 @@ final class AdminController extends Controller
     /** @param array<string, string> $params */
     public function editCategory(Request $request, array $params): Response
     {
-        $this->require(Capability::MANAGE_CATEGORIES);
-
         /** @var CategoryRepository $categories */
         $categories = $this->container->get(CategoryRepository::class);
 
@@ -2426,6 +2543,10 @@ final class AdminController extends Controller
         if ($category === null) {
             throw HttpException::notFound('That category does not exist.');
         }
+
+        // A grant on an ancestor covers this one; that inheritance is the whole
+        // reason category scopes exist rather than per-video ones.
+        $this->require(Capability::MANAGE_CATEGORIES, 'category', $category->id);
 
         return $this->admin('category-edit', [
             'category'       => $category,
@@ -2438,13 +2559,33 @@ final class AdminController extends Controller
     public function saveCategory(Request $request): Response
     {
         $this->verifyCsrf($request);
-        $this->require(Capability::MANAGE_CATEGORIES);
 
         /** @var CategoryRepository $categories */
         $categories = $this->container->get(CategoryRepository::class);
 
         $action = $request->input('action') ?? 'create';
         $id = (int) ($request->input('id') ?? 0);
+
+        /*
+         * As in saveSeries(): the actions that name a category are listed, and
+         * everything else falls to `default:`, which creates.
+         *
+         * Creating is asked about the PARENT, because a new child of a category
+         * you hold is inside your grant — which is what makes a category grant
+         * usable at all, since otherwise a scoped editor could never add a
+         * sub-category to their own section. A new top-level category has no
+         * parent to ask about and stays site-wide, and so does `import`, which
+         * makes top-level categories in bulk.
+         */
+        $named = ['delete', 'restore-revision', 'up', 'down', 'update'];
+
+        if (in_array($action, $named, true) && $id > 0) {
+            $this->require(Capability::MANAGE_CATEGORIES, 'category', $id);
+        } elseif ($action !== 'import' && ($parent = (int) ($request->input('parent_id') ?? 0)) > 0) {
+            $this->require(Capability::MANAGE_CATEGORIES, 'category', $parent);
+        } else {
+            $this->require(Capability::MANAGE_CATEGORIES);
+        }
 
         try {
             switch ($action) {
@@ -2473,6 +2614,24 @@ final class AdminController extends Controller
                     );
 
                 case 'update':
+                    /*
+                     * Moving a category needs permission on where it is GOING,
+                     * not only on the thing being moved — otherwise somebody
+                     * granted one section could graft it under any other, or
+                     * out to the top level, and take it with them.
+                     *
+                     * Only when the parent actually changes. Asking every save
+                     * about the parent would refuse a scoped editor their own
+                     * top category, whose parent is by definition outside the
+                     * grant they were given.
+                     */
+                    $newParent = ($p = (int) ($request->input('parent_id') ?? 0)) > 0 ? $p : null;
+                    if ($newParent !== $categories->find($id)?->parentId) {
+                        $newParent === null
+                            ? $this->require(Capability::MANAGE_CATEGORIES)
+                            : $this->require(Capability::MANAGE_CATEGORIES, 'category', $newParent);
+                    }
+
                     $this->revisions()->record(RevisionRepository::CATEGORY, $id, $this->user()?->email ?? '');
                     $categories->update($id, [
                         'name'           => $request->input('name'),

@@ -65,6 +65,18 @@ final class Guard
         return $this->capabilities->can($this->user(), $capability, $scopeType, $scopeId);
     }
 
+    /**
+     * Does this person hold $capability site-wide, or on any single object?
+     *
+     * For listing screens, which have no object to ask about. Never use it to
+     * authorise a change: it says a grant exists somewhere, not that it covers
+     * the thing being changed.
+     */
+    public function canAnywhere(string $capability): bool
+    {
+        return $this->capabilities->canAnywhere($this->user(), $capability);
+    }
+
     // ------------------------------------------------------------ middleware
 
     /**

@@ -207,6 +207,92 @@ final class CapabilitiesTest extends DatabaseTestCase
         self::assertTrue($this->capabilities->can($user, Capability::MANAGE_PLUGINS, 'category', $category));
     }
 
+    // ----------------------------------------------------------- canAnywhere
+
+    /*
+     * canAnywhere() is what every admin LISTING asks, because a list has no one
+     * object to name. It is deliberately weaker than can(), which makes it the
+     * most dangerous method in this class: if it ever drifts into "yes", every
+     * listing opens to everyone, and nothing else in the suite would notice
+     * because the per-object checks would still be correct.
+     *
+     * So it is pinned from both directions — what it must admit, and what it
+     * must still refuse.
+     */
+
+    public function testCanAnywhereAdmitsAScopedGrantThatTheSiteWideCheckRefuses(): void
+    {
+        $user = $this->makeUser('anywhere@example.com', Capability::ROLE_VIEWER, authorized: true);
+        $sermons = $this->makeCategory('Sermons');
+
+        $this->grant($user->id, Capability::MANAGE_VIDEOS, 'category', $sermons);
+
+        self::assertFalse(
+            $this->capabilities->can($user, Capability::MANAGE_VIDEOS),
+            'Precondition: the site-wide question is still no. This is the gap canAnywhere exists to bridge.'
+        );
+        self::assertTrue(
+            $this->capabilities->canAnywhere($user, Capability::MANAGE_VIDEOS),
+            'A grant on one category is a reason to be shown the video list.'
+        );
+    }
+
+    public function testCanAnywhereRefusesACapabilityHeldNowhere(): void
+    {
+        $user = $this->makeUser('nothing@example.com', Capability::ROLE_VIEWER, authorized: true);
+        $sermons = $this->makeCategory('Sermons');
+
+        // A grant of a DIFFERENT capability, so the row exists and the join is
+        // exercised. Matching on the row rather than on the capability is the
+        // likeliest way for this to go wrong.
+        $this->grant($user->id, Capability::MANAGE_VIDEOS, 'category', $sermons);
+
+        self::assertFalse($this->capabilities->canAnywhere($user, Capability::MANAGE_CATEGORIES));
+        self::assertFalse($this->capabilities->canAnywhere($user, Capability::MANAGE_SERIES));
+    }
+
+    public function testCanAnywhereRefusesAnonymousAndUnapprovedAccounts(): void
+    {
+        self::assertFalse($this->capabilities->canAnywhere(null, Capability::MANAGE_VIDEOS));
+
+        $pending = $this->makeUser('pending-anywhere@example.com', 'editor', authorized: false);
+        $sermons = $this->makeCategory('Sermons');
+        $this->grant($pending->id, Capability::MANAGE_VIDEOS, 'category', $sermons);
+
+        self::assertFalse(
+            $this->capabilities->canAnywhere($pending, Capability::MANAGE_VIDEOS),
+            'Authorization is the separate decision; a grant does not substitute for approval.'
+        );
+    }
+
+    public function testCanAnywhereIsStillTrueForASiteWideHolder(): void
+    {
+        $editor = $this->makeUser('editor-anywhere@example.com', 'editor', authorized: true);
+
+        self::assertTrue($this->capabilities->can($editor, Capability::MANAGE_VIDEOS));
+        self::assertTrue($this->capabilities->canAnywhere($editor, Capability::MANAGE_VIDEOS));
+    }
+
+    /**
+     * A site-only capability has no scoped form — PermissionRepository stores
+     * one site-wide whatever the form said — so canAnywhere must not become a
+     * second, weaker way to ask about plugins or settings.
+     */
+    public function testCanAnywhereGivesSiteOnlyCapabilitiesNoSecondChance(): void
+    {
+        $user = $this->makeUser('siteonly-anywhere@example.com', Capability::ROLE_VIEWER, authorized: true);
+        $category = $this->makeCategory('Sermons');
+
+        // Written straight to the table, bypassing the repository rule, because
+        // the question is what the RESOLVER does if such a row ever exists.
+        $this->grant($user->id, Capability::MANAGE_PLUGINS, 'category', $category);
+
+        self::assertFalse(
+            $this->capabilities->canAnywhere($user, Capability::MANAGE_PLUGINS),
+            'A stray scoped row must not open the plugins screen.'
+        );
+    }
+
     // ---------------------------------------------------------------- groups
 
     public function testGroupMembershipConfersCapabilities(): void
