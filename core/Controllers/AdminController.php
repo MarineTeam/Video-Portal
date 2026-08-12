@@ -230,6 +230,7 @@ final class AdminController extends Controller
             'captions'       => $this->captions($video),
             'captionsSupported' => $this->captionProvider() !== null,
             'scripture'      => $this->scriptureForEdit($video->id),
+            'tags'           => $this->tagText($video->id),
         ] + $this->revisionPanel(RevisionRepository::VIDEO, $video->id));
     }
 
@@ -286,6 +287,24 @@ final class AdminController extends Controller
 
             return [];
         }
+    }
+
+    /**
+     * This video's tags, as the comma-separated line the form shows.
+     *
+     * Failing quiet and returning empty would be wrong here: an unreadable tag
+     * list rendered as a blank field, then saved, DELETES every tag on the
+     * video — the partial-save defect again, in a place where the form looks
+     * complete. So the exception propagates and the screen fails to render,
+     * which is recoverable, rather than rendering a lie that is not.
+     */
+    private function tagText(int $videoId): string
+    {
+        $tags = $this->container
+            ->get(\Portal\Content\TagRepository::class)
+            ->forItem('video', $videoId);
+
+        return implode(', ', array_map(static fn ($tag): string => $tag->name, $tags));
     }
 
     private function chapterText(int $videoId): string
@@ -726,6 +745,23 @@ final class AdminController extends Controller
                     }
 
                     $videos->setCategories($id, $categoryIds);
+
+                    /*
+                     * Tags are inside the `_whole_form` guard with the
+                     * categories, and for the same reason: the field shows the
+                     * complete current list, so an empty box means "remove them
+                     * all" — which is right when the form was rendered with the
+                     * tags in it, and destructive when a partial POST simply
+                     * never mentioned them.
+                     */
+                    $tags = $this->container->get(\Portal\Content\TagRepository::class);
+                    $tags->setFor('video', $id, \Portal\Content\TagRepository::parse(
+                        (string) ($request->input('tags') ?? '')
+                    ));
+
+                    // A tag whose last use has just gone stops existing, so the
+                    // admin list never fills with labels linking to empty pages.
+                    $tags->pruneUnused();
                 }
 
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);

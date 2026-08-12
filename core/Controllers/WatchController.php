@@ -135,6 +135,7 @@ final class WatchController extends Controller
                 'attachments' => $this->attachments($video->id),
                 'chapters'   => $this->chapters($video->id),
                 'scripture'  => $this->scriptureLinks($video->id),
+                'tags'       => $this->tagLinks($video->id),
                 'note'       => $this->note($video->id),
                 'transcript' => $this->transcriptCues($video->id),
                 'savedLists' => $this->savedLists($video->id),
@@ -399,6 +400,33 @@ final class WatchController extends Controller
      *
      * @return list<array{label: string, url: string}>
      */
+    /**
+     * This video's tags, as links.
+     *
+     * Fails quiet, unlike the admin form's version. Here a missing tag list
+     * costs a row of chips on a page whose actual job is playing a video; there
+     * the same failure would render an empty field that, once saved, deletes
+     * every tag on the record.
+     *
+     * @return list<array{label: string, url: string}>
+     */
+    private function tagLinks(int $videoId): array
+    {
+        try {
+            $links = [];
+
+            foreach ($this->container->get(\Portal\Content\TagRepository::class)->forItem('video', $videoId) as $tag) {
+                $links[] = ['label' => $tag->name, 'url' => $tag->url()];
+            }
+
+            return $links;
+        } catch (Throwable $e) {
+            error_log('Could not read the tags: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
     private function scriptureLinks(int $videoId): array
     {
         try {

@@ -845,6 +845,9 @@ final class AdminView
         $scripture = (array) ($data['scripture'] ?? ['manual' => '', 'parsed' => []]);
         $scriptureManual = $this->attr((string) ($scripture['manual'] ?? ''));
 
+        $tagValue = $this->attr((string) ($data['tags'] ?? ''));
+        $tagLimit = \Portal\Content\TagRepository::MAX_PER_ITEM;
+
         $fromDescription = (array) ($scripture['parsed'] ?? []);
         $scriptureParsed = $fromDescription === []
             ? '<p class="muted small">Nothing found in the description.</p>'
@@ -926,6 +929,16 @@ final class AdminView
                 <p class="muted small">Categories you set here take precedence over the collection this
                    video came from at your video provider.</p>
                 {$checkboxes}
+              </fieldset>
+
+              <fieldset>
+                <legend>Tags</legend>
+                <p class="muted small">Free-form labels, separated by commas. A tag is created by being
+                   used and disappears when nothing carries it — there is no list to manage first.
+                   Categories say where a video belongs; tags say what it is about, and a video can
+                   carry up to {$tagLimit} of them.</p>
+                <label>Tags <input type="text" name="tags" value="{$tagValue}"
+                       placeholder="prayer, advent, guest speaker"></label>
               </fieldset>
 
               <fieldset>

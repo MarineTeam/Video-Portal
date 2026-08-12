@@ -206,6 +206,12 @@ final class SeriesRepository
      */
     public function delete(int $id): void
     {
+        // {taggables} is polymorphic, so it carries no foreign key and no
+        // cascade. See VideoRepository::forceDelete().
+        $this->db->execute(
+            'DELETE FROM {taggables} WHERE taggable_type = ? AND taggable_id = ?',
+            ['series', $id]
+        );
         $this->db->execute('DELETE FROM {series} WHERE id = ?', [$id]);
         $this->db->execute(
             'DELETE FROM {slug_aliases} WHERE target_type = "series" AND target_id = ?',

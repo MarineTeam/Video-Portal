@@ -169,6 +169,8 @@ final class App
             => new SeriesRepository($c->get(Db::class)));
         $c->singleton(SpeakerRepository::class, static fn (Container $c): SpeakerRepository
             => new SpeakerRepository($c->get(Db::class)));
+        $c->singleton(\Portal\Content\TagRepository::class, static fn (Container $c): \Portal\Content\TagRepository
+            => new \Portal\Content\TagRepository($c->get(Db::class)));
         $c->singleton(\Portal\Content\PlaylistRepository::class, static fn (Container $c): \Portal\Content\PlaylistRepository
             => new \Portal\Content\PlaylistRepository($c->get(Db::class)));
         $c->singleton(\Portal\Content\SavedVideoRepository::class, static fn (Container $c): \Portal\Content\SavedVideoRepository

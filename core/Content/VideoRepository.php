@@ -224,6 +224,25 @@ final class VideoRepository
             $params[] = (int) $filters['speakerId'];
         }
 
+        /*
+         * Tagged with this one.
+         *
+         * EXISTS rather than a JOIN, because a video can carry several tags and
+         * a join would return it once per matching row — which pagination then
+         * counts as several videos, giving a page of nine and a total of
+         * fourteen. The same reason the category filter uses IN rather than
+         * joining {video_categories}.
+         */
+        if (!empty($filters['tagId'])) {
+            $conditions[] = 'EXISTS (
+                SELECT 1 FROM {taggables} tg
+                 WHERE tg.tag_id = ?
+                   AND tg.taggable_type = "video"
+                   AND tg.taggable_id = v.id
+            )';
+            $params[] = (int) $filters['tagId'];
+        }
+
         // Published between two dates. Compared against the effective date the
         // listing sorts by, so a filter and the order it filters agree.
         if (!empty($filters['from'])) {
@@ -784,6 +803,25 @@ final class VideoRepository
 
     public function forceDelete(int $id): void
     {
+        /*
+         * Tags first, and by hand, because the database cannot do it.
+         *
+         * {taggables} is polymorphic — one table for videos, series and
+         * categories — so `taggable_id` cannot carry a foreign key to any of
+         * them, and ON DELETE CASCADE is not available. Every other dependent
+         * row here is cleaned up by a constraint; this one has to be code, and
+         * code is the half that gets forgotten.
+         *
+         * Left behind, the row keeps its tag alive: `pruneUnused()` counts uses
+         * and finds one, so a tag whose only video was deleted stays in the
+         * vocabulary as a link to an empty page. Which is exactly what a smoke
+         * check caught, by deleting a video and then asserting the tag was gone.
+         */
+        $this->db->execute(
+            'DELETE FROM {taggables} WHERE taggable_type = ? AND taggable_id = ?',
+            ['video', $id]
+        );
+
         $this->db->execute('DELETE FROM {videos} WHERE id = ?', [$id]);
     }
 

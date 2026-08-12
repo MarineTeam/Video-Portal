@@ -239,6 +239,59 @@ final class LibraryController extends Controller
      *
      * @param array<string, string> $params
      */
+    /**
+     * Everything carrying one tag.
+     *
+     * @param array<string, string> $params
+     */
+    public function tag(Request $request, array $params): Response
+    {
+        /** @var \Portal\Content\TagRepository $repo */
+        $repo = $this->container->get(\Portal\Content\TagRepository::class);
+
+        $tag = $repo->findBySlug($params['slug'] ?? '');
+
+        /*
+         * A 404 for an unknown tag, not an empty page.
+         *
+         * Tags are deleted the moment nothing carries them, so a slug that
+         * matches nothing is a mistyped or stale URL — and rendering "no videos
+         * found" for it invites somebody to guess slugs and read the difference
+         * between an empty tag and a missing one. There is no difference here,
+         * because an empty tag cannot exist.
+         *
+         * No alias table, unlike categories and speakers: renaming a tag merges
+         * it into whatever it was renamed to, so the old slug genuinely stops
+         * naming anything rather than pointing somewhere else.
+         */
+        if ($tag === null) {
+            throw HttpException::notFound('There is nothing filed under that.');
+        }
+
+        $page = max(1, (int) ($request->query('page') ?? 1));
+        $result = $this->videos()->query(
+            // Through visibilityFilters like every other listing, so an
+            // unpublished or members-only video cannot surface here just
+            // because somebody tagged it.
+            $this->visibilityFilters(['tagId' => $tag->id]),
+            $page,
+            $this->perPage()
+        );
+
+        return $this->view(
+            $this->themeManager()->loader()->hierarchy('tag', ['slug' => $tag->slug]),
+            [
+                'title'               => $tag->name,
+                'heading'             => $tag->name,
+                'description'         => null,
+                'videos'              => $this->present($result['items']),
+                'children'            => [],
+                'thumbnailsAvailable' => $this->thumbnailsAvailable(),
+                'pagination'          => $this->paginate($result['total'], $page, $request),
+            ]
+        );
+    }
+
     public function speaker(Request $request, array $params): Response
     {
         /** @var SpeakerRepository $repo */

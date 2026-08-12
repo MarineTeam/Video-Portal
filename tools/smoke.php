@@ -6939,6 +6939,140 @@ $db->execute(
 $db->execute('DELETE FROM {users} WHERE email = ?', ['newcomer@smoke.test']);
 @unlink($signupJar);
 
+/* ------------------------------------------------------------------- tags
+ *
+ * `{tags}` and `{taggables}` have been in the schema since Phase 1 and nothing
+ * ever touched them. The plan listed tags in the content model and the tables
+ * were created, which is exactly what made the gap invisible: the schema said
+ * the feature existed. Found by auditing columns against the code.
+ *
+ * Driven through the real form and the real page, because a repository with
+ * full coverage and no form behind it is the defect this project has now found
+ * sixteen times.
+ */
+echo "\nTags\n";
+
+$tagEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+
+check(
+    'The video edit screen offers a tag field',
+    str_contains($tagEdit['body'], 'name="tags"'),
+    'the tables exist and nothing can put anything in them'
+);
+
+$tagSaved = postWithJar($baseUrl . '/admin/videos', [
+    '_token'      => csrfFrom($tagEdit['body']),
+    'action'      => 'save',
+    'id'          => (string) $videoRow,
+    '_whole_form' => '1',
+    'title'       => 'A Test Video',
+    'categories'  => [(string) $categoryRow],
+    'tags'        => 'Prayer, Advent, prayer',
+], $jar);
+
+check('Saving tags succeeds', $tagSaved['status'] === 302, "got {$tagSaved['status']}");
+check(
+    'and the duplicate spelling collapsed to one tag',
+    (int) $db->value('SELECT COUNT(*) FROM {tags}') === 2,
+    '"Prayer" and "prayer" became two tags, each linking to half the content'
+);
+check(
+    'and the video carries both',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {taggables} WHERE taggable_type = "video" AND taggable_id = ?',
+        [$videoRow]
+    ) === 2,
+    'the tags were created but attached to nothing'
+);
+check(
+    'and the field comes back filled in',
+    str_contains(getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar)['body'], 'Prayer'),
+    'a field that saves and renders empty is one that deletes on the next save'
+);
+
+/* The public half: a tag has to be reachable, or it is a label nobody can use. */
+$watchTagged = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'The watch page lists the tags',
+    str_contains($watchTagged['body'], 'href="/tag/prayer"'),
+    'tagged content with no link out is a filing system nobody can open'
+);
+
+$tagPage = get($baseUrl . '/tag/prayer');
+check('The tag page renders', $tagPage['status'] === 200, "got {$tagPage['status']}");
+check(
+    'and lists the video',
+    str_contains($tagPage['body'], 'A Test Video'),
+    'the page rendered and the filter matched nothing'
+);
+
+check(
+    'An unknown tag is a 404, not an empty page',
+    get($baseUrl . '/tag/no-such-tag')['status'] === 404,
+    'an empty page invites guessing slugs; a tag with nothing on it cannot exist here'
+);
+
+/*
+ * The property that matters: a tag page is a listing like any other and must
+ * not become a second route to content the ordinary rules hide. Tagging an
+ * unpublished video must not publish it.
+ */
+$hiddenTagged = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-tag-hidden',
+    'slug' => 'tagged-but-draft', 'title' => 'Tagged But Draft',
+    'status' => 'ready', 'is_published' => 0, 'duration' => 10,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->execute(
+    'INSERT INTO {taggables} (tag_id, taggable_type, taggable_id)
+     SELECT id, "video", ? FROM {tags} WHERE slug = ?',
+    [$hiddenTagged, 'prayer']
+);
+
+check(
+    'A tag page cannot surface an unpublished video',
+    !str_contains(get($baseUrl . '/tag/prayer')['body'], 'Tagged But Draft'),
+    'TAGGING PUBLISHED IT — the tag filter bypassed the listing rules'
+);
+
+/*
+ * Removed through the repository, not with a raw DELETE.
+ *
+ * {taggables} is polymorphic, so it can carry no foreign key to {videos} and
+ * no cascade — deleting the row by hand leaves the tag row behind, which keeps
+ * the tag alive as a link to a page with nothing on it. forceDelete() clears
+ * it, and driving the real path is what proves that.
+ *
+ * The first version of this used a raw DELETE and the check below failed,
+ * which is how the missing cleanup was found at all.
+ */
+(new Portal\Content\VideoRepository($db, new Portal\Content\CategoryRepository($db)))
+    ->forceDelete($hiddenTagged);
+
+check(
+    'and deleting a video takes its tag rows with it',
+    (int) $db->value('SELECT COUNT(*) FROM {taggables} WHERE taggable_id = ?', [$hiddenTagged]) === 0,
+    'no foreign key can do this, so it is code — and code is the half that gets forgotten'
+);
+
+/* Clearing the field removes the tags, and the tag itself stops existing. */
+$tagCleared = postWithJar($baseUrl . '/admin/videos', [
+    '_token'      => csrfFrom(getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar)['body']),
+    'action'      => 'save',
+    'id'          => (string) $videoRow,
+    '_whole_form' => '1',
+    'title'       => 'A Test Video',
+    'categories'  => [(string) $categoryRow],
+    'tags'        => '',
+], $jar);
+
+check('Clearing the tag field succeeds', $tagCleared['status'] === 302, "got {$tagCleared['status']}");
+check(
+    'and the tags nothing carries any more are gone',
+    (int) $db->value('SELECT COUNT(*) FROM {tags}') === 0,
+    'the vocabulary only grows, and every stale label is a link to an empty page'
+);
+
 /* ------------------------------------------------- failed videos, and recovery
  *
  * The sync job used to read one page of a hundred videos and mark everything
