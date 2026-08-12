@@ -43,6 +43,7 @@ final class AdminView
             'webhooks'      => $this->webhooks($data),
             'live'          => $this->live($data),
             'speakers'      => $this->speakers($data),
+            'tags'          => $this->tags($data),
             'users'       => $this->users($data),
             'permissions' => $this->permissions($data),
             'plugins'    => $this->plugins($data),
@@ -435,6 +436,26 @@ final class AdminView
         /** @var list<Video> $videos */
         $videos = $data['videos'] ?? [];
 
+        /*
+         * Tags under the title, so how a library is labelled is visible at a
+         * glance rather than one video at a time. Read from a map the
+         * controller built in one query — the closure only looks things up.
+         */
+        $tagsByVideo = (array) ($data['tagsByVideo'] ?? []);
+        $tagsFor = static function (int $videoId) use ($tagsByVideo): string {
+            $tags = $tagsByVideo[$videoId] ?? [];
+            if ($tags === []) {
+                return '';
+            }
+
+            $chips = '';
+            foreach ($tags as $tag) {
+                $chips .= sprintf('<a class="pill" href="/admin/tags">%s</a> ', e($tag->name));
+            }
+
+            return '<br><span class="row-tags">' . $chips . '</span>';
+        };
+
         $rows = '';
         $rowForms = '';
         foreach ($videos as $video) {
@@ -480,7 +501,7 @@ final class AdminView
             $rows .= sprintf(
                 '<tr>
                    <td><label class="checkbox"><input type="checkbox" name="selected[]" value="%d"></label></td>
-                   <td><a href="/admin/videos/%d"><strong>%s</strong></a><br><span class="muted">%s</span></td>
+                   <td><a href="/admin/videos/%d"><strong>%s</strong></a><br><span class="muted">%s</span>%s</td>
                    <td>%s</td>
                    <td>%s</td>
                    <td class="right">
@@ -494,6 +515,7 @@ final class AdminView
                 $video->id,
                 e($video->title),
                 e(Str::duration($video->duration) ?: '—'),
+                $tagsFor($video->id),
                 $status,
                 $published,
                 $video->id,
@@ -848,6 +870,11 @@ final class AdminView
         $tagValue = $this->attr((string) ($data['tags'] ?? ''));
         $tagLimit = \Portal\Content\TagRepository::MAX_PER_ITEM;
 
+        $tagChoices = '';
+        foreach ((array) ($data['tagChoices'] ?? []) as $choice) {
+            $tagChoices .= '<option value="' . $this->attr($choice->name) . '">';
+        }
+
         $fromDescription = (array) ($scripture['parsed'] ?? []);
         $scriptureParsed = $fromDescription === []
             ? '<p class="muted small">Nothing found in the description.</p>'
@@ -938,7 +965,19 @@ final class AdminView
                    Categories say where a video belongs; tags say what it is about, and a video can
                    carry up to {$tagLimit} of them.</p>
                 <label>Tags <input type="text" name="tags" value="{$tagValue}"
-                       placeholder="prayer, advent, guest speaker"></label>
+                       list="tag-choices" placeholder="prayer, advent, guest speaker"></label>
+                <!--
+                  A datalist, not a script. It suggests tags that already exist
+                  so people reuse them rather than inventing "prayers" beside
+                  "prayer" — the one real weakness of a vocabulary created by
+                  typing. The browser does the matching; with no JavaScript at
+                  all the field is still an ordinary text box that works.
+
+                  It suggests whole tags rather than completing after a comma,
+                  which is what a plain datalist can do. That is a real limit
+                  and it is better than nothing here.
+                -->
+                <datalist id="tag-choices">{$tagChoices}</datalist>
               </fieldset>
 
               <fieldset>
@@ -2860,6 +2899,80 @@ final class AdminView
     // ------------------------------------------------------------- speakers
 
     /** @param array<string, mixed> $data */
+    /**
+     * The tag vocabulary.
+     *
+     * Not a place to CREATE tags — those come from typing one on a video — so
+     * there is no "add" form here, deliberately. A tag made on this screen
+     * would carry nothing, and a tag carrying nothing is a link to an empty
+     * page. This is where they get fixed: merged, renamed, removed.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function tags(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        $rows = '';
+        foreach ((array) ($data['tags'] ?? []) as $entry) {
+            $tag = $entry['tag'];
+            $uses = (int) $entry['uses'];
+
+            $rows .= sprintf(
+                '<tr>
+                   <td>
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <input type="text" name="name" value="%s" size="28" aria-label="Tag name">
+                       <button name="action" value="rename" class="btn tiny secondary">Rename</button>
+                     </form>
+                   </td>
+                   <td><a href="%s">%s</a></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="delete" class="btn tiny danger"
+                               onclick="return confirm(\'%s\')">Delete</button>
+                     </form>
+                   </td>
+                 </tr>',
+                $token,
+                $tag->id,
+                $this->attr($tag->name),
+                e($tag->url()),
+                e($uses === 1 ? '1 item' : $uses . ' items'),
+                $token,
+                $tag->id,
+                e(sprintf(
+                    'Remove “%s”? It will be taken off %d item%s, which are otherwise untouched.',
+                    $tag->name,
+                    $uses,
+                    $uses === 1 ? '' : 's'
+                ))
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="3" class="muted">No tags yet. Add some on a video — '
+                . 'the Tags box on any video edit screen creates them as you type.</td></tr>';
+        }
+
+        return <<<HTML
+        <h1>Tags</h1>
+        <p class="muted small">Tags are created by typing them on a video, and disappear when nothing
+           carries them — so there is nothing to add here. This is where they get fixed.</p>
+        <p class="muted small"><strong>Renaming a tag to the name of an existing one merges them</strong>,
+           which is usually the point: "prayer" and "Prayer" become one. A merge cannot be undone by
+           renaming back, because afterwards nothing records which item carried which.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Used by</th><th></th></tr></thead>
+          <tbody>{$rows}</tbody>
+        </table>
+        HTML;
+    }
+
     private function speakers(array $data): string
     {
         $token = e((string) $data['token']);
@@ -3996,6 +4109,8 @@ final class AdminView
         .filters a { text-decoration:none; margin-right:.25rem; }
         .filters a:hover { border-color:rgba(148,163,184,.6); }
         .filters a.ok { text-decoration:underline; text-underline-offset:3px; }
+        .row-tags { display:inline-block; margin-top:.25rem; }
+        .row-tags a { text-decoration:none; font-size:.7rem; }
         .tile .n { display:block; font-size:1.75rem; font-weight:650; }
         .tile .l { display:block; color:#94a3b8; font-size:.8125rem; }
         .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); gap:1rem; }

@@ -7055,6 +7055,66 @@ check(
     'no foreign key can do this, so it is code — and code is the half that gets forgotten'
 );
 
+/* ------------------------------------------------------- the tag vocabulary
+ *
+ * Tags shipped one commit before this screen did, and every repository method
+ * behind it — withCounts, rename, delete, all, forItems — had its own passing
+ * tests and no caller anywhere. The seventeenth instance of this project's
+ * pattern, committed by the same hand that had spent the day finding the other
+ * sixteen, which is the whole argument for auditing rather than remembering.
+ *
+ * So these drive the screen, not the repository.
+ */
+$tagAdmin = getWithJar($baseUrl . '/admin/tags', $jar);
+
+check('The tag screen renders', $tagAdmin['status'] === 200, "got {$tagAdmin['status']}");
+check(
+    'and lists the tags with how much each carries',
+    str_contains($tagAdmin['body'], 'Prayer') && str_contains($tagAdmin['body'], '1 item'),
+    'a vocabulary screen that does not say what is used is one nobody can tidy with'
+);
+check(
+    'and it is reachable from the sidebar',
+    str_contains(getWithJar($baseUrl . '/admin/videos', $jar)['body'], '/admin/tags'),
+    'a screen only findable by someone who read the source'
+);
+check(
+    'and the video list shows each row its tags',
+    str_contains(getWithJar($baseUrl . '/admin/videos', $jar)['body'], 'row-tags'),
+    'how a library is labelled should be visible at a glance, not one video at a time'
+);
+check(
+    'and the edit form suggests tags that already exist',
+    str_contains(getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar)['body'], 'tag-choices'),
+    'without seeing what exists, people invent "prayers" beside "prayer"'
+);
+
+/*
+ * Renaming onto an existing tag MERGES. This is the behaviour the screen warns
+ * about, so it had better be the behaviour it has.
+ */
+$tagMerged = postWithJar($baseUrl . '/admin/tags', [
+    '_token' => csrfFrom($tagAdmin['body']),
+    'action' => 'rename',
+    'id'     => (string) $db->value('SELECT id FROM {tags} WHERE slug = ?', ['advent']),
+    'name'   => 'Prayer',
+], $jar);
+
+check('Renaming a tag is accepted', $tagMerged['status'] === 302, "got {$tagMerged['status']}");
+check(
+    'and renaming onto an existing tag merged them',
+    (int) $db->value('SELECT COUNT(*) FROM {tags}') === 1,
+    'a unique-key failure instead of a merge leaves two spellings nobody can combine'
+);
+check(
+    'and the video carries the surviving tag exactly once',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {taggables} WHERE taggable_type = "video" AND taggable_id = ?',
+        [$videoRow]
+    ) === 1,
+    'the merge duplicated a row or left the old one behind'
+);
+
 /* Clearing the field removes the tags, and the tag itself stops existing. */
 $tagCleared = postWithJar($baseUrl . '/admin/videos', [
     '_token'      => csrfFrom(getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar)['body']),
