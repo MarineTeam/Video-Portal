@@ -28,6 +28,7 @@ final class QueryMonitorBar
         int $totalQueries,
         float $totalMs,
         array $httpLog,
+        int $totalHttpCalls,
         float $httpMs,
         float $requestMs,
         int $peakMemoryBytes
@@ -51,13 +52,23 @@ final class QueryMonitorBar
             self::bytes($peakMemoryBytes)
         );
 
-        if ($httpLog !== []) {
-            $headline .= sprintf(' · %d outbound (%sms)', count($httpLog), round($httpMs, 1));
+        /*
+         * The COUNTER, not count($httpLog) — the same mistake this class already
+         * documents three lines up for queries, made in the same call for the
+         * HTTP half and missed.
+         *
+         * Http::$log stops recording at 200 entries and Http::$callCount does
+         * not, so a request firing five hundred outbound calls — precisely the
+         * one worth catching, and on shared hosting the one that will hit the
+         * execution limit — reported a tidy 200.
+         */
+        if ($totalHttpCalls > 0) {
+            $headline .= sprintf(' · %d outbound (%sms)', $totalHttpCalls, round($httpMs, 1));
         }
 
         $sections = self::duplicateSection($duplicates)
             . self::slowSection($slow)
-            . self::httpSection($httpLog)
+            . self::httpSection($httpLog, $totalHttpCalls)
             . self::allQueriesSection($log, $summary['truncated']);
 
         $css = self::css();
@@ -124,7 +135,7 @@ final class QueryMonitorBar
     }
 
     /** @param list<array{method: string, url: string, status: int, ms: float}> $httpLog */
-    private static function httpSection(array $httpLog): string
+    private static function httpSection(array $httpLog, int $totalHttpCalls): string
     {
         if ($httpLog === []) {
             return '';
@@ -141,10 +152,23 @@ final class QueryMonitorBar
             );
         }
 
+        /*
+         * Say so when the table is short of the headline, rather than letting
+         * the two numbers quietly disagree. A reader who counts the rows and
+         * gets a different answer from the summary stops trusting both.
+         */
+        $note = $totalHttpCalls > count($httpLog)
+            ? sprintf(
+                ' Showing the first %d of %d — the rest were made but not recorded.',
+                count($httpLog),
+                $totalHttpCalls
+            )
+            : '';
+
         return '<h4>Outbound requests</h4>'
             . '<p class="qm-note">Calls to bunny.net, the mail provider, or an identity provider. A slow page '
             . 'is far more often one of these than it is SQL. Query strings are never logged, because signed '
-            . 'URLs carry tokens in them.</p>'
+            . 'URLs carry tokens in them.' . e($note) . '</p>'
             . '<table>' . $rows . '</table>';
     }
 

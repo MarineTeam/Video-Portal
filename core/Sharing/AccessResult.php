@@ -74,8 +74,16 @@ final class AccessResult
         return new self(self::GONE);
     }
 
-    public function isGranted(): bool
-    {
-        return $this->state === self::GRANTED;
-    }
+    /*
+     * There was an isGranted() here, and it never had a caller.
+     *
+     * Both consumers dispatch with `match ($result->state)` over all five
+     * states, which is the shape this class wants: adding a sixth state makes
+     * every match arm visible at once, where a boolean would quietly fold the
+     * new case into whatever the `default` arm does. On an access decision,
+     * that default is the difference between a refusal and a page.
+     *
+     * Removed rather than left as a convenience, because the convenient version
+     * is the one that stops you noticing the case you have not handled.
+     */
 }

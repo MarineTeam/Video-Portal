@@ -162,14 +162,16 @@ final class CommentRepository
         return array_values($top);
     }
 
-    /** How many comments an ordinary reader would see on this video. */
-    public function visibleCount(int $videoId): int
-    {
-        return (int) $this->db->value(
-            'SELECT COUNT(*) FROM {comments} WHERE video_id = ? AND status = ?',
-            [$videoId, CommentPolicy::STATUS_APPROVED]
-        );
-    }
+    /*
+     * There was a visibleCount(int $videoId) here, asking the same question as
+     * countsFor() one video at a time. It had no callers, and it is the version
+     * somebody reaches for inside a foreach — which is a query per card on the
+     * homepage of every site running this plugin, the exact cost countsFor()
+     * exists to avoid.
+     *
+     * Removed rather than kept "in case": a convenience whose only use is the
+     * slow one is not a convenience.
+     */
 
     /**
      * Visible counts for a whole listing at once.

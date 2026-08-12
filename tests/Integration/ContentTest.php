@@ -446,15 +446,57 @@ final class ContentTest extends DatabaseTestCase
         $this->videos->syncFromProvider([
             new VideoMeta(id: 'abc-1', title: 'Will vanish', status: VideoMeta::STATUS_READY),
             new VideoMeta(id: 'abc-2', title: 'Stays',       status: VideoMeta::STATUS_READY),
-        ]);
+        ], 'bunny', true);
 
         $this->videos->syncFromProvider([
             new VideoMeta(id: 'abc-2', title: 'Stays', status: VideoMeta::STATUS_READY),
-        ]);
+        ], 'bunny', true);
 
         $vanished = $this->videos->findByProviderId('abc-1');
         self::assertNotNull($vanished, 'The row must survive.');
         self::assertSame(Video::STATUS_FAILED, $vanished->status);
+    }
+
+    /**
+     * The bug this parameter exists to prevent, pinned from both sides.
+     *
+     * "Not in this list" only means "gone from the provider" when the list is
+     * the WHOLE library. The scheduled job passed one page of a hundred and
+     * this marked everything else failed, so any library over a hundred videos
+     * had its tail condemned every fifteen minutes -- videos disappearing from
+     * the public site with nothing in the audit log and nobody having touched
+     * them.
+     *
+     * Asserted on the status of the absent video rather than on the returned
+     * count, because a `missing` of 0 is also what you get when the UPDATE
+     * matches nothing for an unrelated reason.
+     */
+    public function testAPartialListNeverCondemnsTheVideosItOmits(): void
+    {
+        $this->videos->syncFromProvider([
+            new VideoMeta(id: 'abc-1', title: 'On page two', status: VideoMeta::STATUS_READY),
+            new VideoMeta(id: 'abc-2', title: 'On page one', status: VideoMeta::STATUS_READY),
+        ], 'bunny', true);
+
+        // The default, which is what a caller that has not thought about it gets.
+        $result = $this->videos->syncFromProvider([
+            new VideoMeta(id: 'abc-2', title: 'On page one', status: VideoMeta::STATUS_READY),
+        ]);
+
+        $offPage = $this->videos->findByProviderId('abc-1');
+        self::assertNotNull($offPage);
+        self::assertSame(
+            Video::STATUS_READY,
+            $offPage->status,
+            'A video absent from an INCOMPLETE list was marked failed.'
+        );
+        self::assertSame(0, $result['missing']);
+
+        // And the video that WAS in the partial list still syncs normally --
+        // refusing to condemn must not turn into refusing to work.
+        $onPage = $this->videos->findByProviderId('abc-2');
+        self::assertNotNull($onPage);
+        self::assertSame(Video::STATUS_READY, $onPage->status);
     }
 
     public function testSoftDeleteHidesTheVideoButKeepsTheRow(): void

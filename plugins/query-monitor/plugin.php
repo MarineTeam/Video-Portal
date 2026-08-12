@@ -107,6 +107,9 @@ $render = static function () use ($allowed): void {
             totalQueries:    $db->queryCount(),
             totalMs:         $db->queryMs(),
             httpLog:         Http::log(),
+            // As with queryCount above: Http::log() stops at 200 entries and
+            // the counter does not.
+            totalHttpCalls:  Http::callCount(),
             httpMs:          Http::totalMs(),
             /*
              * Measured from PHP's own start rather than from anything this

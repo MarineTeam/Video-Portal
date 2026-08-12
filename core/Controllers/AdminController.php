@@ -32,6 +32,21 @@ use Throwable;
  */
 final class AdminController extends Controller
 {
+    /**
+     * What stops working when a service is not configured, in the words of the
+     * thing somebody came here to do.
+     *
+     * "Mail is unconfigured" is a fact about the software. "No share links,
+     * approval requests or new-video notices will be delivered" is a fact about
+     * their site, and it is the one that gets the box filled in.
+     */
+    private const PROVIDER_COST = [
+        ProviderRegistry::KIND_AUTH  => 'nobody can sign in',
+        ProviderRegistry::KIND_VIDEO => 'uploads and playback will not work',
+        ProviderRegistry::KIND_MAIL  =>
+            'share links, approval requests and new-video notices will not be delivered',
+    ];
+
     public function dashboard(Request $request): Response
     {
         $stats = [];
@@ -3165,7 +3180,55 @@ final class AdminController extends Controller
         $summary = [];
         foreach ([ProviderRegistry::KIND_AUTH, ProviderRegistry::KIND_VIDEO, ProviderRegistry::KIND_MAIL] as $kind) {
             $slug = $registry->activeSlug($kind);
-            $summary[$kind] = ['slug' => $slug, 'ok' => $slug !== null];
+
+            /*
+             * `ok` used to mean "something is selected", and the screen printed
+             * the slug beside it — which reads as "this works". It frequently
+             * was not: a site with Resend chosen and no API key dropped every
+             * share link, approval request and subscription email in silence.
+             *
+             * Selected and configured are now separate answers, and the missing
+             * fields are named, because "email is not configured" sends
+             * somebody to a screen with eight boxes on it.
+             */
+            $missing = $slug === null ? [] : $registry->missingCredentials($kind, $slug);
+
+            /*
+             * Mail is asked twice, deliberately.
+             *
+             * A field check can only see what the form collects. PhpMailProvider
+             * is configured when it has a From address AND `mail()` exists — and
+             * plenty of shared hosts disable that function, which no list of
+             * credential fields can express. So the provider's own verdict is
+             * consulted as well, and a provider that says no is not overruled by
+             * a form that looks complete.
+             *
+             * Only mail has isConfigured(); auth and video would each need a
+             * network call to answer, which is not something a dashboard render
+             * may do.
+             */
+            $selfReport = ($kind === ProviderRegistry::KIND_MAIL && $slug !== null)
+                ? $registry->mailConfigured()
+                : true;
+
+            $summary[$kind] = [
+                'slug'    => $slug,
+                'ok'      => $slug !== null && $missing === [] && $selfReport,
+                'missing' => $missing,
+                /*
+                 * The provider said no while every required field is filled in.
+                 * Naming no field would be worse than useless here — it would
+                 * send somebody to re-type an API key that is already correct.
+                 */
+                'refused' => $slug !== null && $missing === [] && !$selfReport,
+                /*
+                 * What stops working, said in the words of the thing the person
+                 * came here to do. "Mail is unconfigured" is a fact about the
+                 * software; "no share links will be delivered" is a fact about
+                 * their site.
+                 */
+                'cost'    => self::PROVIDER_COST[$kind] ?? '',
+            ];
         }
 
         return $summary;

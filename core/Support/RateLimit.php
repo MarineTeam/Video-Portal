@@ -65,20 +65,28 @@ final class RateLimit
         return $hits <= $limit;
     }
 
-    /** How many attempts are left, for a message that says something useful. */
-    public function remaining(string $bucket, int $limit, int $windowSeconds): int
-    {
-        try {
-            $hits = (int) $this->db->value(
-                'SELECT hits FROM {rate_limits} WHERE bucket = ? AND window_start = ?',
-                [hash('sha256', $bucket), $this->windowStart($windowSeconds)]
-            );
-        } catch (Throwable) {
-            return $limit;
-        }
-
-        return max(0, $limit - $hits);
-    }
+    /*
+     * There was a remaining() here, "for a message that says something
+     * useful". It never had a caller, and on inspection it should not get one.
+     *
+     * Every bucket in this application throttles something where telling the
+     * actor how close they are helps an attacker more than a user:
+     *
+     *  - sign-in: paces a password guesser to just under the limit, and the
+     *    count differing between a known and an unknown address is an
+     *    enumeration oracle on its own.
+     *  - the share gate: every failure response is byte-identical by design,
+     *    which a remaining-attempts number would end.
+     *  - registration: same enumeration problem.
+     *
+     * A person who has genuinely mistyped their password twice is not helped by
+     * arithmetic; they are helped by being told when they can try again, which
+     * the existing message already does.
+     *
+     * Written down rather than deleted silently, because "how many tries are
+     * left" reads like an obvious missing courtesy and would otherwise be
+     * rebuilt by the next person to look at this class.
+     */
 
     /** Clear a bucket — called after a successful sign-in. */
     public function clear(string $bucket): void

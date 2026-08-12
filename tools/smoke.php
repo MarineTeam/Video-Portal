@@ -370,7 +370,7 @@ $cleanup = static function () use ($admin, $database, &$serverProcess, &$serverL
     }
     // Anything the install-from-a-file checks put on disk. Deliberately named
     // one by one rather than wiping plugins/, which holds the bundled ones.
-    $strays = [PORTAL_PLUGINS . '/smoketest', PORTAL_PLUGINS . '/evil'];
+    $strays = [PORTAL_PLUGINS . '/smoketest', PORTAL_PLUGINS . '/evil', PORTAL_PLUGINS . '/smokecron'];
     foreach ((array) glob(PORTAL_PLUGINS . '/.*.replacing-*', GLOB_ONLYDIR) as $backup) {
         if (is_string($backup)) {
             $strays[] = $backup;
@@ -445,7 +445,7 @@ register_shutdown_function($cleanup);
  * by now nothing is holding it — and it means residue can never accumulate
  * across runs even when an individual teardown loses the race.
  */
-foreach ([PORTAL_PLUGINS . '/smoketest', PORTAL_PLUGINS . '/evil'] as $stale) {
+foreach ([PORTAL_PLUGINS . '/smoketest', PORTAL_PLUGINS . '/evil', PORTAL_PLUGINS . '/smokecron'] as $stale) {
     if (is_dir($stale)) {
         foreach ((array) glob($stale . '/*') as $file) {
             if (is_string($file)) {
@@ -990,6 +990,98 @@ check(
 
 @unlink($goodZip);
 @unlink($evilZip);
+
+/* ------------------------------------------------------ plugin cron jobs
+ *
+ * `PluginContext::addCronJob()` has existed since Phase 1. It put the handler
+ * in a map on PluginManager, and NOTHING ever wrote a {cron_jobs} row for it —
+ * while runDue() selects FROM that table. So a plugin's scheduled job was
+ * registered, resolvable by slug, and never once due. No plugin cron job in
+ * this product has ever run.
+ *
+ * The same defect shipped for `notifications.send` in Phase 4 and was recorded
+ * then as "a job with no row is never due, so it does nothing, silently,
+ * forever". The core half was fixed; the plugin half was not.
+ *
+ * Driven over HTTP because the claim is about a real request: the row has to
+ * appear, the job has to become due, and the handler has to actually run.
+ */
+echo "\nPlugin cron jobs\n";
+
+$cronPluginDir = PORTAL_PLUGINS . '/smokecron';
+@mkdir($cronPluginDir, 0775, true);
+file_put_contents($cronPluginDir . '/plugin.php', <<<'PHP'
+<?php
+/**
+ * Plugin Name: Smoke Cron
+ * Slug: smokecron
+ * Version: 1.0.0
+ * Description: Registers a scheduled job, so the run can be observed.
+ */
+
+/** @var \Portal\Plugins\PluginContext $plugin */
+$plugin->addCronJob('tick', 60, static function (): string {
+    return 'the plugin job ran';
+});
+PHP);
+
+$cronPluginsScreen = getWithJar($baseUrl . '/admin/plugins', $jar);
+postWithJar($baseUrl . '/admin/plugins', [
+    '_token' => csrfFrom($cronPluginsScreen['body']),
+    'slug'   => 'smokecron',
+    'action' => 'activate',
+], $jar);
+
+check(
+    'A plugin declaring a cron job activates',
+    (int) ($db->value('SELECT is_active FROM {plugins} WHERE slug = ?', ['smokecron']) ?? -1) === 1,
+    'it threw on load — check the server log'
+);
+
+/*
+ * The jobs this script disabled at seed time stay disabled; only the plugin's
+ * is enabled here. videos.sync calls the video provider over HTTPS and PHP's
+ * built-in server is single-threaded, so letting it run freezes the whole run.
+ */
+$cronRun = get($baseUrl . '/cron?key=' . urlencode((string) $written['cron_secret']));
+
+check('The cron endpoint runs', $cronRun['status'] === 200, "got {$cronRun['status']}");
+
+$pluginJobSlug = (string) ($db->value(
+    'SELECT slug FROM {cron_jobs} WHERE slug LIKE ?',
+    ['%smokecron%']
+) ?? '');
+
+check(
+    'A plugin cron job gets a row, so it can become due',
+    $pluginJobSlug !== '',
+    'registered in memory and invisible to the runner — it could never fire'
+);
+check(
+    'and the row is enabled',
+    (int) ($db->value('SELECT is_enabled FROM {cron_jobs} WHERE slug = ?', [$pluginJobSlug]) ?? 0) === 1,
+    'a row that exists and is off is the same as no row'
+);
+check(
+    'and the handler actually ran',
+    (string) ($db->value('SELECT last_message FROM {cron_jobs} WHERE slug = ?', [$pluginJobSlug]) ?? '')
+        === 'the plugin job ran',
+    'the row appeared but nothing executed — the slug the runner looks up does not match the one it stored'
+);
+
+/*
+ * An admin switching a job off must stay switched off. ensureJob() runs on
+ * every tick, so ON DUPLICATE KEY UPDATE would turn it back on every few
+ * minutes, with the screen showing it enabled and nothing saying why.
+ */
+$db->execute('UPDATE {cron_jobs} SET is_enabled = 0 WHERE slug = ?', [$pluginJobSlug]);
+get($baseUrl . '/cron?key=' . urlencode((string) $written['cron_secret']));
+
+check(
+    'Disabling a plugin job sticks across the next tick',
+    (int) ($db->value('SELECT is_enabled FROM {cron_jobs} WHERE slug = ?', [$pluginJobSlug]) ?? 1) === 0,
+    'the registration re-enabled a job an admin had turned off'
+);
 
 echo "\nExport and import\n";
 

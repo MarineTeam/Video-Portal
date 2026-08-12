@@ -347,6 +347,64 @@ final class ProviderRegistry
         }
     }
 
+    /**
+     * Which required credentials this provider is missing.
+     *
+     * Selecting a provider and configuring one are different things, and until
+     * now nothing could tell them apart without making a network call. The
+     * dashboard printed the slug of whatever was selected, which reads as "this
+     * works" and was frequently a lie: a site with Resend chosen and no API key
+     * silently dropped every share link, approval request and subscription
+     * email, and said nothing anywhere.
+     *
+     * Derived from `fields()`, so it costs one already-cached read and no
+     * outbound request — which is what makes it usable on a page render, unlike
+     * `test()`. It answers "could this possibly work", not "does it": a wrong
+     * API key passes this and fails `test()`, and that is the honest division.
+     * Only `test()` can tell you the credential is correct, and only by asking
+     * the service.
+     *
+     * @return list<string> field LABELS, in the order the form shows them
+     */
+    public function missingCredentials(string $kind, ?string $slug = null): array
+    {
+        try {
+            $slug ??= $this->activeSlug($kind);
+            if ($slug === null) {
+                return [];
+            }
+
+            $stored = $this->credentials($kind, $slug);
+            $missing = [];
+
+            foreach ($this->fieldsFor($kind, $slug) as $field) {
+                if (!$field->required) {
+                    continue;
+                }
+
+                /*
+                 * A bool with a stored "0" is set, not missing — so this tests
+                 * the string, not truthiness. Getting that wrong would report a
+                 * deliberately-off switch as an unconfigured provider.
+                 */
+                if (trim($stored[$field->key] ?? '') === '') {
+                    $missing[] = $field->label;
+                }
+            }
+
+            return $missing;
+        } catch (Throwable $e) {
+            /*
+             * Fails QUIET, unlike a permission check. This drives a warning
+             * banner; if the registry cannot be read, the dashboard has bigger
+             * problems already on it, and inventing a second alarm out of an
+             * unrelated fault helps nobody.
+             */
+            error_log('Portal: could not check ' . $kind . ' credentials: ' . $e->getMessage());
+            return [];
+        }
+    }
+
     private function active(string $kind): Provider
     {
         if (isset($this->instances[$kind])) {

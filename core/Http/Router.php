@@ -88,20 +88,20 @@ final class Router
         $this->middleware[$name] = $handler;
     }
 
-    /** @param list<string> $names */
-    public function globalMiddleware(array $names): void
-    {
-        $this->globalMiddleware = $names;
-    }
-
     /**
      * Add one middleware to every route, keeping what is already there.
      *
-     * The wholesale setter above cannot be used by a plugin: two plugins each
-     * calling it would leave only the second one's guard installed, and the
-     * first would fail silently and completely. Since a plugin that wants a
-     * global guard is usually enforcing something (geo-blocking, maintenance
-     * mode), silent removal is the worst possible failure mode.
+     * There is deliberately NO wholesale setter. There was one — `globalMiddleware(array)`
+     * — which replaced the list outright, and it was removed in favour of this
+     * having never had a single caller. Two callers each using it would leave
+     * only the second one's guard installed and the first would fail silently
+     * and completely; since anything reaching for a global guard is usually
+     * ENFORCING something (geo-blocking, maintenance mode), silent removal is
+     * the worst available failure.
+     *
+     * An uncalled method that does the wrong thing is worse than dead code. It
+     * reads as the supported way to do this, and it is one autocomplete away
+     * from disabling the geo plugin without a test failing.
      */
     public function addGlobalMiddleware(string $name): void
     {
