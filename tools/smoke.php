@@ -7519,6 +7519,134 @@ check(
 
 @unlink($scopeJar);
 
+/* -------------------------------------------------------- maintenance mode
+ *
+ * Deployment here is `git pull` on a live host, and pending migrations run on
+ * the first request afterwards — whichever visitor that happens to be. This is
+ * the switch that shows them a notice instead.
+ *
+ * Every check below that matters is about NOT being locked out. A switch that
+ * closes the site is only safe if the ways back in are proved, so they are
+ * driven rather than reasoned about.
+ */
+echo "\nMaintenance mode\n";
+
+/*
+ * Set through the real form, not with an INSERT.
+ *
+ * The first version wrote the row directly and fataled on a NOT NULL
+ * updated_at -- which was a fair warning: a setting written by hand is a
+ * setting whose FORM nobody proved. Driving the checkbox proves both.
+ *
+ * _whole_form is required, and it means absent checkboxes are cleared, so the
+ * two that default ON are sent back explicitly.
+ */
+$settingsPage = getWithJar($baseUrl . '/admin/settings', $jar);
+$closeSite = static function (array $extra) use ($baseUrl, $jar, $settingsPage): array {
+    return postWithJar($baseUrl . '/admin/settings', [
+        '_token'      => csrfFrom($settingsPage['body']),
+        '_whole_form' => '1',
+        'site_name'   => 'Smoke Portal',
+        'timezone'    => 'UTC',
+        'subscriptions_enabled' => '1',
+        'allow_access_requests' => '1',
+    ] + $extra, $jar);
+};
+
+$closed503 = $closeSite(['maintenance_mode' => '1']);
+check('The maintenance switch saves', $closed503['status'] === 302, "got {$closed503['status']}");
+
+$closed = get($baseUrl . '/');
+
+check('A visitor gets the notice', str_contains($closed['body'], 'Back shortly'), "got {$closed['status']}");
+check(
+    'and it answers 503, not 200',
+    $closed['status'] === 503,
+    'a 200 tells search engines this IS the page, and a deploy quietly deindexes the site'
+);
+check(
+    'and says when to come back',
+    isset($closed['headers']['retry-after']),
+    'a 503 with no Retry-After leaves a crawler guessing'
+);
+check(
+    'and asks not to be indexed',
+    str_contains($closed['body'], 'noindex'),
+    'belt and braces beside the 503'
+);
+check(
+    'A watch page is closed too',
+    get($baseUrl . '/watch/' . $videoSlug)['status'] === 503,
+    'closing only the homepage is not closing the site'
+);
+
+/*
+ * The ways back in. Each of these is a separate guarantee in the policy, and
+ * each one failing turns the switch into a door that only FTP can open.
+ */
+check(
+    'Sign-in stays open',
+    get($baseUrl . '/auth/login')['status'] === 200,
+    'THE LOCKOUT: the rule is "admins get through", which needs a session — and a session needs sign-in'
+);
+check(
+    'The admin area stays open',
+    getWithJar($baseUrl . '/admin', $jar)['status'] === 200,
+    'the screen that turns this off must never be behind it'
+);
+check(
+    'and an admin sees the public site as normal',
+    getWithJar($baseUrl . '/', $jar)['status'] === 200,
+    'a site they can administer but not look at gives no way to check the deploy worked'
+);
+check(
+    'Cron keeps running',
+    get($baseUrl . '/cron?key=' . urlencode((string) $written['cron_secret']))['status'] === 200,
+    'scheduled work should not stop because somebody is deploying'
+);
+/*
+ * The ROUTED asset, not a file in public/assets.
+ *
+ * Files under /assets are served by the web server and never reach PHP, so
+ * they could not be blocked by this guard and prove nothing about it. The
+ * theme stylesheet goes through AssetController, which is behind the global
+ * middleware — so it is the one that would actually go dark.
+ *
+ * The first version of this check asked for /assets/app.css, which does not
+ * exist at all: it failed with a 404 and read as the guard blocking assets.
+ */
+check(
+    'The theme stylesheet still loads',
+    get($baseUrl . '/theme-asset/default/theme.css')['status'] === 200,
+    'a notice that cannot load its stylesheet reads as a broken site, not a deliberate one'
+);
+
+/* And the admin is told, on every screen, that the site is shut. */
+check(
+    'The admin area says the site is closed',
+    str_contains(getWithJar($baseUrl . '/admin/videos', $jar)['body'], 'closed to visitors'),
+    'the one setting invisible to the person who set it — they are exempt, so nothing else would say'
+);
+
+/* A custom message reaches the page. */
+$closeSite(['maintenance_mode' => '1', 'maintenance_message' => 'Back at four.']);
+check(
+    'A custom message is shown',
+    str_contains(get($baseUrl . '/')['body'], 'Back at four.'),
+    'the field saves and the page ignores it'
+);
+
+/* Off again, and the site comes back. */
+$closeSite([]);
+
+$reopened = get($baseUrl . '/');
+check('Switching it off reopens the site', $reopened['status'] === 200, "got {$reopened['status']}");
+check(
+    'and the notice is gone',
+    !str_contains($reopened['body'], 'Back shortly'),
+    'a switch that cannot be switched back is not a switch'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

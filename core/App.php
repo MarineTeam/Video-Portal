@@ -20,6 +20,8 @@ use Portal\Http\Response;
 use Portal\Http\Router;
 use Portal\Mail\MailProvider;
 use Portal\Plugins\Hooks;
+use Portal\Support\MaintenancePolicy;
+use Portal\Support\MaintenanceView;
 use Portal\Plugins\PluginManager;
 use Portal\Providers\ProviderRegistry;
 use Portal\Sharing\AccessResolver;
@@ -445,11 +447,85 @@ final class App
         $router->middleware('auth.authorized', $guard->requireAuthorized());
         $router->middleware('admin.area', $guard->requireAdminArea());
 
+        $this->registerMaintenanceGuard($router, $guard);
+
         Routes::register($router, $this->container);
 
         // Plugins last: registration order is match order, so a plugin cannot
         // silently shadow a core URL, but can claim a more specific pattern.
         do_action('routes_register', $router);
+    }
+
+    /**
+     * Close the site to visitors while somebody is working on it.
+     *
+     * Deployment here is `git pull` on a live host and the pending migrations
+     * run on the first request afterwards — whichever visitor that happens to
+     * be. This is the switch that puts a notice in front of them instead of a
+     * half-applied schema.
+     *
+     * Registered through addGlobalMiddleware(), the API added in Phase 2 for
+     * exactly this and whose docblock names maintenance mode as its example. It
+     * appends rather than replacing, so the geo plugin's guard and this one
+     * coexist — which the setter it replaced could not do.
+     */
+    private function registerMaintenanceGuard(Router $router, Guard $guard): void
+    {
+        $router->middleware('maintenance', function (Request $request) use ($guard): ?Response {
+            try {
+                /*
+                 * The path test FIRST, before anything is looked up.
+                 *
+                 * This runs on every request the site serves, including every
+                 * asset and every 404. Asking the database whether maintenance
+                 * is on before checking whether the path is even closable would
+                 * put a query on the critical path of the whole site to serve a
+                 * feature that is off almost always.
+                 */
+                if (MaintenancePolicy::isAlwaysOpen($request->path)) {
+                    return null;
+                }
+
+                /** @var Config $config */
+                $config = $this->container->get(Config::class);
+                if (!$config->settingBool('maintenance_mode', false)) {
+                    return null;
+                }
+
+                // Only now is a session worth resolving.
+                $isAdmin = $this->container
+                    ->get(Capabilities::class)
+                    ->canSeeAdmin($guard->user());
+
+                if (MaintenancePolicy::allows($request->path, true, $isAdmin)) {
+                    return null;
+                }
+
+                return Response::html(
+                    MaintenanceView::render(
+                        $config->setting('site_name', 'Video Portal'),
+                        MaintenancePolicy::message((string) $config->setting('maintenance_message', ''))
+                    ),
+                    503
+                )->private()->header('Retry-After', (string) MaintenancePolicy::RETRY_AFTER);
+            } catch (Throwable $e) {
+                /*
+                 * Fails OPEN, against this codebase's usual stance.
+                 *
+                 * This is not an access control — everything it hides is
+                 * public, and every private thing behind it is guarded
+                 * separately. A throwing global middleware takes down every
+                 * page including the admin screen that switches it off, so the
+                 * only recoverable failure is to let the request through. The
+                 * same reasoning the geo plugin's guard is built on.
+                 */
+                error_log('Portal: maintenance check failed, allowing the request. ' . $e->getMessage());
+
+                return null;
+            }
+        });
+
+        $router->addGlobalMiddleware('maintenance');
     }
 
     // --------------------------------------------------------------- handling

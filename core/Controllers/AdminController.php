@@ -3290,6 +3290,10 @@ final class AdminController extends Controller
                 // Default '1': refusing somebody and giving them no way to ask
                 // is the state this replaces, not one worth preserving.
                 'allow_access_requests' => $this->config()->setting('allow_access_requests', '1'),
+                // Default '0'. A switch that closes the site must never be on
+                // because nobody set it.
+                'maintenance_mode'    => $this->config()->setting('maintenance_mode', '0'),
+                'maintenance_message' => $this->config()->setting('maintenance_message', ''),
             ],
             'subscriberCount' => $this->subscriberCount(),
             'cronJobs' => $cron->jobs(),
@@ -3356,6 +3360,9 @@ final class AdminController extends Controller
             'subscriptions_enabled'     => $checkbox('subscriptions_enabled', true),
             'require_verified_email'    => $checkbox('require_verified_email', false),
             'allow_access_requests'     => $checkbox('allow_access_requests', true),
+            'maintenance_mode'          => $checkbox('maintenance_mode', false),
+
+            'maintenance_message' => mb_substr(trim($request->input('maintenance_message') ?? ''), 0, 300),
 
             'podcast_author'      => trim($request->input('podcast_author') ?? ''),
             'podcast_owner_name'  => trim($request->input('podcast_owner_name') ?? ''),
@@ -3383,6 +3390,9 @@ final class AdminController extends Controller
             'token'    => $this->csrfToken(),
             'flash'    => $this->flash(),
             'nav'      => $this->adminNav(),
+            // Every admin screen, because the person who needs reminding that
+            // the site is shut is the one who has moved on to something else.
+            'maintenanceMode' => $this->config()->settingBool('maintenance_mode', false),
         ]))->private();
     }
 

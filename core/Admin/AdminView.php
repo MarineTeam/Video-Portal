@@ -86,6 +86,24 @@ final class AdminView
             );
         }
 
+        /*
+         * A standing banner while the site is closed, on EVERY admin screen.
+         *
+         * Maintenance mode is the one setting whose whole effect is invisible
+         * to the person who set it — they are exempt, so the site looks normal
+         * to them and nothing anywhere would say otherwise. A deploy that ends
+         * with somebody closing the laptop leaves the site shut with no symptom
+         * an administrator can see.
+         *
+         * On every screen rather than only on Settings, because the person who
+         * needs reminding is the one who has moved on to something else.
+         */
+        $maintenanceBanner = ($data['maintenanceMode'] ?? false) === true
+            ? '<div class="flash error"><strong>The site is closed to visitors.</strong> '
+              . 'You can see it because you are signed in here. '
+              . '<a href="/admin/settings">Open it again</a>.</div>'
+            : '';
+
         $css = $this->css();
 
         /*
@@ -154,6 +172,7 @@ final class AdminView
             </ul>
           </nav>
           <main>
+            {$maintenanceBanner}
             {$flash}
             {$body}
           </main>
@@ -3821,6 +3840,8 @@ final class AdminView
         $subscriptionsEnabled = $checked('subscriptions_enabled');
         $requireVerified = $checked('require_verified_email');
         $allowRequests = $checked('allow_access_requests');
+        $maintenance = $checked('maintenance_mode');
+        $maintenanceMessage = $this->attr((string) ($data['settings']['maintenance_message'] ?? ''));
         $subscriberCount = (int) ($data['subscriberCount'] ?? 0);
 
         return <<<HTML
@@ -3933,6 +3954,25 @@ final class AdminView
             <p class="muted small">Turn it off for an invitation-only site: the page then says to
                contact whoever invited them, and the form is gone. Requests already made stay on the
                People screen either way.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Maintenance mode</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="maintenance_mode" value="1"{$maintenance}>
+              Close the site to visitors
+            </label>
+            <p class="muted small">Visitors get a short notice and a 503, which tells search engines to
+               come back rather than drop the page. Turn it on before you deploy and off afterwards:
+               updates apply on the first page view after the code changes, and that view belongs to
+               whoever happens to arrive.</p>
+            <p class="muted small"><strong>You are not locked out.</strong> Anyone signed in who can
+               reach the admin area sees the whole site as normal, and the sign-in page stays open —
+               so you can still let yourself in from a different browser. The admin area is never
+               closed by this switch, whatever else goes wrong.</p>
+            <label>Message <input type="text" name="maintenance_message" value="{$maintenanceMessage}"
+                   maxlength="300" placeholder="We are making a few changes and will be back shortly."></label>
+            <p class="muted small">Shown on the notice. Left blank, visitors get the sentence above.</p>
           </fieldset>
 
           <button class="btn">Save</button>
