@@ -176,6 +176,10 @@ final class AdminController extends Controller
                 'video',
                 array_map(static fn ($v): int => $v->id, $result['items'])
             ),
+            // Suggestions for the bulk tag box. Without them, bulk tagging is
+            // the fastest way to spread "prayers" beside "prayer" across two
+            // hundred videos at once.
+            'tagChoices'  => $this->tagRepo()->all(),
             /*
              * Counted, not inferred from the page on screen. A filter tab
              * reading "Failed" with no number beside it gives an admin no
@@ -472,6 +476,27 @@ final class AdminController extends Controller
             $this->require(Capability::MANAGE_CATEGORIES, 'category', $categoryId);
         }
 
+        /*
+         * Parsed ONCE, before the loop.
+         *
+         * Running the parser per video would do the same work two hundred
+         * times, and — worse — a name that parses to nothing would be
+         * discovered on video one and again on video two hundred, with the
+         * refusal message arriving after half the library had been touched.
+         */
+        $tagNames = [];
+        if ($action === 'tag') {
+            $tagNames = \Portal\Content\TagRepository::parse((string) ($request->input('bulk_tags') ?? ''));
+
+            if ($tagNames === []) {
+                return $this->back(
+                    $request,
+                    'Type at least one tag. Nothing here can be used as one — a tag needs a letter or a number.',
+                    'error'
+                );
+            }
+        }
+
         $changed = 0;
         $failures = [];
 
@@ -520,6 +545,28 @@ final class AdminController extends Controller
                             $existing[] = $categoryId;
                             $videos->setCategories($id, $existing);
                         }
+                        break;
+
+                    case 'tag':
+                        /*
+                         * ADDS, the same as categorise above and the opposite
+                         * of the tag field on the edit screen.
+                         *
+                         * The difference is what the person can see. A form
+                         * shows the complete current list, so an empty box
+                         * means "remove them all" and replacing is right. A
+                         * bulk bar shows the names being ADDED and nothing
+                         * about what each of two hundred videos already
+                         * carries — so replacing there would silently wipe
+                         * tagging nobody was looking at.
+                         */
+                        $tags = $this->tagRepo();
+                        $current = array_map(
+                            static fn ($tag): string => $tag->name,
+                            $tags->forItem('video', $id)
+                        );
+
+                        $tags->setFor('video', $id, array_merge($current, $tagNames));
                         break;
 
                     case 'trash':

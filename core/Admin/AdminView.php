@@ -460,6 +460,16 @@ final class AdminView
          * glance rather than one video at a time. Read from a map the
          * controller built in one query — the closure only looks things up.
          */
+        /*
+         * The same suggestion list the edit screen uses, for the bulk box.
+         * Without it, bulk tagging is the fastest possible way to spread a
+         * near-duplicate across two hundred videos at once.
+         */
+        $tagChoices = '';
+        foreach ((array) ($data['tagChoices'] ?? []) as $choice) {
+            $tagChoices .= '<option value="' . $this->attr($choice->name) . '">';
+        }
+
         $tagsByVideo = (array) ($data['tagsByVideo'] ?? []);
         $tagsFor = static function (int $videoId) use ($tagsByVideo): string {
             $tags = $tagsByVideo[$videoId] ?? [];
@@ -652,11 +662,18 @@ final class AdminView
             <button name="bulk" value="publish" class="btn tiny secondary">Publish</button>
             <button name="bulk" value="unpublish" class="btn tiny secondary">Unpublish</button>
             {$categoryPicker}
+            <input type="text" name="bulk_tags" list="tag-choices" placeholder="Tags…" size="18">
+            <button name="bulk" value="tag" class="btn tiny secondary">Add tags</button>
             <button name="bulk" value="trash" class="btn tiny danger"
                     onclick="return confirm('Move the ticked videos to trash?')">Move to trash</button>
           </div>
-          <p class="muted small">Adding a category adds it — nothing already on a video is removed.
-             At most 200 at a time, so a long selection cannot be cut in half by a timeout.</p>
+          <datalist id="tag-choices">{$tagChoices}</datalist>
+          <p class="muted small">Adding a category or a tag ADDS it — nothing already on a video is
+             removed. That is the opposite of the boxes on a video's own edit screen, which show the
+             complete list and so treat an empty one as "remove them all"; a bulk bar shows only what
+             is being added and knows nothing about what each video already carries.</p>
+          <p class="muted small">At most 200 at a time, so a long selection cannot be cut in half by a
+             timeout.</p>
         </form>
 
         {$rowForms}

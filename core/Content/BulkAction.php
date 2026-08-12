@@ -36,6 +36,16 @@ final class BulkAction
         'publish'   => Capability::PUBLISH_CONTENT,
         'unpublish' => Capability::PUBLISH_CONTENT,
         'categorise' => Capability::MANAGE_CATEGORIES,
+        /*
+         * Tagging is MANAGE_VIDEOS, not MANAGE_CATEGORIES.
+         *
+         * Putting a label on a video is an edit to that video — the same act
+         * the tag field on its edit screen performs, under the same permission.
+         * Renaming or deleting a tag rewrites every video carrying it and lives
+         * on the Tags screen under manage_categories; that is the vocabulary,
+         * and this is not.
+         */
+        'tag'       => Capability::MANAGE_VIDEOS,
         'trash'     => Capability::MANAGE_VIDEOS,
     ];
 
@@ -141,6 +151,7 @@ final class BulkAction
             'publish'    => 'published',
             'unpublish'  => 'unpublished',
             'categorise' => 'added to the category',
+            'tag'        => 'tagged',
             'trash'      => 'moved to the trash',
             default      => 'changed',
         };

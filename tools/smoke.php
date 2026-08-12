@@ -6757,6 +6757,90 @@ check(
     'the bulk button replaced the taxonomy instead of adding to it'
 );
 
+/* ---------------------------------------------------------- bulk tagging
+ *
+ * Tags could only be applied one video at a time, so labelling a back
+ * catalogue meant opening every video in it. The bulk bar already had the
+ * pattern; this is the same button for the same reason.
+ */
+$db->execute('DELETE FROM {taggables}');
+$db->execute('DELETE FROM {tags}');
+
+// One of them already carries a tag, so the ADD-not-replace rule has something
+// to preserve — a check where every video starts empty cannot tell the two
+// behaviours apart.
+$tagged = postWithJar($baseUrl . '/admin/videos', [
+    '_token'      => csrfFrom(getWithJar($baseUrl . '/admin/videos/' . $bulkIds[0], $jar)['body']),
+    'action'      => 'save',
+    'id'          => (string) $bulkIds[0],
+    '_whole_form' => '1',
+    'title'       => 'Bulk First',
+    'tags'        => 'Existing',
+], $jar);
+
+check('A video can be tagged singly first', $tagged['status'] === 302, "got {$tagged['status']}");
+
+$bulkScreenTags = getWithJar($baseUrl . '/admin/videos', $jar);
+
+check(
+    'The bulk bar offers tagging',
+    str_contains($bulkScreenTags['body'], 'name="bulk_tags"'),
+    'labelling a back catalogue means opening every video in it'
+);
+check(
+    'and suggests tags that already exist',
+    str_contains($bulkScreenTags['body'], 'id="tag-choices"'),
+    'bulk is the fastest possible way to spread a near-duplicate across a library'
+);
+
+$bulkTagged = postWithJar($baseUrl . '/admin/videos', [
+    '_token'    => csrfFrom($bulkScreenTags['body']),
+    'bulk'      => 'tag',
+    'bulk_tags' => 'Advent, Prayer',
+    'selected'  => array_map('strval', $bulkIds),
+], $jar);
+
+check('Bulk tagging is accepted', $bulkTagged['status'] === 302, "got {$bulkTagged['status']}");
+check(
+    'and every selected video carries the new tags',
+    (int) $db->value(
+        'SELECT COUNT(DISTINCT taggable_id) FROM {taggables}
+          WHERE taggable_type = "video" AND taggable_id IN (' . implode(',', $bulkIds) . ')'
+    ) === count($bulkIds),
+    'the button reported success and tagged nothing'
+);
+check(
+    'and the one that was already tagged kept its tag',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {taggables} tg
+           JOIN {tags} t ON t.id = tg.tag_id
+          WHERE tg.taggable_id = ? AND t.slug = ?',
+        [$bulkIds[0], 'existing']
+    ) === 1,
+    'bulk REPLACED the tags instead of adding — which wipes labelling nobody was looking at'
+);
+
+/* Nothing usable typed is refused, rather than clearing anything. */
+$emptyTags = postWithJar($baseUrl . '/admin/videos', [
+    '_token'    => csrfFrom($bulkScreenTags['body']),
+    'bulk'      => 'tag',
+    'bulk_tags' => '  !!! , ??? ',
+    'selected'  => array_map('strval', $bulkIds),
+], $jar);
+
+check('Tagging with nothing usable is refused', $emptyTags['status'] === 302, "got {$emptyTags['status']}");
+check(
+    'and it changed nothing',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {taggables} tg JOIN {tags} t ON t.id = tg.tag_id WHERE t.slug = ?',
+        ['existing']
+    ) === 1,
+    'a refused bulk action still touched the library'
+);
+
+$db->execute('DELETE FROM {taggables}');
+$db->execute('DELETE FROM {tags}');
+
 /* An empty selection is refused rather than treated as "all of them". */
 $noneSelected = postWithJar($baseUrl . '/admin/videos', [
     '_token' => $bulkToken,

@@ -61,6 +61,53 @@ final class TagTest extends DatabaseTestCase
         self::assertSame(['Advent'], $names);
     }
 
+    /**
+     * The cap lives in the repository, not only in parse().
+     *
+     * parse() bounds one form submission, which was enough while a form was the
+     * only way in. Bulk tagging MERGES what a video already has with what is
+     * being added, so two lists each inside the limit can cross it together —
+     * and a rule that lives in the caller is a rule the next caller forgets.
+     */
+    public function testTheCapHoldsWhenTwoListsAreMerged(): void
+    {
+        $video = $this->makeVideo('A sermon');
+
+        $first = [];
+        for ($i = 1; $i <= 15; $i++) {
+            $first[] = 'tag-' . $i;
+        }
+        $this->tags->setFor('video', $video, $first);
+
+        $second = [];
+        for ($i = 16; $i <= 30; $i++) {
+            $second[] = 'tag-' . $i;
+        }
+
+        // What the bulk handler does: current + added.
+        $this->tags->setFor('video', $video, array_merge($first, $second));
+
+        self::assertCount(
+            TagRepository::MAX_PER_ITEM,
+            $this->tags->forItem('video', $video),
+            'Merging two lists crossed the limit the form enforces.'
+        );
+    }
+
+    /** Duplicate spellings collapse before anything is counted against the cap. */
+    public function testAddingATagAVideoAlreadyHasCostsNothing(): void
+    {
+        $video = $this->makeVideo('A sermon');
+
+        $this->tags->setFor('video', $video, ['Prayer']);
+        $this->tags->setFor('video', $video, ['Prayer', 'prayer', 'PRAYER', 'Advent']);
+
+        $names = array_map(static fn ($t): string => $t->name, $this->tags->forItem('video', $video));
+        sort($names);
+
+        self::assertSame(['Advent', 'Prayer'], $names);
+    }
+
     public function testATagWithNoUsesLeftIsRemoved(): void
     {
         $video = $this->makeVideo('A sermon');
