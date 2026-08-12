@@ -37,6 +37,7 @@ final class Routes
         $router->get('/category/{slug}', [LibraryController::class, 'category']);
         $router->get('/series/{slug}', [LibraryController::class, 'series']);
         $router->get('/speaker/{slug}', [LibraryController::class, 'speaker']);
+        $router->get('/tag/{slug}', [LibraryController::class, 'tag']);
 
         /*
          * The chapter route is declared BEFORE the book route. Both would match

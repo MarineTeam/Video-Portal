@@ -102,6 +102,8 @@ class ComposerStaticInitae9cdb4486d610beb9cff40d8f421199
         'Portal\\Content\\Speaker' => __DIR__ . '/../..' . '/core/Content/Speaker.php',
         'Portal\\Content\\SpeakerRepository' => __DIR__ . '/../..' . '/core/Content/SpeakerRepository.php',
         'Portal\\Content\\SubscriptionRepository' => __DIR__ . '/../..' . '/core/Content/SubscriptionRepository.php',
+        'Portal\\Content\\Tag' => __DIR__ . '/../..' . '/core/Content/Tag.php',
+        'Portal\\Content\\TagRepository' => __DIR__ . '/../..' . '/core/Content/TagRepository.php',
         'Portal\\Content\\ThumbnailPolicy' => __DIR__ . '/../..' . '/core/Content/ThumbnailPolicy.php',
         'Portal\\Content\\TranscriptParser' => __DIR__ . '/../..' . '/core/Content/TranscriptParser.php',
         'Portal\\Content\\TranscriptRepository' => __DIR__ . '/../..' . '/core/Content/TranscriptRepository.php',

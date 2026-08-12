@@ -74,6 +74,8 @@ return array(
     'Portal\\Content\\Speaker' => $baseDir . '/core/Content/Speaker.php',
     'Portal\\Content\\SpeakerRepository' => $baseDir . '/core/Content/SpeakerRepository.php',
     'Portal\\Content\\SubscriptionRepository' => $baseDir . '/core/Content/SubscriptionRepository.php',
+    'Portal\\Content\\Tag' => $baseDir . '/core/Content/Tag.php',
+    'Portal\\Content\\TagRepository' => $baseDir . '/core/Content/TagRepository.php',
     'Portal\\Content\\ThumbnailPolicy' => $baseDir . '/core/Content/ThumbnailPolicy.php',
     'Portal\\Content\\TranscriptParser' => $baseDir . '/core/Content/TranscriptParser.php',
     'Portal\\Content\\TranscriptRepository' => $baseDir . '/core/Content/TranscriptRepository.php',

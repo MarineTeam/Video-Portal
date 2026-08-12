@@ -195,6 +195,12 @@ $chapters ??= [];
  * whole reason for indexing them.
  */
 $scripture ??= [];
+/*
+ * Defaulted, not assumed. A third-party theme or an older controller may not
+ * pass this, and an undefined variable here is a fatal on the page whose whole
+ * job is playing the video.
+ */
+$tags ??= [];
 
 /*
  * Notes.
@@ -300,6 +306,17 @@ $note ??= '';
     <div class="chips">
       <?php foreach ($scripture as $reference): ?>
         <a class="chip" href="<?= e($reference['url']) ?>"><?= e($reference['label']) ?></a>
+      <?php endforeach ?>
+    </div>
+  </section>
+<?php endif ?>
+
+<?php if ($tags !== []): ?>
+  <section class="tags" aria-labelledby="tags-heading">
+    <h2 class="section-title" id="tags-heading">Tags</h2>
+    <div class="chips">
+      <?php foreach ($tags as $tag): ?>
+        <a class="chip" href="<?= e($tag['url']) ?>"><?= e($tag['label']) ?></a>
       <?php endforeach ?>
     </div>
   </section>
