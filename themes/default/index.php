@@ -25,6 +25,15 @@ $pagination ??= ['page' => 1, 'pages' => 1, 'prevUrl' => null, 'nextUrl' => null
 
 $homeRows ??= [];
 
+/*
+ * Did a PERSON arrange this front page, or did a plugin add a row to it?
+ *
+ * Only the first replaces the library listing below. Defaulted from $homeRows
+ * so an older controller — or another screen borrowing this template, which is
+ * the fallback for anything with no better match — behaves as it always did.
+ */
+$homeRowsCurated ??= ($homeRows !== []);
+
 $showDuration = ($theme ?? null)?->setting('show-duration') !== '0';
 
 /*
@@ -33,7 +42,7 @@ $showDuration = ($theme ?? null)?->setting('show-duration') !== '0';
  */
 $showContinue = apply_filters(
     'show_continue_watching',
-    $homeRows === [] && $continueWatching !== []
+    !$homeRowsCurated && $continueWatching !== []
 );
 
 echo $template->partial('header', get_defined_vars());
@@ -113,12 +122,14 @@ $playlists ??= [];
 
 <?php
 /*
- * Curated rows, when somebody has arranged them.
+ * Rows: somebody's arrangement of the front page, plus anything a plugin added.
  *
- * They replace the flat listing rather than sitting above it — a homepage that
- * shows three curated rows and then every video again is not a curated
- * homepage. With no rows configured this block renders nothing and the listing
- * below is exactly what it always was.
+ * Curated rows replace the flat listing rather than sitting above it — a
+ * homepage that shows three curated rows and then every video again is not a
+ * curated homepage. A row a PLUGIN added does not replace anything, so on the
+ * usual install it appears above the library and the library stays. With
+ * neither, this block renders nothing and the listing below is exactly what it
+ * always was.
  */
 ?>
 <?php if ($homeRows !== []): ?>
@@ -154,43 +165,46 @@ $playlists ??= [];
       <?php endif ?>
     </section>
   <?php endforeach ?>
+<?php endif ?>
 
-<?php elseif ($videos === []): ?>
-  <div class="empty">
-    <?php if ($searchTerm !== ''): ?>
-      Nothing matched “<?= e($searchTerm) ?>”.
-    <?php else: ?>
-      There are no videos here yet.
-    <?php endif ?>
-  </div>
+<?php if (!$homeRowsCurated): ?>
+  <?php if ($videos === []): ?>
+    <div class="empty">
+      <?php if ($searchTerm !== ''): ?>
+        Nothing matched “<?= e($searchTerm) ?>”.
+      <?php else: ?>
+        There are no videos here yet.
+      <?php endif ?>
+    </div>
 
-<?php elseif (!$thumbnailsAvailable): ?>
-  <?php
-  /*
-   * No pull zone is configured, so every thumbnail URL would be null. A grid
-   * of empty boxes reads as broken; a clean list reads as deliberate. The
-   * predecessor apps made the same call.
-   */
-  ?>
-  <ul class="title-list">
-    <?php foreach ($videos as $video): ?>
-      <li>
-        <a href="<?= e($video['url']) ?>">
-          <span><?= e($video['title']) ?></span>
-          <?php if (!empty($video['duration'])): ?>
-            <span class="dur"><?= e(\Portal\Support\Str::duration((int) $video['duration'])) ?></span>
-          <?php endif ?>
-        </a>
-      </li>
-    <?php endforeach ?>
-  </ul>
+  <?php elseif (!$thumbnailsAvailable): ?>
+    <?php
+    /*
+     * No pull zone is configured, so every thumbnail URL would be null. A grid
+     * of empty boxes reads as broken; a clean list reads as deliberate. The
+     * predecessor apps made the same call.
+     */
+    ?>
+    <ul class="title-list">
+      <?php foreach ($videos as $video): ?>
+        <li>
+          <a href="<?= e($video['url']) ?>">
+            <span><?= e($video['title']) ?></span>
+            <?php if (!empty($video['duration'])): ?>
+              <span class="dur"><?= e(\Portal\Support\Str::duration((int) $video['duration'])) ?></span>
+            <?php endif ?>
+          </a>
+        </li>
+      <?php endforeach ?>
+    </ul>
 
-<?php else: ?>
-  <div class="video-grid">
-    <?php foreach ($videos as $video): ?>
-      <?= $template->partial('video-card', ['video' => $video, 'showDuration' => $showDuration]) ?>
-    <?php endforeach ?>
-  </div>
+  <?php else: ?>
+    <div class="video-grid">
+      <?php foreach ($videos as $video): ?>
+        <?= $template->partial('video-card', ['video' => $video, 'showDuration' => $showDuration]) ?>
+      <?php endforeach ?>
+    </div>
+  <?php endif ?>
 <?php endif ?>
 
 <?php do_action('after_video_list') ?>
@@ -203,10 +217,11 @@ $playlists ??= [];
 /*
  * No pagination under curated rows. The rows are a front page, not page one of
  * a list, and a "Next" button there would lead somewhere with a completely
- * different shape.
+ * different shape. A plugin's row leaves the listing in place, so it leaves the
+ * pagination in place too.
  */
 ?>
-<?php if ($homeRows === [] && ($pagination['pages'] ?? 1) > 1): ?>
+<?php if (!$homeRowsCurated && ($pagination['pages'] ?? 1) > 1): ?>
   <nav class="pagination" aria-label="Pagination">
     <?php if (!empty($pagination['prevUrl'])): ?>
       <a class="btn secondary" href="<?= e($pagination['prevUrl']) ?>" rel="prev">Previous</a>

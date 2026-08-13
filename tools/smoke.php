@@ -72,6 +72,22 @@ const SMOKE_TIMEOUT = 90;
  */
 $transportFailures = [];
 
+/**
+ * True while the readiness probe is still waiting for the server to answer.
+ *
+ * The probe IS a loop of failing requests — that is how it knows the server is
+ * not up yet — so recording them made a slow start indistinguishable from a
+ * request lost mid-run. A run where every one of 845 checks passed still
+ * printed "THIS RUN IS NOT EVIDENCE ABOUT THE APPLICATION" because the server
+ * had taken three-quarters of a second to come up.
+ *
+ * That is worse than it sounds. The banner exists to stop somebody believing a
+ * page of imaginary defects; a banner that also fires on an ordinary cold start
+ * is one people learn to scroll past, and the day it is right is the day it is
+ * ignored. Expected failures are not evidence of anything and are not counted.
+ */
+$startingUp = true;
+
 function check(string $label, bool $ok, string $detail = ''): void
 {
     global $passed, $failed;
@@ -98,7 +114,12 @@ function check(string $label, bool $ok, string $detail = ''): void
  */
 function noteTransportFailure(string $url, string $error): void
 {
-    global $transportFailures;
+    global $transportFailures, $startingUp;
+
+    // The readiness probe's own retries are how it works, not a fault.
+    if ($startingUp) {
+        return;
+    }
 
     $transportFailures[] = $url . ' — ' . ($error !== '' ? $error : 'no response');
     echo "  !!    NO RESPONSE from {$url} — {$error}\n";
@@ -687,6 +708,9 @@ if (!$ready) {
     fwrite(STDERR, "The server never answered a request. See {$serverLog}\n");
     exit(1);
 }
+
+// From here on, a request that gets no answer is a real finding.
+$startingUp = false;
 
 echo "Serving on {$baseUrl}\n\n";
 
@@ -1589,7 +1613,7 @@ check('Country restrictions is listed', str_contains($pluginsPage['body'], 'Coun
 
 $pluginToken = csrfFrom($pluginsPage['body']);
 
-foreach (['watermark', 'geo', 'comments', 'ratings', 'reactions', 'playback'] as $slug) {
+foreach (['watermark', 'geo', 'comments', 'ratings', 'reactions', 'playback', 'whats-new', 'popular'] as $slug) {
     $activated = postWithJar($baseUrl . '/admin/plugins', [
         '_token' => $pluginToken,
         'slug'   => $slug,
@@ -7990,6 +8014,280 @@ check(
 );
 
 @unlink($scopeJar);
+
+/* ------------------------------------------------------------ what's new
+ *
+ * The first plugin that decorates a LISTING rather than the watch page, which
+ * makes it the first test of the badge slot on the card partial. Until that
+ * existed a plugin could add a key to a card through `video_list` and nothing
+ * would ever render it.
+ *
+ * Placed here because it needs videos with controlled publication dates and
+ * nothing downstream reads them.
+ */
+echo "\nWhat's new\n";
+
+$wnPage = getWithJar($baseUrl . '/admin/whats-new', $jar);
+check("The what's new settings page renders", $wnPage['status'] === 200, "got {$wnPage['status']}");
+check(
+    'and it says signed-out visitors get nothing',
+    str_contains($wnPage['body'], 'Signed-in people only'),
+    'a limit nobody is told about reads as the feature being broken'
+);
+
+/*
+ * A label nothing else on the page uses.
+ *
+ * "New" appears in half a dozen places in this application — a button, a
+ * heading, a status. A check counting occurrences of it would be counting the
+ * rest of the page, which is the mistake the up-next checks made with a video
+ * title and got away with until the layout moved.
+ */
+$wnSaved = postWithJar($baseUrl . '/admin/whats-new', [
+    '_token'       => csrfFrom($wnPage['body']),
+    'label'        => 'SMOKEFRESH',
+    'horizon_days' => '30',
+], $jar);
+check('Saving the label succeeds', $wnSaved['status'] === 302, "got {$wnSaved['status']}");
+
+/*
+ * Both pinned, so both are certainly on page one.
+ *
+ * The listing is newest-first and this database has a run's worth of videos in
+ * it by now; a fixture backdated two months would otherwise fall off the end,
+ * and a check that cannot find the card it is asking about passes for the wrong
+ * reason. Both are deleted at the end of the section.
+ */
+$wnNow = time();
+$wnOld = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-wn-1',
+    'slug' => 'wn-older', 'title' => 'Catalogued Long Ago',
+    'status' => 'ready', 'is_published' => 1, 'duration' => 60, 'pinned' => 1,
+    'created_at' => date('Y-m-d H:i:s', $wnNow - (60 * 86400)),
+    'updated_at' => date('Y-m-d H:i:s', $wnNow - (60 * 86400)),
+]);
+$wnNew = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'smoke-wn-2',
+    'slug' => 'wn-newer', 'title' => 'Added This Week',
+    'status' => 'ready', 'is_published' => 1, 'duration' => 60, 'pinned' => 1,
+    'created_at' => date('Y-m-d H:i:s', $wnNow - 3600),
+    'updated_at' => date('Y-m-d H:i:s', $wnNow - 3600),
+]);
+
+/*
+ * The card a slug belongs to, rather than the whole page.
+ *
+ * The first version of these checks counted occurrences of the label across the
+ * homepage and asserted exactly one. That was wrong about the fixture, not
+ * about the plugin: this database is created from scratch at the start of the
+ * run, so EVERY video in it was published minutes ago and every one of them is
+ * legitimately new. The check was counting the rest of the library.
+ *
+ * Asking which card carries the badge is the claim that was meant, and it holds
+ * whatever else is on the page.
+ */
+$wnCardFor = static function (string $body, string $slug): string {
+    foreach (explode('<article', $body) as $chunk) {
+        if (str_contains($chunk, '/watch/' . $slug . '"')) {
+            return $chunk;
+        }
+    }
+
+    return '';
+};
+
+$adminUserId = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['admin@smoke.test']);
+
+/*
+ * A FIRST visit badges nothing, and the row proving it happened is written.
+ *
+ * Both halves matter. Nothing badged is what stops a new account seeing a
+ * library where every card says the same word; the row is what makes the
+ * second visit work at all.
+ */
+$db->execute('DELETE FROM {whats_new_visits} WHERE user_id = ?', [$adminUserId]);
+
+$wnFirst = getWithJar($baseUrl . '/', $jar);
+check('The library still renders with the plugin active', $wnFirst['status'] === 200, "got {$wnFirst['status']}");
+check(
+    'A first visit badges nothing',
+    !str_contains($wnFirst['body'], 'SMOKEFRESH'),
+    'every card on a new account\'s first page would carry the same badge'
+);
+check(
+    'and the visit was recorded',
+    (int) $db->value('SELECT COUNT(*) FROM {whats_new_visits} WHERE user_id = ?', [$adminUserId]) === 1,
+    'nothing was written, so the second visit has nothing to compare against'
+);
+
+/*
+ * Now plant a marker a week back — the same state as somebody who was last here
+ * last Tuesday — and check the badge lands on the newer video and only on it.
+ */
+$db->execute(
+    'UPDATE {whats_new_visits} SET marker_at = ?, seen_at = ? WHERE user_id = ?',
+    [
+        date('Y-m-d H:i:s', $wnNow - (7 * 86400)),
+        date('Y-m-d H:i:s', $wnNow - (7 * 86400)),
+        $adminUserId,
+    ]
+);
+
+$wnReturn = getWithJar($baseUrl . '/', $jar);
+$wnNewCard = $wnCardFor($wnReturn['body'], 'wn-newer');
+$wnOldCard = $wnCardFor($wnReturn['body'], 'wn-older');
+
+check(
+    'Coming back badges what was published since',
+    $wnNewCard !== '' && str_contains($wnNewCard, '>SMOKEFRESH<'),
+    $wnNewCard === ''
+        ? 'the card is not on the page at all — the fixture, not the plugin'
+        : 'the marker rolled and nothing was marked — the badge slot or the filter'
+);
+check(
+    'and badges nothing older than the marker',
+    $wnOldCard !== '' && !str_contains($wnOldCard, 'SMOKEFRESH'),
+    $wnOldCard === ''
+        ? 'the older card is not on the page, so this check proved nothing'
+        : 'a video from two months ago is not new since last week'
+);
+
+/*
+ * Reloading during the same visit keeps them. The marker rolls on a gap, not on
+ * a request — badges that vanish on the first reload read as the feature
+ * flickering rather than as a session ending.
+ */
+check(
+    'and a reload during the same visit keeps them',
+    str_contains($wnCardFor(getWithJar($baseUrl . '/', $jar)['body'], 'wn-newer'), '>SMOKEFRESH<'),
+    'the marker moved to now, and every badge went with it'
+);
+
+check(
+    'A signed-out visitor gets no badges',
+    !str_contains(get($baseUrl . '/')['body'], 'SMOKEFRESH'),
+    'the only identity available is a cookie, and a marker on one resets itself'
+);
+
+/* ------------------------------------------------------------ most watched
+ *
+ * A homepage row built from view counts. The check that matters most is not
+ * the row: it is that the ordinary library listing is still underneath it.
+ *
+ * Until this shipped, "there are rows" and "somebody arranged this front page"
+ * were the same fact, and the theme replaced the listing whenever rows existed.
+ * A plugin adding one row would have deleted the homepage of every site that
+ * never opened the row builder — which is the usual install.
+ */
+echo "\nMost watched\n";
+
+$popPage = getWithJar($baseUrl . '/admin/popular', $jar);
+check('The most-watched settings page renders', $popPage['status'] === 200, "got {$popPage['status']}");
+check(
+    'and it says when the row stays hidden',
+    str_contains($popPage['body'], 'is not a ranking'),
+    'a row that silently never appears reads as a broken plugin'
+);
+
+$popSaved = postWithJar($baseUrl . '/admin/popular', [
+    '_token'   => csrfFrom($popPage['body']),
+    'title'    => 'SMOKEWATCHED',
+    'days'     => '30',
+    'count'    => '8',
+    'position' => 'first',
+], $jar);
+check('Saving the row settings succeeds', $popSaved['status'] === 302, "got {$popSaved['status']}");
+
+/*
+ * Four videos, created oldest-first, watched in the OPPOSITE order to the way
+ * the library lists them.
+ *
+ * That opposition is the whole point. The listing sorts newest first, so a row
+ * that fetched the right ids and then trusted the listing's own ORDER BY would
+ * come back exactly reversed — and a row labelled "most watched" sorted by
+ * publication date is a different claim under the same heading.
+ */
+$db->execute('DELETE FROM {video_views}');
+
+$popIds = [];
+foreach ([['pop-one', 40], ['pop-two', 30], ['pop-three', 20], ['pop-four', 10]] as $i => [$slug, $views]) {
+    $stamp = date('Y-m-d H:i:s', $wnNow - ((4 - $i) * 3600));
+
+    $popIds[$slug] = (int) $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'smoke-pop-' . $i,
+        'slug' => $slug, 'title' => 'Popular ' . $i,
+        'status' => 'ready', 'is_published' => 1, 'duration' => 60,
+        'created_at' => $stamp, 'updated_at' => $stamp,
+    ]);
+
+    $db->execute(
+        'INSERT INTO {video_views} (video_id, day, views, completions) VALUES (?, CURDATE(), ?, 0)',
+        [$popIds[$slug], $views]
+    );
+}
+
+$popHome = getWithJar($baseUrl . '/', $jar);
+check('The homepage renders with the row', $popHome['status'] === 200, "got {$popHome['status']}");
+check('The row appears', str_contains($popHome['body'], 'SMOKEWATCHED'), 'the filter never fired');
+
+$at = static fn (string $slug): int => (int) strpos($popHome['body'], '/watch/' . $slug);
+check(
+    'and it is ordered by views, not by the listing',
+    $at('pop-one') > 0 && $at('pop-one') < $at('pop-two')
+        && $at('pop-two') < $at('pop-three')
+        && $at('pop-three') < $at('pop-four'),
+    'the ids were right and the order came from the library — newest first, which is backwards here'
+);
+
+/*
+ * THE regression this guards. The library is still below the row.
+ *
+ * wn-older has no views, so it cannot be in the row; finding it on the page
+ * means the flat listing rendered.
+ */
+check(
+    'and the library listing is still underneath it',
+    str_contains($popHome['body'], '/watch/wn-older'),
+    'a plugin row replaced the front page of every site that never curated one'
+);
+/*
+ * A members-only video can be the most watched thing on a site — its audience
+ * is the people who watch most — and a stranger must not be told its name.
+ */
+$db->execute('UPDATE {videos} SET member_only = 1 WHERE id = ?', [$popIds['pop-one']]);
+
+$popAnon = get($baseUrl . '/');
+check(
+    'A members-only video is not named to a stranger',
+    !str_contains($popAnon['body'], '/watch/pop-one'),
+    'the row became a second way to see what the listing hides'
+);
+check(
+    'and the row is still shown to them without it',
+    str_contains($popAnon['body'], 'SMOKEWATCHED')
+        && str_contains($popAnon['body'], '/watch/pop-two'),
+    'one restricted video should not take the whole row with it'
+);
+
+/* Below the minimum, the row is not shown at all. */
+$db->execute('DELETE FROM {video_views} WHERE video_id IN (?, ?)', [$popIds['pop-two'], $popIds['pop-three']]);
+
+check(
+    'A row of one is not shown',
+    !str_contains(get($baseUrl . '/')['body'], 'SMOKEWATCHED'),
+    'the only video anybody opened, presented as though a crowd had chosen it'
+);
+check(
+    'and the library is still there without it',
+    str_contains(get($baseUrl . '/')['body'], '/watch/wn-older'),
+    'the row disappearing took the homepage with it'
+);
+
+/* Clear up: nothing downstream should inherit these. */
+$db->execute('DELETE FROM {video_views}');
+$db->execute('DELETE FROM {videos} WHERE id IN (' . implode(',', array_map('intval', [
+    $wnOld, $wnNew, ...array_values($popIds),
+])) . ')');
 
 /* -------------------------------------------------------- maintenance mode
  *
