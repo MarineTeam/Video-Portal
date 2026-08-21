@@ -64,6 +64,33 @@ try {
     if (-not $composer) { $composer = (Get-Command composer -ErrorAction SilentlyContinue).Source }
     if (-not $composer) { Write-Error "Composer not found. Set PORTAL_COMPOSER." }
 
+    # DELETE vendor/ FIRST. This is not tidiness, it is the correctness of the
+    # whole release.
+    #
+    # `composer install --no-dev` only removes packages its own metadata says
+    # it installed. Run it over a vendor/ that already holds dev packages -
+    # which is the normal state of a machine that has just run the test suite -
+    # and composer reports "0 removals", leaves phpunit and its whole tree
+    # physically on disk, and the `git add -f -A -- vendor` below sweeps every
+    # one of them into the release.
+    #
+    # That shipped once: a release carrying 1823 vendor files instead of 96,
+    # including phpunit, because the build happened to run after a test run.
+    # Nothing caught it, because every check here asks whether the tree WORKS
+    # and a tree with too much in it works perfectly.
+    $vendorDir = Join-Path $root 'vendor'
+    if (Test-Path $vendorDir) {
+        Write-Host "  Clearing vendor/ so the install is exact..." -ForegroundColor DarkGray
+        Remove-Item -Recurse -Force $vendorDir -ErrorAction SilentlyContinue
+        if (Test-Path $vendorDir) {
+            Start-Sleep -Seconds 2
+            Remove-Item -Recurse -Force $vendorDir -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $vendorDir) {
+            Write-Error "Could not clear vendor/. A file is locked; close anything using it and re-run."
+        }
+    }
+
     foreach ($attempt in 1..2) {
         if ($composer -like '*.phar') {
             & $php $composer install --no-dev --optimize-autoloader --no-interaction
@@ -151,6 +178,41 @@ echo 'ok';
         if ($vendorFiles -eq 0) {
             Write-Error "vendor/ was not staged. Refusing to publish a release without dependencies."
         }
+
+        # Every staged vendor package must be one composer says it installed.
+        #
+        # The check above asks whether vendor/ has anything in it. This asks
+        # whether it has anything EXTRA, which is the failure that actually
+        # happened - a stale phpunit tree riding along because composer had no
+        # metadata saying it owned those files and so never removed them.
+        #
+        # Read from installed.json rather than from a hardcoded list, so adding
+        # a real dependency does not mean remembering to edit this.
+        $installedJson = Join-Path $root 'vendor\composer\installed.json'
+        if (-not (Test-Path $installedJson)) {
+            Write-Error "vendor/composer/installed.json is missing. Cannot verify what was installed."
+        }
+
+        $installed = (Get-Content $installedJson -Raw | ConvertFrom-Json)
+        $allowedVendors = @('composer')
+        foreach ($pkg in $installed.packages) {
+            $allowedVendors += ($pkg.name -split '/')[0]
+        }
+        $allowedVendors = $allowedVendors | Select-Object -Unique
+
+        $unexpected = @($staged |
+            Where-Object { $_ -like 'vendor/*' } |
+            ForEach-Object { ($_ -split '/')[1] } |
+            Where-Object { $_ -ne 'autoload.php' -and $_ -ne 'bin' } |
+            Select-Object -Unique |
+            Where-Object { $allowedVendors -notcontains $_ })
+
+        if ($unexpected.Count -gt 0) {
+            Write-Host "  Unexpected vendor directories: $($unexpected -join ', ')" -ForegroundColor Red
+            Write-Error "vendor/ holds packages composer did not install. Delete vendor/ and re-run."
+        }
+
+        Write-Host "  vendor/ holds only: $($allowedVendors -join ', ')"
 
         $tree = (git write-tree).Trim()
 
