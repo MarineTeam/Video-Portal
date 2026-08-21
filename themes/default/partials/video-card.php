@@ -9,7 +9,7 @@
  * @var array{
  *   id: int, title: string, url: string, thumbnail: ?string, duration: ?int,
  *   status: string, encodeProgress?: int, meta?: string, progressPercent?: int,
- *   membersOnly?: bool
+ *   membersOnly?: bool, badges?: list<array{label: string, kind?: string}>
  * } $video
  * @var bool $showDuration
  */
@@ -24,6 +24,35 @@ $percent = (int) ($video['progressPercent'] ?? 0);
    URL is already null by then — this only decides what to draw instead, so a
    theme cannot accidentally reveal anything by ignoring it. */
 $membersOnly = !empty($video['membersOnly']);
+
+/*
+ * Badges a plugin added through the `video_list` filter.
+ *
+ * Until this existed a plugin could not decorate a card at all: the filter has
+ * always been able to add a key, and nothing rendered one. That made "mark
+ * these videos" — new, popular, watched, whatever — impossible without shipping
+ * a whole theme, which is the wrong price for a label.
+ *
+ * `kind` is a CSS class and comes from a plugin, so it is reduced to the
+ * characters a class name may contain rather than trusted. An unstyled kind
+ * still renders as a plain badge, so a plugin that invents one gets a label
+ * that looks deliberate instead of nothing.
+ *
+ * Status badges below are the theme's own and always come last, so a plugin
+ * cannot bury "Processing" under its own decoration.
+ */
+$badges = [];
+foreach ((array) ($video['badges'] ?? []) as $badge) {
+    $label = trim((string) ($badge['label'] ?? ''));
+    if ($label === '') {
+        continue;
+    }
+
+    $badges[] = [
+        'label' => $label,
+        'kind'  => strtolower(preg_replace('/[^A-Za-z0-9-]/', '', (string) ($badge['kind'] ?? '')) ?? ''),
+    ];
+}
 ?>
 <article class="video-card<?= $membersOnly ? ' is-locked' : '' ?>">
   <a href="<?= e($video['url']) ?>">
@@ -52,27 +81,40 @@ $membersOnly = !empty($video['membersOnly']);
 
       <?php
       /*
+       * One stack, so a plugin badge and a status badge do not land on top of
+       * each other in the same corner. Nothing is emitted at all when there is
+       * nothing to say, which keeps an ordinary card's markup as it was.
+       *
        * A premiere is listed before it plays, so the card says when. A badge
        * reading "Premiering" with no date is an invitation to click something
        * that will not start.
        */
+      $hasStatusBadge = !empty($video['premiereAt']) || $status === 'processing' || $status === 'failed';
       ?>
-      <?php if (!empty($video['premiereAt'])): ?>
-        <span class="badge premiere">
-          Premieres <?php
-            try {
-                echo e((new DateTimeImmutable((string) $video['premiereAt']))->format('j M'));
-            } catch (Throwable) {
-                echo 'soon';
-            }
-          ?>
-        </span>
-      <?php elseif ($status === 'processing'): ?>
-        <span class="badge processing">
-          Processing<?= !empty($video['encodeProgress']) ? ' ' . (int) $video['encodeProgress'] . '%' : '' ?>
-        </span>
-      <?php elseif ($status === 'failed'): ?>
-        <span class="badge failed">Failed</span>
+      <?php if ($badges !== [] || $hasStatusBadge): ?>
+        <div class="badge-stack">
+          <?php foreach ($badges as $badge): ?>
+            <span class="badge<?= $badge['kind'] !== '' ? ' ' . e($badge['kind']) : '' ?>"><?= e($badge['label']) ?></span>
+          <?php endforeach ?>
+
+          <?php if (!empty($video['premiereAt'])): ?>
+            <span class="badge premiere">
+              Premieres <?php
+                try {
+                    echo e((new DateTimeImmutable((string) $video['premiereAt']))->format('j M'));
+                } catch (Throwable) {
+                    echo 'soon';
+                }
+              ?>
+            </span>
+          <?php elseif ($status === 'processing'): ?>
+            <span class="badge processing">
+              Processing<?= !empty($video['encodeProgress']) ? ' ' . (int) $video['encodeProgress'] . '%' : '' ?>
+            </span>
+          <?php elseif ($status === 'failed'): ?>
+            <span class="badge failed">Failed</span>
+          <?php endif ?>
+        </div>
       <?php endif ?>
 
       <?php if ($showDuration && !empty($video['duration'])): ?>

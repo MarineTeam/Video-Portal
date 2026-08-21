@@ -197,10 +197,26 @@ main { padding: 2.5rem 0 4rem; }
   font-variant-numeric: tabular-nums;
 }
 
-.badge {
+/*
+ * Badges stack rather than sit at a fixed corner. A card can now carry a
+ * plugin's label as well as its own status, and two absolutely positioned
+ * badges at the same offset would print one on top of the other.
+ *
+ * align-items: start keeps each pill the width of its own text; stretching them
+ * to the widest one turns "New" into a banner.
+ */
+.badge-stack {
   position: absolute;
   left: .5rem;
   top: .5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  gap: .25rem;
+  max-width: calc(100% - 1rem);
+}
+
+.badge {
   padding: .1875rem .5rem;
   border-radius: 999px;
   font-size: .6875rem;
@@ -212,6 +228,13 @@ main { padding: 2.5rem 0 4rem; }
 .badge.processing { background: color-mix(in srgb, #f59e0b 85%, black); }
 .badge.failed     { background: color-mix(in srgb, #ef4444 85%, black); }
 .badge.premiere   { background: color-mix(in srgb, #8b5cf6 85%, black); }
+
+/* Plugin badges. Styled here rather than in the plugin because a plugin cannot
+   add to the active theme's stylesheet — and `new` follows the site accent, so
+   the label belongs to the site rather than to whoever installed it. Darkened
+   the same way as the three above, because the accent is a colour somebody
+   picked and white text on a pale one is unreadable. */
+.badge.new        { background: color-mix(in srgb, var(--accent) 80%, black); }
 
 /*
  * The premiere panel, standing where the player would be. Same aspect ratio, so

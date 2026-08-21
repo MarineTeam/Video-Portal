@@ -40,7 +40,32 @@ final class LibraryController extends Controller
          * specific list, and answering them with somebody's arrangement of the
          * front page would ignore what was asked.
          */
-        $rows = ($search === '' && $page === 1) ? $this->homeRows() : [];
+        $isFrontPage = $search === '' && $page === 1;
+        $curated = $isFrontPage ? $this->homeRows() : [];
+
+        /*
+         * Plugins may add rows — but only a CURATED row replaces the listing.
+         *
+         * The distinction matters more than it looks. Until now "there are rows"
+         * and "somebody arranged this front page" were the same fact, so a
+         * plugin appending one row would have replaced the whole library with
+         * it on every site that had never opened the row builder. That is the
+         * usual install, and it would have read as the plugin deleting the
+         * homepage.
+         *
+         * So the flag is taken before the filter runs, and an added row sits
+         * above the listing the way continue-watching always has.
+         *
+         * Filtered only on the front page, which is where the gate for the
+         * curated rows already is: a plugin should not have to re-derive
+         * "is this page one of an unfiltered library" to avoid printing a
+         * discovery row over somebody's search results.
+         */
+        $rows = $curated;
+        if ($isFrontPage) {
+            /** @var list<array{title: string, url: ?string, videos: list<array<string, mixed>>}> $rows */
+            $rows = apply_filters('home_rows', $curated);
+        }
 
         return $this->view(['index'], [
             'title'               => $search !== '' ? "Search: {$search}" : 'Library',
@@ -51,6 +76,7 @@ final class LibraryController extends Controller
             'activeCategory'      => '',
             'playlists'           => $this->playlistChips(),
             'homeRows'            => $rows,
+            'homeRowsCurated'     => $curated !== [],
             'thumbnailsAvailable' => $this->thumbnailsAvailable(),
             'pagination'          => $this->paginate($result['total'], $page, $request),
             'flash'               => $this->flash(),
