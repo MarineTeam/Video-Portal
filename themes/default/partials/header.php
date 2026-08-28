@@ -87,6 +87,20 @@ do_action('head');
         <?php if (!empty($currentUser['isAdmin'])): ?>
           <a href="/admin">Admin</a>
         <?php endif ?>
+        <?php
+        /*
+         * The account area, with the unread count on it.
+         *
+         * Without a link here the page is reachable only by typing its URL,
+         * which is how the password form spent its first release — and a
+         * notification record nobody can find is the same as not keeping one.
+         */
+        ?>
+        <a href="/account" <?= '/account' === $currentPath ? 'aria-current="page"' : '' ?>>
+          Account<?php if (!empty($currentUser['unreadNotifications'])): ?>
+            <span class="pill"><?= (int) $currentUser['unreadNotifications'] ?></span>
+          <?php endif ?>
+        </a>
         <a href="/auth/logout">Sign out</a>
       <?php else: ?>
         <a href="/auth/login">Sign in</a>

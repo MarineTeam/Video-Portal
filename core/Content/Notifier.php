@@ -257,6 +257,25 @@ final class Notifier
 
             if ($result->sent) {
                 $this->subscriptions->markSent($email);
+
+                /*
+                 * The receipt, written only on a send that actually happened.
+                 *
+                 * Recording an attempt would put things in somebody's list that
+                 * they were never told — which is worse than recording nothing,
+                 * because the list exists precisely to be trusted as "what this
+                 * site sent me".
+                 *
+                 * The title and URL are copied rather than left to be read off
+                 * the video later; see the migration for why.
+                 */
+                (new NotificationLog($this->db))->record(
+                    $email,
+                    NotificationLog::EMAIL,
+                    $video->title,
+                    $video->url(),
+                    $video->id
+                );
             }
 
             return $result->sent;

@@ -6439,6 +6439,149 @@ check(
  * Driven through the real page, because a rule with a test and no caller is
  * exactly the state this is fixing.
  */
+/* ------------------------------------------------------------- account area
+ *
+ * The site has announced videos by email since Phase 4 and by push since
+ * Phase 5, and kept no record of either. An email is in a mailbox this app
+ * cannot read and a push is gone the moment it is dismissed — or never arrived
+ * at all — so there has never been any way for a member to find out what the
+ * site told them.
+ *
+ * Driven through the real pages: the record is only worth having if somebody
+ * can reach it, and the password form spent its first release reachable only
+ * by typing its URL.
+ */
+echo "\nAccount area\n";
+
+$acctEmail = 'admin@smoke.test';
+$db->execute('DELETE FROM {notifications} WHERE recipient_email = ?', [$acctEmail]);
+
+$acctPage = getWithJar($baseUrl . '/account', $jar);
+check('The account page renders', $acctPage['status'] === 200, "got {$acctPage['status']}");
+check(
+    'and it is linked from the site header',
+    str_contains(get($baseUrl . '/')['body'], '/account') || str_contains($acctPage['body'], '/account/notifications'),
+    'an account area reachable only by typing its URL is the defect this repeats'
+);
+
+$inbox = getWithJar($baseUrl . '/account/notifications', $jar);
+check('The notifications page renders', $inbox['status'] === 200, "got {$inbox['status']}");
+check(
+    'and an empty one says so rather than looking broken',
+    str_contains($inbox['body'], 'Nothing yet'),
+    'an empty list with no explanation reads as a failure'
+);
+
+/*
+ * Recorded the way the sender records it, then read back through the page.
+ * Writing the row directly is the point: this proves the READING half, and the
+ * writing half is covered where the sending happens.
+ */
+$log = new Portal\Content\NotificationLog($db);
+$log->record($acctEmail, Portal\Content\NotificationLog::EMAIL, 'SMOKE Announced Video', '/watch/' . $videoSlug);
+$log->record($acctEmail, Portal\Content\NotificationLog::PUSH, 'SMOKE Pushed Video', '/watch/' . $videoSlug);
+
+$inbox = getWithJar($baseUrl . '/account/notifications', $jar);
+check(
+    'A recorded notification is listed',
+    str_contains($inbox['body'], 'SMOKE Announced Video'),
+    'the record exists and the page does not show it'
+);
+check(
+    'and a push is listed beside an email',
+    str_contains($inbox['body'], 'SMOKE Pushed Video'),
+    'the record is meant to be complete regardless of channel'
+);
+check(
+    'and the unread count reaches the header',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {notifications} WHERE recipient_email = ? AND read_at IS NULL',
+        [$acctEmail]
+    ) === 2,
+    'both rows should be unread'
+);
+
+/* Marking one read leaves the other alone. */
+$inboxToken = csrfFrom($inbox['body']);
+$firstId = (int) $db->value(
+    'SELECT id FROM {notifications} WHERE recipient_email = ? ORDER BY id DESC LIMIT 1',
+    [$acctEmail]
+);
+postWithJar($baseUrl . '/account/notifications', [
+    '_token' => $inboxToken,
+    'action' => 'read',
+    'id'     => $firstId,
+], $jar);
+check(
+    'Marking one read marks exactly one',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {notifications} WHERE recipient_email = ? AND read_at IS NULL',
+        [$acctEmail]
+    ) === 1,
+    'the action is meant to be per row'
+);
+
+/*
+ * The property that matters: somebody else's row is untouchable through this
+ * form. Ids are sequential, so guessing one is trivial.
+ */
+$log->record('someone-else@example.com', Portal\Content\NotificationLog::EMAIL, 'SMOKE Not Yours');
+$theirId = (int) $db->value(
+    'SELECT id FROM {notifications} WHERE recipient_email = ?',
+    ['someone-else@example.com']
+);
+postWithJar($baseUrl . '/account/notifications', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/account/notifications', $jar)['body']),
+    'action' => 'delete',
+    'id'     => $theirId,
+], $jar);
+check(
+    "Deleting cannot reach another account's notification",
+    (int) $db->value('SELECT COUNT(*) FROM {notifications} WHERE id = ?', [$theirId]) === 1,
+    'the id alone was enough to destroy a stranger\'s row'
+);
+check(
+    'and theirs is not listed on your page',
+    !str_contains(getWithJar($baseUrl . '/account/notifications', $jar)['body'], 'SMOKE Not Yours'),
+    'the listing is not scoped to the signed-in address'
+);
+
+/* Clearing takes yours and only yours. */
+postWithJar($baseUrl . '/account/notifications', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/account/notifications', $jar)['body']),
+    'action' => 'clear',
+], $jar);
+check(
+    'Clearing removes your notifications',
+    (int) $db->value('SELECT COUNT(*) FROM {notifications} WHERE recipient_email = ?', [$acctEmail]) === 0,
+    'clear did nothing'
+);
+check(
+    'and leaves everybody else alone',
+    (int) $db->value('SELECT COUNT(*) FROM {notifications} WHERE id = ?', [$theirId]) === 1,
+    'clear was not scoped to the signed-in address'
+);
+
+$acctAnon = get($baseUrl . '/account/notifications');
+check(
+    'A signed-out visitor cannot open the account area',
+    in_array($acctAnon['status'], [302, 401, 403], true),
+    "got {$acctAnon['status']}"
+);
+
+$db->execute('DELETE FROM {notifications}');
+
+/*
+ * Two things that were built and unreachable. LocalProvider::validatePassword()
+ * had no callers, so the only password this product asks a person to choose —
+ * the administrator's, at install — was accepted whatever it was. And
+ * UserRepository::setPassword() had no callers either, which means there was no
+ * way to change a password at all: on a host with no shell, the break-glass
+ * credential could never be rotated.
+ *
+ * Driven through the real page, because a rule with a test and no caller is
+ * exactly the state this is fixing.
+ */
 echo "\nPasswords\n";
 
 $pwPage = getWithJar($baseUrl . '/account/password', $jar);

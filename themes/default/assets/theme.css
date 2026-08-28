@@ -574,3 +574,43 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   }
   .video-card:hover { transform: none; }
 }
+
+/* ------------------------------------------------------------ account area */
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 1rem;
+}
+
+.account-tile {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  padding: 1rem 1.125rem;
+  text-decoration: none;
+  color: inherit;
+}
+.account-tile:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+.notification-list { list-style: none; margin: 0; padding: 0; }
+
+.notification {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .875rem 0;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.notification-body { display: flex; flex-direction: column; gap: .1875rem; min-width: 0; }
+.notification-actions { display: flex; gap: .375rem; flex-shrink: 0; }
+
+/* Unread is marked with a bar rather than a colour alone, so it survives a
+   colour-blind reader and a printed page. */
+.notification.is-unread {
+  border-left: 3px solid var(--accent);
+  padding-left: .75rem;
+}

@@ -295,6 +295,39 @@ $plugin->addCronJob('send', 300, static function () use ($plugin, $repository, $
             $totals[$key] = $value + $result[$key];
         }
 
+        /*
+         * The receipt, written for everyone the notification was addressed to
+         * — NOT only for the endpoints that succeeded.
+         *
+         * This is the opposite rule to the email channel, deliberately. A mail
+         * provider refusing a message means nothing was sent and nothing will
+         * arrive, so recording it would invent something. A push that fails at
+         * the endpoint was still genuinely dispatched to that person's
+         * subscription, and whether their device ever showed it is unknowable
+         * from here — a dismissed notification, a closed browser and a stale
+         * subscription are indistinguishable.
+         *
+         * That case is the entire reason this list exists, so it is the one
+         * case it must not drop.
+         */
+        try {
+            $log = new \Portal\Content\NotificationLog(Container::instance()->get(\Portal\Db::class));
+
+            foreach ($repository->subscribedEmails() as $email) {
+                $log->record(
+                    $email,
+                    \Portal\Content\NotificationLog::PUSH,
+                    (string) $video['title'],
+                    '/watch/' . (string) $video['slug'],
+                    (int) $video['id']
+                );
+            }
+        } catch (Throwable $e) {
+            // A receipt must never turn a delivered notification into a failed
+            // job. The push has already gone out by this point.
+            error_log('Push: could not record the notification. ' . $e->getMessage());
+        }
+
         $pushed++;
     }
 

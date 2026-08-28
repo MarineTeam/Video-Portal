@@ -195,6 +195,18 @@ abstract class Controller
                 'name'    => $user->displayName(),
                 'email'   => $user->email,
                 'isAdmin' => $this->container->get(\Portal\Auth\Capabilities::class)->canSeeAdmin($user),
+                /*
+                 * The badge on the Account link.
+                 *
+                 * One indexed COUNT per page render for a signed-in visitor,
+                 * which is the price of a badge that is right — the alternative
+                 * is a number that only updates when you happen to open the
+                 * page it is counting for.
+                 *
+                 * Nothing for anonymous visitors, who never reach this branch,
+                 * so the public site pays nothing at all.
+                 */
+                'unreadNotifications' => $this->unreadNotifications($user->email),
             ],
             'nav' => apply_filters('site_nav', $this->defaultNav()),
             /*
@@ -683,6 +695,23 @@ abstract class Controller
         }
 
         return $this->redirect($target);
+    }
+
+    /**
+     * How many notifications this person has not read.
+     *
+     * Fails to zero rather than propagating. This is shared view data on every
+     * page in the product, so an error here would take down the whole site
+     * rather than one badge — and on the single request that applies migration
+     * 0020, the table genuinely does not exist yet.
+     */
+    private function unreadNotifications(string $email): int
+    {
+        try {
+            return (new \Portal\Content\NotificationLog($this->db()))->unreadCount($email);
+        } catch (\Throwable) {
+            return 0;
+        }
     }
 
     /** @return array{type: string, message: string}|null */

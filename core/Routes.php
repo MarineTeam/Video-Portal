@@ -142,6 +142,26 @@ final class Routes
         );
 
         /*
+         * The account area.
+         *
+         * `auth.user` throughout, matching the password form above and for the
+         * same reason: somebody waiting for approval still owns their account
+         * and still subscribed to whatever the site has been sending them.
+         *
+         * Registered AFTER /account/password so the literal path is matched
+         * first — these are distinct literals rather than a pattern, so the
+         * order is not load-bearing, but keeping the specific one first means
+         * it stays correct if either ever becomes a pattern.
+         */
+        $router->get('/account', [AccountController::class, 'index'], ['auth.user']);
+        $router->any(
+            ['GET', 'POST'],
+            '/account/notifications',
+            [AccountController::class, 'notifications'],
+            ['auth.user']
+        );
+
+        /*
          * Asking for access.
          *
          * Guarded by `auth.user` and NOT by `auth.authorized`, which is the

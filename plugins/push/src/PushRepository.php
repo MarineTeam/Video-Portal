@@ -136,6 +136,31 @@ final class PushRepository
         return $this->db->all('SELECT * FROM {push_subscriptions} WHERE user_id = ?', [$userId]);
     }
 
+    /**
+     * The addresses of signed-in people who have a push subscription.
+     *
+     * For the notification record, which is keyed by email. Subscriptions with
+     * no user_id are skipped and that is the right answer rather than a
+     * shortcoming: an anonymous browser has no account, so there is no inbox
+     * for a row to appear in and nobody who could ever read it.
+     *
+     * DISTINCT because one person subscribes from every browser they use, and
+     * the record is of what they were told, not of how many devices it went to.
+     *
+     * @return list<string>
+     */
+    public function subscribedEmails(): array
+    {
+        $rows = $this->db->all(
+            'SELECT DISTINCT u.email
+               FROM {push_subscriptions} p
+               JOIN {users} u ON u.id = p.user_id
+              WHERE p.user_id IS NOT NULL'
+        );
+
+        return array_map(static fn (array $r): string => (string) $r['email'], $rows);
+    }
+
     // ------------------------------------------------------- the push ledger
 
     /**
