@@ -14,6 +14,7 @@ use Portal\Sharing\BundleRepository;
 use Portal\Sharing\PrivateList;
 use Portal\Sharing\Share;
 use Portal\Sharing\ShareMailer;
+use Portal\Sharing\SharePassword;
 use Portal\Sharing\ShareRepository;
 use Portal\Sharing\ViewerGroups;
 use Portal\Support\Audit;
@@ -93,11 +94,30 @@ final class AdminShareController extends Controller
             return $this->back($request, 'No valid email addresses were given.', 'error');
         }
 
+        /*
+         * The passphrase, validated HERE rather than left to the repository.
+         *
+         * SharePassword::hash() answers null for anything unacceptable, which
+         * would quietly create an unprotected link from a typo — somebody
+         * would believe they had put a passphrase on it and would not find out
+         * until the wrong person opened it. So a bad one is refused with a
+         * message and nothing is created.
+         */
+        $passphrase = (string) ($request->input('passphrase') ?? '');
+        if ($passphrase !== '' && !SharePassword::isAcceptable($passphrase)) {
+            return $this->back(
+                $request,
+                sprintf('A passphrase must be at least %d characters.', SharePassword::MINIMUM),
+                'error'
+            );
+        }
+
         try {
             $result = $this->shares()->createBulk($videoIds, $recipients['valid'], [
                 'hours'      => (int) ($request->input('hours') ?? Share::DEFAULT_HOURS),
                 'accessMode' => $request->input('access_mode') ?? Share::MODE_ACCOUNT,
                 'watermark'  => $request->input('watermark') ?? 'default',
+                'passphrase' => $passphrase,
                 'createdBy'  => $user?->email,
             ]);
         } catch (HttpException $e) {

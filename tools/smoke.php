@@ -842,6 +842,104 @@ check(
     'the page must not reveal whether an id was ever real'
 );
 
+/* --------------------------------------------------------- share passphrase
+ *
+ * A third, orthogonal lock: something you KNOW, on top of however the link
+ * already identifies you. The property that matters is that adding it did not
+ * open an enumeration hole — a wrong passphrase has to be indistinguishable
+ * from an id that was never real.
+ */
+$lockedShare = $shares->create($videoRow, 'locked@smoke.test', [
+    'accessMode' => 'gate',
+    'passphrase' => 'the blue door',
+]);
+
+$lockedPage = get($baseUrl . '/s/' . $lockedShare->id);
+check(
+    'A passphrase-protected link asks for the passphrase',
+    $lockedPage['status'] === 200 && str_contains($lockedPage['body'], 'name="passphrase"'),
+    "got {$lockedPage['status']}"
+);
+check(
+    'and asks for it BEFORE the email gate',
+    !str_contains($lockedPage['body'], 'name="email"'),
+    'the outer lock is meant to be the passphrase; reaching the gate first skips it'
+);
+check(
+    'and the prompt names neither the video nor the recipient',
+    !str_contains($lockedPage['body'], 'locked@smoke.test')
+        && !str_contains($lockedPage['body'], 'A Test Video'),
+    'opening a misdirected link must not reveal what it was for'
+);
+check(
+    'and the hash never reaches the page',
+    !str_contains($lockedPage['body'], '$2y$') && !str_contains($lockedPage['body'], '$argon'),
+    'the one column that must never leave the server'
+);
+
+/*
+ * The anti-enumeration property, which is the whole reason a wrong passphrase
+ * gives no feedback. Compared byte for byte against the page an invented id
+ * produces.
+ */
+$wrongPass = post($baseUrl . '/s/' . $lockedShare->id . '/unlock', [
+
+    'passphrase' => 'not the passphrase',
+]);
+check(
+    'A wrong passphrase is refused',
+    $wrongPass['status'] === 404,
+    "got {$wrongPass['status']}"
+);
+check(
+    'and is byte-identical to a link that never existed',
+    $wrongPass['body'] === $unknownPage['body'],
+    'saying "wrong passphrase" would confirm the id is real'
+);
+
+/* The right one opens it, and the browser is not asked again. */
+$rightPass = postWithJar($baseUrl . '/s/' . $lockedShare->id . '/unlock', [
+    'passphrase' => 'the blue door',
+], $lockJar = sys_get_temp_dir() . '/portal-smoke-lock-' . getmypid() . '.txt');
+check(
+    'The right passphrase is accepted',
+    $rightPass['status'] === 302,
+    "got {$rightPass['status']}"
+);
+
+$afterUnlock = getWithJar($baseUrl . '/s/' . $lockedShare->id, $lockJar);
+check(
+    'and the link then behaves as it normally would',
+    str_contains($afterUnlock['body'], 'name="email"'),
+    'past the passphrase, a gate-mode link should ask for the address'
+);
+
+/*
+ * The unlock is scoped to ONE link. A cookie that opened every protected share
+ * would make the first passphrase somebody is given a master key.
+ */
+$otherLocked = $shares->create($videoRow, 'other@smoke.test', [
+    'accessMode' => 'gate',
+    'passphrase' => 'a different one',
+]);
+check(
+    'Unlocking one link does not unlock another',
+    str_contains(getWithJar($baseUrl . '/s/' . $otherLocked->id, $lockJar)['body'], 'name="passphrase"'),
+    'the unlock cookie is not scoped to its own link'
+);
+
+/* A link with no passphrase cannot be "unlocked" into anything. */
+$noPassUnlock = post($baseUrl . '/s/' . $gateShare->id . '/unlock', [
+    'passphrase' => 'anything at all',
+]);
+check(
+    'Unlocking a link that has no passphrase is refused',
+    $noPassUnlock['status'] === 404,
+    "got {$noPassUnlock['status']}"
+);
+
+@unlink($lockJar);
+
 check(
     'The refusal page names no recipient',
     !str_contains($revokedPage['body'], 'revoked@smoke.test')

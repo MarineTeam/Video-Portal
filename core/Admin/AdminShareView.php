@@ -168,7 +168,22 @@ final class AdminShareView
                   </select>
                 </label>
               </div>
+              <div>
+                <label>Passphrase <span class="muted">(optional)</span>
+                  <input type="text" name="passphrase" autocomplete="off"
+                         minlength="6" maxlength="200"
+                         placeholder="Leave empty for none">
+                </label>
+              </div>
             </div>
+
+            <p class="muted small">
+              A passphrase is a second thing the recipient must know, on top of however the link
+              already identifies them. It is <strong>never included in the email</strong> — tell
+              them yourself. It cannot be changed or read back afterwards: revoke the link and make
+              a new one. A wrong passphrase looks exactly like a link that never existed, which is
+              deliberate, so warn whoever you give it to.
+            </p>
 
             <label class="checkbox">
               <input type="checkbox" name="notify" value="1" checked> Email them a link

@@ -184,6 +184,22 @@ final class ShareRepository
             $watermark = 'default';
         }
 
+        /*
+         * The passphrase, hashed here and never held anywhere else.
+         *
+         * An unacceptable one — too short, or only whitespace — hashes to null
+         * rather than throwing, which means it creates a link with NO
+         * passphrase. That is the safe direction only because the form
+         * validates first and refuses; if this were the only check, a typo
+         * would silently produce an unprotected link. Stated so the next
+         * caller knows the validation is theirs to do.
+         */
+        $passwordHash = SharePassword::hash(
+            isset($options['passphrase']) && is_string($options['passphrase']) && $options['passphrase'] !== ''
+                ? $options['passphrase']
+                : null
+        );
+
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $expires = $now->modify("+{$hours} hours");
 
@@ -197,6 +213,7 @@ final class ShareRepository
             'video_title'      => mb_substr($video->title, 0, 200),
             'recipient_email'  => $email,
             'access_mode'      => $accessMode,
+            'password_hash'    => $passwordHash,
             'created_at'       => $now->format('Y-m-d H:i:s'),
             'expires_at'       => $expires->format('Y-m-d H:i:s'),
             'watermark_mode'   => $watermark,

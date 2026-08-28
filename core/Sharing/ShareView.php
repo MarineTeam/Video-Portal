@@ -79,6 +79,38 @@ final class ShareView
     }
 
     /**
+     * The passphrase prompt.
+     *
+     * Carries no hint about the passphrase and no mention of the video, the
+     * recipient, or who sent it — a link handed to the wrong person must not
+     * become a way to learn any of that by simply opening it.
+     *
+     * There is deliberately no error variant of this page. A wrong passphrase
+     * returns the same "this link does not exist" response as a revoked,
+     * expired or invented id, because a page saying "wrong passphrase" would
+     * confirm the id is real. The cost is real and is the reason the prompt
+     * says the attempt is limited: somebody who mistypes gets no correction,
+     * so they need to know not to keep going.
+     */
+    public static function unlockForm(string $siteName, string $action): string
+    {
+        $actionAttr = e($action);
+
+        return self::page($siteName, 'This link needs a passphrase', <<<HTML
+        <p>Enter the passphrase you were given.</p>
+        <form method="post" action="{$actionAttr}">
+          <label for="passphrase">Passphrase</label>
+          <input type="password" id="passphrase" name="passphrase" required autofocus
+                 autocomplete="off">
+          <button class="btn" type="submit">Open</button>
+        </form>
+        <p class="muted">Check it carefully — a wrong passphrase looks the same as a link that has
+           expired, and there are only a few attempts before this link stops answering for a
+           while.</p>
+        HTML);
+    }
+
+    /**
      * Shown after a link request.
      *
      * Phrased so it is true whether or not anything was sent. The gate never

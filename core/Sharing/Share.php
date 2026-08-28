@@ -63,6 +63,16 @@ final class Share
         public readonly int $furthestPercent = 0,
         public readonly ?DateTimeImmutable $completedAt = null,
         public readonly ?string $createdBy = null,
+
+        /**
+         * Whether a passphrase is set — NOT the hash.
+         *
+         * The model is what every listing, view and JSON response is built
+         * from, so carrying the hash here is how it eventually reaches a page.
+         * The resolver reads the column directly, which is the one place that
+         * needs it, and nothing else can leak what it never holds.
+         */
+        public readonly bool $passwordProtected = false,
     ) {
     }
 
@@ -102,6 +112,11 @@ final class Share
             furthestPercent:   (int) ($row['furthest_percent'] ?? 0),
             completedAt:       $date('completed_at'),
             createdBy:         isset($row['created_by']) && $row['created_by'] !== null ? (string) $row['created_by'] : null,
+            /*
+             * Reduced to a boolean the moment it enters the model. Whatever
+             * SELECT produced this row, the hash stops here.
+             */
+            passwordProtected: isset($row['password_hash']) && (string) $row['password_hash'] !== '',
         );
     }
 

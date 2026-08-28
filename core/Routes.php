@@ -281,6 +281,16 @@ final class Routes
         $router->get('/s/{id}', [ShareController::class, 'show']);
         $router->get('/b/{id}', [ShareController::class, 'showBundle']);
 
+        /*
+         * The passphrase form.
+         *
+         * Registered before /s/{id}/request only for readability — these are
+         * distinct literal suffixes, so neither can shadow the other. Every
+         * refusal it makes returns the same 404 as an unknown link, so this
+         * route cannot be used to find out which ids are real.
+         */
+        $router->post('/s/{id}/unlock', [ShareController::class, 'unlock']);
+
         // The account-free gate's "what is your email address" form.
         $router->post('/s/{id}/request', [ShareController::class, 'requestLink'], [], 'gate.share');
         $router->post('/b/{id}/request', [ShareController::class, 'requestLink'], [], 'gate.bundle');
