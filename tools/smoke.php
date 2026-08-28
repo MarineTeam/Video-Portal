@@ -6226,6 +6226,51 @@ check(
     'the message is the thing that answers "should I approve this person"'
 );
 
+/*
+ * Last seen.
+ *
+ * The column an admin needs for the other half of the decision: the note says
+ * why somebody wants in, this says whether they are still around. The value was
+ * written on every authorized request since Phase 1 and displayed nowhere.
+ *
+ * Back-dated to a fixed age rather than asserted against whatever the run
+ * happens to have produced, because "it shows something" passes just as well
+ * against a column of empty cells.
+ */
+check(
+    'The People screen has a Last seen column',
+    str_contains($peopleScreen['body'], '<th>Last seen</th>'),
+    'the value has been recorded since Phase 1 and shown nowhere'
+);
+
+$db->execute(
+    'UPDATE {users} SET last_seen_at = ? WHERE id = ?',
+    [date('Y-m-d H:i:s', time() - (3 * 86400)), $askUserId]
+);
+$seenScreen = getWithJar($baseUrl . '/admin/users', $jar);
+check(
+    'and it counts the days since somebody was here',
+    str_contains($seenScreen['body'], '3 days ago'),
+    'a back-dated account is not being rendered from its real stamp'
+);
+
+/*
+ * NULL is a different answer from "a long time ago", and it is the one an admin
+ * scans for. Rendering it as 1 Jan 1970 would look like data.
+ */
+$db->execute('UPDATE {users} SET last_seen_at = NULL WHERE id = ?', [$askUserId]);
+$neverScreen = getWithJar($baseUrl . '/admin/users', $jar);
+check(
+    'and says Never rather than inventing a date',
+    str_contains($neverScreen['body'], 'Never') && !str_contains($neverScreen['body'], '1 Jan 1970'),
+    'an account nobody has ever seen is being given an epoch date'
+);
+
+// Put it back. A stamp left NULL here is not read by anything later, but a
+// fixture that does not restore what it changed is how this suite has broken a
+// check three hundred lines further down before.
+$db->execute('UPDATE {users} SET last_seen_at = NOW() WHERE id = ?', [$askUserId]);
+
 /* Approving answers the question, so the question goes away. */
 $approve = postWithJar($baseUrl . '/admin/users', [
     '_token' => csrfFrom($peopleScreen['body']),
