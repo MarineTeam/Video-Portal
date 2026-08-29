@@ -14,6 +14,7 @@ use Portal\Controllers\CronController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\MemberShareController;
+use Portal\Controllers\PwaController;
 use Portal\Controllers\ShareController;
 use Portal\Controllers\SubscriptionController;
 use Portal\Controllers\UploadController;
@@ -89,6 +90,17 @@ final class Routes
         $router->get('/media/{slug}.mp4', [FeedController::class, 'media']);
         $router->get('/sitemap.xml', [FeedController::class, 'sitemap']);
         $router->get('/robots.txt', [FeedController::class, 'robots']);
+
+        /*
+         * Installable-app plumbing. All public and all session-free: the
+         * service worker and the offline page are stored on the device and
+         * shown to whoever opens the app next, so neither may depend on who is
+         * signed in.
+         */
+        $router->get('/manifest.webmanifest', [PwaController::class, 'manifest']);
+        $router->get('/icon.svg', [PwaController::class, 'icon']);
+        $router->get('/sw.js', [PwaController::class, 'serviceWorker']);
+        $router->get('/offline', [PwaController::class, 'offline']);
 
         /*
          * Subscribing, and getting out again.

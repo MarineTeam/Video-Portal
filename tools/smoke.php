@@ -5017,8 +5017,13 @@ check(
  * The service worker. It has to be at the ROOT — a worker can only control
  * pages at or below its own path — and it needs the header that widens its
  * scope, without which it registers successfully and receives nothing.
+ *
+ * The plugin no longer serves one of its own: a scope has exactly one active
+ * worker, so registering a second script at `/` silently replaces the first
+ * while reporting success. It contributes to the site's worker instead, and
+ * these checks follow it there.
  */
-$worker = get($baseUrl . '/push-sw.js');
+$worker = get($baseUrl . '/sw.js');
 check('The service worker is served', $worker['status'] === 200, "got {$worker['status']}");
 check(
     'as JavaScript',
@@ -5035,6 +5040,11 @@ check(
     str_contains($worker['body'], "addEventListener('push'")
         && str_contains($worker['body'], "addEventListener('notificationclick'"),
     'a notification nobody can click leads nowhere'
+);
+check(
+    'and the plugin added to the worker rather than replacing it',
+    str_contains($worker['body'], "'/offline'"),
+    'a contribution that drops the core half is the collision this move exists to prevent'
 );
 
 $pushAdmin = getWithJar($baseUrl . '/admin/push', $jar);
@@ -5129,9 +5139,16 @@ check(
         [$db->prefix() . 'push_subscriptions']) === 1,
     'turning it off threw away everybody who had subscribed'
 );
+/*
+ * The worker itself survives — it is core's now — but a deactivated plugin
+ * must stop contributing to it. Checking that the worker still SERVES as well
+ * as that the push half is gone, because "it 404s" would also satisfy a naive
+ * assertion and would mean the whole site had lost its worker.
+ */
+$afterOff = get($baseUrl . '/sw.js');
 check(
-    'and the service worker stops being served',
-    get($baseUrl . '/push-sw.js')['status'] === 404,
+    'and its handlers leave the shared service worker',
+    $afterOff['status'] === 200 && !str_contains($afterOff['body'], "addEventListener('push'"),
     'a deactivated plugin is still answering requests'
 );
 
@@ -8833,6 +8850,116 @@ check(
     'and the notice is gone',
     !str_contains($reopened['body'], 'Back shortly'),
     'a switch that cannot be switched back is not a switch'
+);
+
+/* ---------------------------------------------------------------- installable
+ *
+ * A manifest, an icon, one service worker, and the page shown with no network.
+ * Before this the site could not be installed at all: the only worker was the
+ * push plugin's, which has no fetch handler and caches nothing.
+ *
+ * What can be checked here is the plumbing — that the files are served, with
+ * the right types and headers, and that the worker's rules are the conservative
+ * ones. Installing the app and losing the network need a real browser, and that
+ * limitation is stated rather than implied by a green run.
+ */
+echo "\nInstallable app\n";
+
+$manifest = get($baseUrl . '/manifest.webmanifest');
+check('The manifest is served', $manifest['status'] === 200, "got {$manifest['status']}");
+check(
+    'and as a manifest, not as JSON',
+    str_contains(strtolower($manifest['headers']['content-type'] ?? ''), 'application/manifest+json'),
+    'browsers do read this one strictly'
+);
+
+$decodedManifest = json_decode($manifest['body'], true);
+check(
+    'and it parses',
+    is_array($decodedManifest),
+    'a manifest that does not parse is no manifest at all'
+);
+check(
+    'and asks for standalone, which is what makes it installable',
+    ($decodedManifest['display'] ?? '') === 'standalone',
+    'without this there is no install prompt'
+);
+check(
+    'and carries the site name rather than a hardcoded one',
+    ($decodedManifest['name'] ?? '') === 'Smoke Test Portal',
+    'this is a white-label product; every install must not claim the same name'
+);
+check(
+    'and names an icon',
+    !empty($decodedManifest['icons'][0]['src']),
+    'a manifest with no icon is not installable on Android'
+);
+
+$icon = get($baseUrl . '/icon.svg');
+check(
+    'The icon is served as SVG',
+    $icon['status'] === 200 && str_contains(strtolower($icon['headers']['content-type'] ?? ''), 'image/svg'),
+    "got {$icon['status']}"
+);
+check(
+    'and is drawn with the theme colour rather than a fixed one',
+    str_contains($icon['body'], '<svg') && str_contains($icon['body'], 'fill='),
+    'the icon should follow the site, not the product'
+);
+
+$sw = get($baseUrl . '/sw.js');
+check('The service worker is served', $sw['status'] === 200, "got {$sw['status']}");
+check(
+    'as JavaScript',
+    str_contains(strtolower($sw['headers']['content-type'] ?? ''), 'javascript'),
+    'a worker served as text/plain is refused by the browser'
+);
+check(
+    'and allowed to control the whole site',
+    ($sw['headers']['service-worker-allowed'] ?? '') === '/',
+    'without this header the worker registers successfully and controls only /sw.js'
+);
+
+/*
+ * The safety property, checked on the bytes actually served rather than on the
+ * builder: this worker must never cache a page. Every page here can be
+ * personalised or access-gated.
+ */
+check(
+    'and it caches exactly one thing, the offline page',
+    substr_count($sw['body'], 'cache.add') === 1 && str_contains($sw['body'], "'/offline'"),
+    'a worker caching content can serve one person\'s page to the next'
+);
+check(
+    'and leaves anything that is not a navigation alone',
+    str_contains($sw['body'], "request.mode !== 'navigate'"),
+    'intercepting API calls and posts is how a worker loses somebody\'s data'
+);
+
+/*
+ * The push plugin's contribution is checked in the Push section above, where
+ * it is still active — by this point it has been deactivated, and asserting it
+ * here would be asserting against a plugin that is switched off.
+ */
+
+$offline = get($baseUrl . '/offline');
+check('The offline page is served', $offline['status'] === 200, "got {$offline['status']}");
+check(
+    'and it needs no session and names nobody',
+    !str_contains($offline['body'], 'admin@smoke.test') && !str_contains($offline['body'], 'Sign out'),
+    'this page is stored on the device and shown to whoever opens the app next'
+);
+
+$home = get($baseUrl . '/');
+check(
+    'The site links to the manifest',
+    str_contains($home['body'], 'rel="manifest"'),
+    'no manifest link means no install prompt, however many workers are registered'
+);
+check(
+    'and registers the worker',
+    str_contains($home['body'], "register('/sw.js'"),
+    'a worker nothing registers does nothing'
 );
 
 echo "\nRouting\n";

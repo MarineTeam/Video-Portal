@@ -47,8 +47,21 @@ $configured = static fn (): bool =>
  * the document root at activation is a thing that fails silently on a host with
  * tight permissions and leaves a stale file behind on uninstall.
  */
-$plugin->addRoute('GET', '/push-sw.js', static function (): Response {
-    $script = <<<'JS'
+/*
+ * The push handlers, CONTRIBUTED to the site's one service worker rather than
+ * served as a worker of this plugin's own.
+ *
+ * This used to be a route at /push-sw.js that the subscribe button registered
+ * at scope `/`. That worked only because nothing else registered a worker: a
+ * scope has exactly one active worker, so the moment core gained one, whichever
+ * registered last would have silently replaced the other — and both
+ * registrations report success either way. Push would simply have stopped
+ * arriving, with nothing anywhere saying so.
+ *
+ * The handlers themselves are unchanged; only where they live has moved.
+ */
+$plugin->addFilter('service_worker', static function (string $js): string {
+    $push = <<<'JS'
     /*
      * The service worker.
      *
@@ -97,17 +110,7 @@ $plugin->addRoute('GET', '/push-sw.js', static function (): Response {
     });
     JS;
 
-    return Response::text($script)
-        ->header('Content-Type', 'application/javascript; charset=utf-8')
-        // A service worker is cached aggressively by browsers; a short max-age
-        // is how a fix to it ever reaches anybody.
-        ->header('Cache-Control', 'public, max-age=300')
-        /*
-         * Without this a worker at /push-sw.js could only control /push-sw.js.
-         * The header is the only way to widen it, and getting it wrong produces
-         * a worker that registers successfully and receives nothing.
-         */
-        ->header('Service-Worker-Allowed', '/');
+    return $js . "\n" . $push;
 });
 
 /*
@@ -198,7 +201,15 @@ $plugin->addAction('footer', static function () use ($plugin, $configured): void
         return out;
       }
 
-      navigator.serviceWorker.register('/push-sw.js', { scope: '/' }).then(function (registration) {
+      /*
+       * The site's worker, not one of this plugin's own.
+       *
+       * `ready` waits for whatever core registered in the footer to be active,
+       * rather than registering a second script at the same scope — which would
+       * replace core's worker and break every other thing that uses it, while
+       * reporting success.
+       */
+      navigator.serviceWorker.ready.then(function (registration) {
         return registration.pushManager.getSubscription().then(function (existing) {
           if (existing) { return; }
           box.hidden = false;

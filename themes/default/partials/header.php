@@ -57,6 +57,30 @@ $allowIndexing ??= false;
 
 <?php
 /*
+ * Installable-app tags.
+ *
+ * The manifest is what makes a browser offer "Add to Home Screen"; without it
+ * there is no install prompt and no standalone mode, however many service
+ * workers are registered.
+ *
+ * theme-color paints the browser and task-switcher chrome to match the site.
+ * The apple- tags are the iOS equivalent of the manifest, which Safari still
+ * only partly reads — worth setting because they cost nothing, but iOS will
+ * use a screenshot rather than the SVG icon. That limitation is real and is
+ * recorded rather than papered over.
+ */
+?>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="theme-color" content="<?= e($themeColor ?? '#0f172a') ?>">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="<?= e(mb_substr($siteName, 0, 12)) ?>">
+
+<?php
+/*
  * The `head` action is where the theme's own functions.php writes the
  * customizer variables, and where plugins add their own tags. It fires before
  * any body content so the custom properties are applied on first paint and
