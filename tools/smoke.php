@@ -8299,6 +8299,138 @@ check(
     'bulk is a way around the per-object check — the whole library, not one row'
 );
 
+/* ------------------------------------------------------- member sharing
+ *
+ * share_content is the members' half of sharing: hand out a link to one video
+ * you can already watch, and revoke your own. Deliberately NOT manage_shares,
+ * which reaches every link on the site.
+ *
+ * Reuses the scoped editor above because the property worth proving is the
+ * scoping — a grant on one category must not become permission to share the
+ * whole library. The bulk action just trashed the inside video, so it is put
+ * back first.
+ */
+echo "\nMember sharing\n";
+
+$db->execute(
+    'UPDATE {videos} SET deleted_at = NULL, is_published = 1, status = "ready" WHERE id IN (?, ?)',
+    [$scopeVideos['inside'], $scopeVideos['outside']]
+);
+
+$db->execute(
+    'INSERT INTO {grants} (subject_type, subject_id, email, capability_id, scope_type, scope_id, created_at)
+     VALUES ("user", ?, "", (SELECT id FROM {capabilities} WHERE slug = ?), "category", ?, NOW())',
+    [$scopedUserId, 'share_content', $scopeInside]
+);
+
+$shareJar = sys_get_temp_dir() . '/portal-smoke-membershare-' . getmypid() . '.txt';
+@unlink($shareJar);
+clearLoginThrottle($db);
+postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'scoped@smoke.test',
+    'password' => 'scoped-editor-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $shareJar)['body']),
+], $shareJar);
+
+$insideSlug = (string) $db->value('SELECT slug FROM {videos} WHERE id = ?', [$scopeVideos['inside']]);
+$outsideSlug = (string) $db->value('SELECT slug FROM {videos} WHERE id = ?', [$scopeVideos['outside']]);
+
+$insideWatch = getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar);
+check(
+    'The share panel appears on a video inside the grant',
+    str_contains($insideWatch['body'], 'action="/share/create"'),
+    'a capability with no way to use it is the defect this repeats'
+);
+
+$outsideWatch = getWithJar($baseUrl . '/watch/' . $outsideSlug, $shareJar);
+check(
+    'and not on one outside it',
+    !str_contains($outsideWatch['body'], 'action="/share/create"'),
+    'a grant on one category is not permission to share the library'
+);
+
+/* Creating inside the scope works. */
+$makeShare = postWithJar($baseUrl . '/share/create', [
+    '_token'      => csrfFrom($insideWatch['body']),
+    'video_id'    => (string) $scopeVideos['inside'],
+    'email'       => 'friend@smoke.test',
+    'access_mode' => 'gate',
+    'hours'       => '48',
+], $shareJar);
+check('A member can create a share inside their scope', $makeShare['status'] === 302, "got {$makeShare['status']}");
+check(
+    'and the link is recorded as theirs',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {shares} WHERE created_by = ? AND video_id = ?',
+        ['scoped@smoke.test', $scopeVideos['inside']]
+    ) === 1,
+    'created_by is what their own list and the admin list both read'
+);
+
+/*
+ * The boundary. A hidden form is not a permission check, so this posts
+ * directly for the video the panel refused to offer.
+ */
+$outsideShare = postWithJar($baseUrl . '/share/create', [
+    '_token'   => csrfFrom($insideWatch['body']),
+    'video_id' => (string) $scopeVideos['outside'],
+    'email'    => 'friend@smoke.test',
+], $shareJar);
+check(
+    'Sharing a video outside the scope is refused',
+    $outsideShare['status'] === 403,
+    "got {$outsideShare['status']}"
+);
+check(
+    'and nothing was written',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {shares} WHERE video_id = ? AND created_by = ?',
+        [$scopeVideos['outside'], 'scoped@smoke.test']
+    ) === 0,
+    'the refusal was cosmetic'
+);
+
+/* Their own list, and revoking from it. */
+$myLinks = getWithJar($baseUrl . '/account/shared-links', $shareJar);
+check(
+    'Their shared links are listed on their account',
+    $myLinks['status'] === 200 && str_contains($myLinks['body'], 'friend@smoke.test'),
+    "got {$myLinks['status']}"
+);
+
+$mineId = (string) $db->value(
+    'SELECT id FROM {shares} WHERE created_by = ? LIMIT 1',
+    ['scoped@smoke.test']
+);
+postWithJar($baseUrl . '/share/revoke', [
+    '_token' => csrfFrom($myLinks['body']),
+    'id'     => $mineId,
+], $shareJar);
+check(
+    'They can revoke a link they made',
+    $db->value('SELECT revoked_at FROM {shares} WHERE id = ?', [$mineId]) !== null,
+    'revoking your own link is the point of the list'
+);
+
+/*
+ * And cannot revoke somebody else's. The id is the only thing the form
+ * carries, and it names a stranger's link just as well as your own.
+ */
+$adminMade = (string) $db->value(
+    'SELECT id FROM {shares} WHERE revoked_at IS NULL AND (created_by IS NULL OR created_by <> ?) LIMIT 1',
+    ['scoped@smoke.test']
+);
+postWithJar($baseUrl . '/share/revoke', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/account/shared-links', $shareJar)['body']),
+    'id'     => $adminMade,
+], $shareJar);
+check(
+    "They cannot revoke somebody else's link",
+    $adminMade !== '' && $db->value('SELECT revoked_at FROM {shares} WHERE id = ?', [$adminMade]) === null,
+    'the id alone was enough to switch off a link they did not make'
+);
+
+@unlink($shareJar);
 @unlink($scopeJar);
 
 /* ------------------------------------------------------------ what's new

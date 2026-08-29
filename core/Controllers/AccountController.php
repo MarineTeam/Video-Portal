@@ -64,6 +64,32 @@ final class AccountController extends Controller
     }
 
     /**
+     * The links this person has handed out.
+     *
+     * Shown whether or not they still hold share_content: withdrawing the
+     * capability stops them making new links and must not hide the ones they
+     * already made, because revoking those is exactly what somebody needs to
+     * do next. The same reasoning the admin screen's revoke button exists for.
+     */
+    public function sharedLinks(Request $request): Response
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        /** @var \Portal\Sharing\ShareRepository $shares */
+        $shares = $this->container->get(\Portal\Sharing\ShareRepository::class);
+
+        return $this->view(['account-shared-links'], [
+            'title'  => 'Links you have shared',
+            'shares' => $shares->createdBy($user->email),
+            'token'  => $this->csrfToken(),
+            'flash'  => $this->flash(),
+        ]);
+    }
+
+    /**
      * What this site has told you.
      *
      * The channels it sends over cannot be re-read: an email is in a mailbox

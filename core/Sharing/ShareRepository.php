@@ -303,6 +303,48 @@ final class ShareRepository
      * previous expiry is remembered so Restore can put it back rather than
      * inventing a new one.
      */
+    /**
+     * The links one person made.
+     *
+     * By created_by, which is an email rather than a user id — the same
+     * identity the rest of the sharing code keys on, and the one that survives
+     * an account being deleted and recreated.
+     *
+     * Revoked and expired links are included on purpose. A member's list is
+     * the record of what they handed out, and a link vanishing the moment it
+     * lapses is how somebody loses track of who they gave access to.
+     *
+     * @return list<Share>
+     */
+    public function createdBy(string $email, int $limit = 100): array
+    {
+        $rows = $this->db->all(
+            'SELECT * FROM {shares}
+              WHERE created_by = ?
+              ORDER BY created_at DESC
+              LIMIT ' . max(1, min(500, $limit)),
+            [Str::normalizeEmail($email)]
+        );
+
+        return array_map(static fn (array $row): Share => Share::fromRow($row), $rows);
+    }
+
+    /**
+     * How many links this person has made recently.
+     *
+     * Counted from the table rather than from a rate-limit bucket, so it
+     * cannot be reset by clearing one. The window matches
+     * Share::MEMBER_HOURLY_LIMIT.
+     */
+    public function createdSince(string $email, int $seconds): int
+    {
+        return (int) $this->db->value(
+            'SELECT COUNT(*) FROM {shares}
+              WHERE created_by = ? AND created_at > DATE_SUB(NOW(), INTERVAL ? SECOND)',
+            [Str::normalizeEmail($email), $seconds]
+        );
+    }
+
     public function revoke(string $id): bool
     {
         $share = $this->find($id);

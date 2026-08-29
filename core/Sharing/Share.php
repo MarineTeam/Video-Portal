@@ -33,6 +33,20 @@ final class Share
     public const MAX_HOURS     = 720;
 
     /**
+     * The ceiling for a link a member made, as against an administrator.
+     *
+     * Shorter on purpose. An administrator handing out a thirty-day link has
+     * the sharing screen, the audit log and a revoke button for every link on
+     * the site; a member has none of that oversight and is not the person who
+     * will remember to clean up. A week is long enough to be useful and short
+     * enough that an unnoticed link expires on its own.
+     */
+    public const MEMBER_MAX_HOURS = 168;
+
+    /** How many links one member may create in an hour. */
+    public const MEMBER_HOURLY_LIMIT = 20;
+
+    /**
      * How long a row survives past its expiry.
      *
      * Sixty days, so a link that lapsed weeks ago can still be extended or

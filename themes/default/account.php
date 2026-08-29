@@ -69,6 +69,18 @@ echo $template->partial('header', get_defined_vars());
 
   <?php
   /*
+   * Always listed, even for somebody who cannot currently share.
+   * Withdrawing the capability leaves their existing links working, and
+   * revoking those is the thing they would come here to do.
+   */
+  ?>
+  <a class="card account-tile" href="/account/shared-links">
+    <strong>Shared links</strong>
+    <span class="muted small">What you have handed out</span>
+  </a>
+
+  <?php
+  /*
    * Only for accounts that have a local password. Somebody who signs in
    * through an identity provider has no credential here, and the page itself
    * refuses them — linking to it would be offering a door that is locked.

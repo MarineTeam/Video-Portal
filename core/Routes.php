@@ -13,6 +13,7 @@ use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
+use Portal\Controllers\MemberShareController;
 use Portal\Controllers\ShareController;
 use Portal\Controllers\SubscriptionController;
 use Portal\Controllers\UploadController;
@@ -154,6 +155,18 @@ final class Routes
          * it stays correct if either ever becomes a pattern.
          */
         $router->get('/account', [AccountController::class, 'index'], ['auth.user']);
+        $router->get('/account/shared-links', [AccountController::class, 'sharedLinks'], ['auth.user']);
+
+        /*
+         * Member sharing.
+         *
+         * `auth.user` here and the capability checked inside the handler
+         * against the specific video — a middleware can only ask the site-wide
+         * question, and the whole point of share_content is that it can be
+         * granted on one category.
+         */
+        $router->post('/share/create', [MemberShareController::class, 'create'], ['auth.user']);
+        $router->post('/share/revoke', [MemberShareController::class, 'revoke'], ['auth.user']);
         $router->any(
             ['GET', 'POST'],
             '/account/notifications',
