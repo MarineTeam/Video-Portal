@@ -8997,6 +8997,12 @@ check(
     'no manifest link means no install prompt, however many workers are registered'
 );
 check(
+    'and asks for it with credentials',
+    str_contains($home['body'], 'crossorigin="use-credentials"'),
+    'Chrome fetches a manifest without cookies by default, so anything in front '
+    . 'of the site judges it as anonymous and can answer with a challenge page'
+);
+check(
     'and registers the worker',
     str_contains($home['body'], "register('/sw.js'"),
     'a worker nothing registers does nothing'
