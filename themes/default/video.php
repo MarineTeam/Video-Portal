@@ -373,6 +373,56 @@ $transcript ??= [];
   </details>
 <?php endif ?>
 
+<?php
+/*
+ * Share this, for somebody holding share_content on this video.
+ *
+ * Null for everybody else, so this block renders nothing rather than a form
+ * that would 403 — the controller checks the same capability again, against
+ * the same video, because a hidden form is not a permission check.
+ */
+$sharePanel ??= null;
+?>
+<?php if ($sharePanel !== null): ?>
+  <section class="card" id="share" style="margin:2rem 0;padding:1rem 1.25rem">
+    <h2 class="section-title">Share this</h2>
+    <form method="post" action="<?= e($sharePanel['action']) ?>">
+      <?= $csrfField ?? '' ?>
+      <input type="hidden" name="video_id" value="<?= (int) $sharePanel['videoId'] ?>">
+
+      <label>Send to
+        <input type="email" name="email" required autocomplete="off"
+               placeholder="their@email.example">
+      </label>
+
+      <label>They open it by
+        <select name="access_mode">
+          <option value="account">Signing in as that address</option>
+          <option value="gate">Confirming that address by email</option>
+        </select>
+      </label>
+
+      <label>Expires after
+        <input type="number" name="hours" value="72" min="1"
+               max="<?= (int) $sharePanel['maxHours'] ?>"> hours
+      </label>
+
+      <label>Passphrase <span class="muted">(optional)</span>
+        <input type="text" name="passphrase" autocomplete="off"
+               minlength="<?= (int) $sharePanel['minimumPass'] ?>" maxlength="200"
+               placeholder="Leave empty for none">
+      </label>
+
+      <button class="btn">Send the link</button>
+    </form>
+
+    <p class="muted small">
+      A passphrase is never included in the email — tell them yourself. You can see and revoke
+      everything you have shared on <a href="/account/shared-links">your account</a>.
+    </p>
+  </section>
+<?php endif ?>
+
 <?php do_action('after_video', $video) ?>
 
 <?php if ($related !== []): ?>

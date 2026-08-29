@@ -168,6 +168,15 @@ abstract class Controller
             'theme'       => $themes,
             'siteName'    => apply_filters('site_name', $themes->setting('site_name', 'Video Portal') ?? 'Video Portal'),
             'logoUrl'     => $themes->setting('logo_url') ?: null,
+            /*
+             * Paints the browser and task-switcher chrome to match the site.
+             * Validated here rather than in the template, because it lands in
+             * a meta attribute and the value comes from the customizer, where
+             * somebody can type anything.
+             */
+            'themeColor'  => preg_match('/^#[0-9a-fA-F]{3,8}$/', (string) ($themes->setting('bg', '') ?? '')) === 1
+                ? (string) $themes->setting('bg', '')
+                : '#0f172a',
             'assetsUrl'   => $this->config()->url('/theme-asset/' . $themes->activeSlug()),
             /*
              * One asset, stamped so a browser re-fetches it after an upgrade.
@@ -195,6 +204,18 @@ abstract class Controller
                 'name'    => $user->displayName(),
                 'email'   => $user->email,
                 'isAdmin' => $this->container->get(\Portal\Auth\Capabilities::class)->canSeeAdmin($user),
+                /*
+                 * The badge on the Account link.
+                 *
+                 * One indexed COUNT per page render for a signed-in visitor,
+                 * which is the price of a badge that is right — the alternative
+                 * is a number that only updates when you happen to open the
+                 * page it is counting for.
+                 *
+                 * Nothing for anonymous visitors, who never reach this branch,
+                 * so the public site pays nothing at all.
+                 */
+                'unreadNotifications' => $this->unreadNotifications($user->email),
             ],
             'nav' => apply_filters('site_nav', $this->defaultNav()),
             /*
@@ -683,6 +704,23 @@ abstract class Controller
         }
 
         return $this->redirect($target);
+    }
+
+    /**
+     * How many notifications this person has not read.
+     *
+     * Fails to zero rather than propagating. This is shared view data on every
+     * page in the product, so an error here would take down the whole site
+     * rather than one badge — and on the single request that applies migration
+     * 0020, the table genuinely does not exist yet.
+     */
+    private function unreadNotifications(string $email): int
+    {
+        try {
+            return (new \Portal\Content\NotificationLog($this->db()))->unreadCount($email);
+        } catch (\Throwable) {
+            return 0;
+        }
     }
 
     /** @return array{type: string, message: string}|null */

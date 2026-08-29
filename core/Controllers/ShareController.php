@@ -12,8 +12,10 @@ use Portal\Sharing\Bundle;
 use Portal\Sharing\Gate;
 use Portal\Sharing\Share;
 use Portal\Sharing\ShareMailer;
+use Portal\Sharing\SharePassword;
 use Portal\Sharing\ShareRepository;
 use Portal\Sharing\ShareView;
+use Portal\Support\RateLimit;
 use Portal\Video\VideoProvider;
 use Throwable;
 
@@ -39,9 +41,110 @@ final class ShareController extends Controller
             AccessResult::GRANTED  => $this->playShare($result, $request),
             AccessResult::SIGN_IN  => $this->toSignIn($request),
             AccessResult::GATE     => $this->gateForm($request, 'share', $params['id'] ?? ''),
+            AccessResult::LOCKED   => $this->unlockForm($params['id'] ?? ''),
             AccessResult::MISMATCH => $this->mismatchPage(),
             default                => $this->gonePage(),
         };
+    }
+
+    /**
+     * The passphrase, submitted.
+     *
+     * Every refusal here returns gonePage() — the same 404 as a revoked,
+     * expired, unknown or malformed id. A wrong passphrase, a throttled link
+     * and a link that never existed are one response, which is what stops this
+     * form becoming a way to find out which ids are real.
+     *
+     * The cost is stated on the form itself rather than hidden: somebody who
+     * mistypes is told nothing, so the page warns them in advance.
+     */
+    public function unlock(Request $request, array $params): Response
+    {
+        /*
+         * Deliberately no CSRF check, matching requestLink() above and for the
+         * same reasons.
+         *
+         * This page is reached from an emailed link, sometimes inside a webmail
+         * preview, where a session may not survive. And the action borrows no
+         * authority: an attacker who could forge this request would have to
+         * already know the passphrase, and all they achieve is unlocking a link
+         * they already hold — in somebody else's browser.
+         *
+         * Requiring a token would also mean rendering one, which starts a
+         * session and sets a cookie for every anonymous recipient who opens a
+         * protected link. This codebase has paid that cost once before, on the
+         * subscribe form, and took it back out.
+         *
+         * The per-link throttle below is what limits abuse here.
+         */
+        $id = (string) ($params['id'] ?? '');
+        $share = $this->shares()->find($id);
+
+        /*
+         * A link with no passphrase must not be openable through this route.
+         * Without this check, POSTing here would set an unlock cookie for any
+         * live link — harmless today, because nothing consults the cookie
+         * unless password_hash is set, but it would become a real hole the
+         * moment anything else did.
+         */
+        if ($share === null || !$share->isLive() || !$share->passwordProtected) {
+            return $this->gonePage();
+        }
+
+        /*
+         * Throttled per link, before the hash is ever computed. A six-character
+         * passphrase is guessable at network speed otherwise, and password
+         * verification is deliberately expensive — so an unthrottled endpoint
+         * is also a way to spend the server's CPU.
+         */
+        $limiter = new RateLimit($this->db());
+        if (!$limiter->allow(
+            SharePassword::bucket($id),
+            SharePassword::MAX_ATTEMPTS,
+            SharePassword::LOCKOUT_SECONDS
+        )) {
+            return $this->gonePage();
+        }
+
+        $hash = (string) ($this->db()->value(
+            'SELECT password_hash FROM {shares} WHERE id = ?',
+            [$id]
+        ) ?? '');
+
+        if (!SharePassword::matches($hash === '' ? null : $hash, (string) ($request->input('passphrase') ?? ''))) {
+            return $this->gonePage();
+        }
+
+        /*
+         * Right. Remember it for this browser, scoped to this link's own path
+         * so unlocking one share never unlocks another, and send them back to
+         * the link to carry on with whatever it asks for next — signing in, or
+         * the email gate, or the video itself.
+         */
+        return Response::redirect($this->config()->url('/s/' . $id))->cookie(
+            $this->gate()->unlockCookieName($id),
+            $this->gate()->unlockToken($id),
+            [
+                'expires'  => time() + $this->gate()->cookieLifetime(),
+                'path'     => $this->gate()->cookiePath('share', $id),
+                'secure'   => $request->isSecure(),
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ]
+        );
+    }
+
+    private function unlockForm(string $id): Response
+    {
+        /*
+         * No CSRF token, so opening a protected link does not start a session
+         * for an anonymous recipient. See unlock() for why the endpoint does
+         * not need one.
+         */
+        return Response::html(ShareView::unlockForm(
+            $this->siteName(),
+            '/s/' . $id . '/unlock'
+        ))->private();
     }
 
     /** @param array<string, string> $params */

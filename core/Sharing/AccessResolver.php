@@ -40,9 +40,43 @@ final class AccessResolver
             return AccessResult::gone();
         }
 
+        /*
+         * The passphrase comes BEFORE identity, for the same reason liveness
+         * does.
+         *
+         * Asking who somebody is first would mean the account-mode mismatch
+         * page — which is a different response — could be reached without ever
+         * knowing the passphrase, and that page confirms the link is real and
+         * addressed to somebody else. Something you KNOW is the outer lock;
+         * everything else happens behind it.
+         */
+        if ($share->passwordProtected && !$this->unlocked($share->id, $request)) {
+            return AccessResult::locked($share);
+        }
+
         return $share->requiresAccount()
             ? $this->viaAccount($share, null, $share->recipientEmail)
             : $this->viaGate('share', $share->id, $share, null, $share->recipientEmail, $request);
+    }
+
+    /**
+     * Has this browser already given the passphrase for this link?
+     *
+     * Reads the signed cookie the unlock form sets. Any failure — no cookie, a
+     * forged one, a secret that is unset — answers no, which asks for the
+     * passphrase again. Failing to "locked" rather than to "granted" is the
+     * only safe direction: the cost of being wrong here is one extra prompt,
+     * and the cost of being wrong the other way is the lock never applying.
+     */
+    private function unlocked(string $shareId, Request $request): bool
+    {
+        try {
+            $presented = $request->cookie($this->gate->unlockCookieName($shareId));
+
+            return is_string($presented) && $this->gate->unlockMatches($shareId, $presented);
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     public function resolveBundle(string $id, Request $request): AccessResult

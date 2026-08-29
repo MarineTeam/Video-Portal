@@ -3448,10 +3448,24 @@ final class AdminView
                     );
             }
 
+            /*
+             * Written on sign-in, on account creation, and on every request an
+             * approved viewer makes — so this really is "last seen", not "last
+             * signed in".
+             *
+             * One nuance worth knowing rather than hiding: a PENDING account
+             * can only ever carry the sign-in stamp, because the guard that
+             * refreshes it refuses them before it gets that far. For somebody
+             * waiting, this reads as when they last tried, which is the more
+             * useful number anyway.
+             */
+            $lastSeen = \Portal\Support\Str::since($user['last_seen_at'] ?? null);
+
             $rows .= sprintf(
                 '<tr>
                    <td><strong>%s</strong><br><span class="muted">%s</span>%s</td>
                    <td>%s</td>
+                   <td><span class="muted">%s</span></td>
                    <td>
                      <form method="post" class="inline">
                        <input type="hidden" name="_token" value="%s">
@@ -3472,6 +3486,7 @@ final class AdminView
                 e((string) $user['email']),
                 $asked,
                 $authorized ? '<span class="pill ok">Approved</span>' : '<span class="pill warn">Pending</span>',
+                e($lastSeen),
                 $token,
                 (int) $user['id'],
                 $selected,
@@ -3487,7 +3502,7 @@ final class AdminView
         <h1>People</h1>
         <p class="muted">Signing in proves who someone is. It grants nothing until you approve them here.</p>
         <table>
-          <thead><tr><th>Person</th><th>Access</th><th>Role</th><th></th></tr></thead>
+          <thead><tr><th>Person</th><th>Access</th><th>Last seen</th><th>Role</th><th></th></tr></thead>
           <tbody>{$rows}</tbody>
         </table>
         HTML;

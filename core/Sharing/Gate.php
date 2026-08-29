@@ -339,6 +339,49 @@ final class Gate
         return self::COOKIE_TTL;
     }
 
+    // ------------------------------------------------- the passphrase unlock
+
+    /**
+     * The cookie that remembers "this browser knew the passphrase".
+     *
+     * Named per share and scoped to that link's path, exactly as the gate
+     * cookie is, so unlocking one link never unlocks another.
+     */
+    public function unlockCookieName(string $shareId): string
+    {
+        return 'unlock_' . substr(hash('sha256', 'share:' . $shareId), 0, 24);
+    }
+
+    /**
+     * The value that cookie carries.
+     *
+     * Signed rather than a flag, because a cookie a visitor can set themselves
+     * is not a lock — "unlocked=1" would make the passphrase a formality that
+     * anybody who has opened developer tools once can skip.
+     *
+     * It contains no part of the passphrase and is not reversible into it. It
+     * says only "the server saw the right passphrase for this id", which is
+     * the whole claim being remembered.
+     *
+     * Signed with the same secret as the magic-link grants, which fails loudly
+     * when unset for the same reason: an empty secret makes this forgeable
+     * while every function still returns a plausible-looking string.
+     */
+    public function unlockToken(string $shareId): string
+    {
+        return hash_hmac('sha256', 'unlock:' . $shareId, $this->secret());
+    }
+
+    /** hash_equals, so a wrong value cannot be narrowed down by timing. */
+    public function unlockMatches(string $shareId, string $presented): bool
+    {
+        if ($presented === '') {
+            return false;
+        }
+
+        return hash_equals($this->unlockToken($shareId), $presented);
+    }
+
     // --------------------------------------------------------------- cleanup
 
     /** Consumed and expired grants, removed on a schedule. */

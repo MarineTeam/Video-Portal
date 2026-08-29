@@ -57,6 +57,30 @@ $allowIndexing ??= false;
 
 <?php
 /*
+ * Installable-app tags.
+ *
+ * The manifest is what makes a browser offer "Add to Home Screen"; without it
+ * there is no install prompt and no standalone mode, however many service
+ * workers are registered.
+ *
+ * theme-color paints the browser and task-switcher chrome to match the site.
+ * The apple- tags are the iOS equivalent of the manifest, which Safari still
+ * only partly reads — worth setting because they cost nothing, but iOS will
+ * use a screenshot rather than the SVG icon. That limitation is real and is
+ * recorded rather than papered over.
+ */
+?>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="theme-color" content="<?= e($themeColor ?? '#0f172a') ?>">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="<?= e(mb_substr($siteName, 0, 12)) ?>">
+
+<?php
+/*
  * The `head` action is where the theme's own functions.php writes the
  * customizer variables, and where plugins add their own tags. It fires before
  * any body content so the custom properties are applied on first paint and
@@ -87,6 +111,20 @@ do_action('head');
         <?php if (!empty($currentUser['isAdmin'])): ?>
           <a href="/admin">Admin</a>
         <?php endif ?>
+        <?php
+        /*
+         * The account area, with the unread count on it.
+         *
+         * Without a link here the page is reachable only by typing its URL,
+         * which is how the password form spent its first release — and a
+         * notification record nobody can find is the same as not keeping one.
+         */
+        ?>
+        <a href="/account" <?= '/account' === $currentPath ? 'aria-current="page"' : '' ?>>
+          Account<?php if (!empty($currentUser['unreadNotifications'])): ?>
+            <span class="pill"><?= (int) $currentUser['unreadNotifications'] ?></span>
+          <?php endif ?>
+        </a>
         <a href="/auth/logout">Sign out</a>
       <?php else: ?>
         <a href="/auth/login">Sign in</a>

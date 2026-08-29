@@ -31,6 +31,21 @@ final class AccessResult
     public const MISMATCH  = 'mismatch';
     public const GONE      = 'gone';
 
+    /**
+     * A passphrase is set and this browser has not given it yet.
+     *
+     * A separate state rather than a flavour of GATE, because the two ask for
+     * different things and can both apply to the same link: a gate-mode share
+     * with a passphrase wants the passphrase first and the address second.
+     *
+     * This state is only ever reached for a link that is otherwise LIVE, so it
+     * does reveal that the id is real -- exactly as GATE and SIGN_IN already
+     * do, and for the same unavoidable reason: a working link has to do
+     * something. What must stay indistinguishable is the FAILURES, and a wrong
+     * passphrase returns GONE along with every other refusal.
+     */
+    public const LOCKED    = 'locked';
+
     private function __construct(
         public readonly string $state,
         public readonly ?Share $share = null,
@@ -72,6 +87,12 @@ final class AccessResult
     public static function gone(): self
     {
         return new self(self::GONE);
+    }
+
+    /** Locked behind a passphrase this browser has not supplied. */
+    public static function locked(?Share $share): self
+    {
+        return new self(self::LOCKED, $share);
     }
 
     /*

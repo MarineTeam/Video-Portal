@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Portal\Controllers;
 
+use Portal\Auth\Capability;
 use Portal\Content\Video;
 use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
@@ -142,6 +143,25 @@ final class WatchController extends Controller
                 'saveAction' => '/saved',
                 'csrfField'  => '<input type="hidden" name="_token" value="'
                     . e($this->csrfToken()) . '">',
+                /*
+                 * The share panel, for somebody holding share_content on this
+                 * video — site-wide, or through a grant on its category or
+                 * series. Null for everybody else, so a theme that renders it
+                 * unconditionally still shows nothing rather than a form that
+                 * 403s.
+                 *
+                 * Asked with the video's scope rather than site-wide, because
+                 * scoping is the reason this capability exists apart from
+                 * manage_shares.
+                 */
+                'sharePanel' => $this->guard()->can(Capability::SHARE_CONTENT, 'video', $video->id)
+                    ? [
+                        'action'      => '/share/create',
+                        'videoId'     => $video->id,
+                        'maxHours'    => \Portal\Sharing\Share::MEMBER_MAX_HOURS,
+                        'minimumPass' => \Portal\Sharing\SharePassword::MINIMUM,
+                    ]
+                    : null,
                 'related' => $this->related($video),
                 'backUrl' => '/',
             ]

@@ -184,6 +184,22 @@ final class ShareRepository
             $watermark = 'default';
         }
 
+        /*
+         * The passphrase, hashed here and never held anywhere else.
+         *
+         * An unacceptable one — too short, or only whitespace — hashes to null
+         * rather than throwing, which means it creates a link with NO
+         * passphrase. That is the safe direction only because the form
+         * validates first and refuses; if this were the only check, a typo
+         * would silently produce an unprotected link. Stated so the next
+         * caller knows the validation is theirs to do.
+         */
+        $passwordHash = SharePassword::hash(
+            isset($options['passphrase']) && is_string($options['passphrase']) && $options['passphrase'] !== ''
+                ? $options['passphrase']
+                : null
+        );
+
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $expires = $now->modify("+{$hours} hours");
 
@@ -197,6 +213,7 @@ final class ShareRepository
             'video_title'      => mb_substr($video->title, 0, 200),
             'recipient_email'  => $email,
             'access_mode'      => $accessMode,
+            'password_hash'    => $passwordHash,
             'created_at'       => $now->format('Y-m-d H:i:s'),
             'expires_at'       => $expires->format('Y-m-d H:i:s'),
             'watermark_mode'   => $watermark,
@@ -286,6 +303,48 @@ final class ShareRepository
      * previous expiry is remembered so Restore can put it back rather than
      * inventing a new one.
      */
+    /**
+     * The links one person made.
+     *
+     * By created_by, which is an email rather than a user id — the same
+     * identity the rest of the sharing code keys on, and the one that survives
+     * an account being deleted and recreated.
+     *
+     * Revoked and expired links are included on purpose. A member's list is
+     * the record of what they handed out, and a link vanishing the moment it
+     * lapses is how somebody loses track of who they gave access to.
+     *
+     * @return list<Share>
+     */
+    public function createdBy(string $email, int $limit = 100): array
+    {
+        $rows = $this->db->all(
+            'SELECT * FROM {shares}
+              WHERE created_by = ?
+              ORDER BY created_at DESC
+              LIMIT ' . max(1, min(500, $limit)),
+            [Str::normalizeEmail($email)]
+        );
+
+        return array_map(static fn (array $row): Share => Share::fromRow($row), $rows);
+    }
+
+    /**
+     * How many links this person has made recently.
+     *
+     * Counted from the table rather than from a rate-limit bucket, so it
+     * cannot be reset by clearing one. The window matches
+     * Share::MEMBER_HOURLY_LIMIT.
+     */
+    public function createdSince(string $email, int $seconds): int
+    {
+        return (int) $this->db->value(
+            'SELECT COUNT(*) FROM {shares}
+              WHERE created_by = ? AND created_at > DATE_SUB(NOW(), INTERVAL ? SECOND)',
+            [Str::normalizeEmail($email), $seconds]
+        );
+    }
+
     public function revoke(string $id): bool
     {
         $share = $this->find($id);

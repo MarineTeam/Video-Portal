@@ -13,6 +13,8 @@ use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
+use Portal\Controllers\MemberShareController;
+use Portal\Controllers\PwaController;
 use Portal\Controllers\ShareController;
 use Portal\Controllers\SubscriptionController;
 use Portal\Controllers\UploadController;
@@ -90,6 +92,17 @@ final class Routes
         $router->get('/robots.txt', [FeedController::class, 'robots']);
 
         /*
+         * Installable-app plumbing. All public and all session-free: the
+         * service worker and the offline page are stored on the device and
+         * shown to whoever opens the app next, so neither may depend on who is
+         * signed in.
+         */
+        $router->get('/manifest.webmanifest', [PwaController::class, 'manifest']);
+        $router->get('/icon.svg', [PwaController::class, 'icon']);
+        $router->get('/sw.js', [PwaController::class, 'serviceWorker']);
+        $router->get('/offline', [PwaController::class, 'offline']);
+
+        /*
          * Subscribing, and getting out again.
          *
          * Open to people with no account on purpose: somebody who wants to know
@@ -138,6 +151,38 @@ final class Routes
             ['GET', 'POST'],
             '/account/password',
             [AccountController::class, 'password'],
+            ['auth.user']
+        );
+
+        /*
+         * The account area.
+         *
+         * `auth.user` throughout, matching the password form above and for the
+         * same reason: somebody waiting for approval still owns their account
+         * and still subscribed to whatever the site has been sending them.
+         *
+         * Registered AFTER /account/password so the literal path is matched
+         * first — these are distinct literals rather than a pattern, so the
+         * order is not load-bearing, but keeping the specific one first means
+         * it stays correct if either ever becomes a pattern.
+         */
+        $router->get('/account', [AccountController::class, 'index'], ['auth.user']);
+        $router->get('/account/shared-links', [AccountController::class, 'sharedLinks'], ['auth.user']);
+
+        /*
+         * Member sharing.
+         *
+         * `auth.user` here and the capability checked inside the handler
+         * against the specific video — a middleware can only ask the site-wide
+         * question, and the whole point of share_content is that it can be
+         * granted on one category.
+         */
+        $router->post('/share/create', [MemberShareController::class, 'create'], ['auth.user']);
+        $router->post('/share/revoke', [MemberShareController::class, 'revoke'], ['auth.user']);
+        $router->any(
+            ['GET', 'POST'],
+            '/account/notifications',
+            [AccountController::class, 'notifications'],
             ['auth.user']
         );
 
@@ -260,6 +305,16 @@ final class Routes
         // deliberately indistinguishable.
         $router->get('/s/{id}', [ShareController::class, 'show']);
         $router->get('/b/{id}', [ShareController::class, 'showBundle']);
+
+        /*
+         * The passphrase form.
+         *
+         * Registered before /s/{id}/request only for readability — these are
+         * distinct literal suffixes, so neither can shadow the other. Every
+         * refusal it makes returns the same 404 as an unknown link, so this
+         * route cannot be used to find out which ids are real.
+         */
+        $router->post('/s/{id}/unlock', [ShareController::class, 'unlock']);
 
         // The account-free gate's "what is your email address" form.
         $router->post('/s/{id}/request', [ShareController::class, 'requestLink'], [], 'gate.share');

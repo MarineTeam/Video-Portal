@@ -25,6 +25,20 @@ final class Capability
 
     // Sharing
     public const MANAGE_SHARES     = 'manage_shares';
+
+    /**
+     * Hand out a link to something you can already watch.
+     *
+     * Deliberately NOT manage_shares, which is the administrator's version:
+     * that one reaches every link on the site, creates them in bulk for any
+     * video, revokes anybody's, and edits expiry. This one lets a person share
+     * one video at a time and touch nothing but their own links.
+     *
+     * Scopable, which is the point of it existing separately — a group can be
+     * given sharing rights over one category without being given the sharing
+     * screen.
+     */
+    public const SHARE_CONTENT     = 'share_content';
     public const MANAGE_VIEWERS    = 'manage_viewers';
 
     // Community (phase 4, declared now so grants made today keep meaning)
@@ -74,6 +88,7 @@ final class Capability
             self::MANAGE_FILES        => 'Upload and manage file attachments',
             self::PUBLISH_CONTENT     => 'Publish and unpublish content',
             self::MANAGE_SHARES       => 'Create and revoke private share links',
+            self::SHARE_CONTENT       => 'Share a video they can watch, and revoke their own links',
             self::MANAGE_VIEWERS      => 'Approve viewers and manage viewer groups',
             self::MODERATE_COMMENTS   => 'Review and remove comments',
             self::MANAGE_USERS        => 'Create and edit user accounts',

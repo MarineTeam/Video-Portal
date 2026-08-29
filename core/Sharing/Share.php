@@ -33,6 +33,20 @@ final class Share
     public const MAX_HOURS     = 720;
 
     /**
+     * The ceiling for a link a member made, as against an administrator.
+     *
+     * Shorter on purpose. An administrator handing out a thirty-day link has
+     * the sharing screen, the audit log and a revoke button for every link on
+     * the site; a member has none of that oversight and is not the person who
+     * will remember to clean up. A week is long enough to be useful and short
+     * enough that an unnoticed link expires on its own.
+     */
+    public const MEMBER_MAX_HOURS = 168;
+
+    /** How many links one member may create in an hour. */
+    public const MEMBER_HOURLY_LIMIT = 20;
+
+    /**
      * How long a row survives past its expiry.
      *
      * Sixty days, so a link that lapsed weeks ago can still be extended or
@@ -63,6 +77,16 @@ final class Share
         public readonly int $furthestPercent = 0,
         public readonly ?DateTimeImmutable $completedAt = null,
         public readonly ?string $createdBy = null,
+
+        /**
+         * Whether a passphrase is set — NOT the hash.
+         *
+         * The model is what every listing, view and JSON response is built
+         * from, so carrying the hash here is how it eventually reaches a page.
+         * The resolver reads the column directly, which is the one place that
+         * needs it, and nothing else can leak what it never holds.
+         */
+        public readonly bool $passwordProtected = false,
     ) {
     }
 
@@ -102,6 +126,11 @@ final class Share
             furthestPercent:   (int) ($row['furthest_percent'] ?? 0),
             completedAt:       $date('completed_at'),
             createdBy:         isset($row['created_by']) && $row['created_by'] !== null ? (string) $row['created_by'] : null,
+            /*
+             * Reduced to a boolean the moment it enters the model. Whatever
+             * SELECT produced this row, the hash stops here.
+             */
+            passwordProtected: isset($row['password_hash']) && (string) $row['password_hash'] !== '',
         );
     }
 

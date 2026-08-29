@@ -131,4 +131,74 @@ final class Str
         $days = intdiv($delta, 86400);
         return sprintf('in %d day%s', $days, $days === 1 ? '' : 's');
     }
+
+    /**
+     * "3 days ago" / "Just now" / "Never" — how long since something happened.
+     *
+     * The backward-looking twin of relativeTo(), which only ever counts down to
+     * an expiry and answers "expired" for anything in the past. Both directions
+     * are wanted in different places and one function doing both would need a
+     * flag at every call site.
+     *
+     * Takes the raw database string rather than a DateTimeImmutable on purpose.
+     * The caller always has a column value that may be null, and parsing it at
+     * the call site is exactly where the null check gets forgotten — a screen
+     * printing "1 Jan 1970" for an account nobody has ever seen is worse than
+     * one that says so.
+     *
+     * Local time, not UTC: last_seen_at is written with date() and MySQL NOW(),
+     * both of which are the server's configured zone, so it has to be compared
+     * against the same clock.
+     */
+    public static function since(?string $when, ?int $now = null): string
+    {
+        if ($when === null || trim($when) === '') {
+            return 'Never';
+        }
+
+        $then = strtotime($when);
+
+        // MySQL's zero date, and anything unreadable. Both mean the same thing
+        // to a reader and neither is worth its own wording.
+        if ($then === false || $then <= 0) {
+            return 'Never';
+        }
+
+        $delta = ($now ?? time()) - $then;
+
+        /*
+         * A future stamp reads as "Just now" rather than as a negative count.
+         * Shared hosts have their clocks corrected, and this project has
+         * already been bitten once by skew between two machines; a People
+         * screen saying "-3 minutes ago" would send somebody hunting for a bug
+         * in the wrong place.
+         */
+        if ($delta < 60) {
+            return 'Just now';
+        }
+        if ($delta < 3600) {
+            $mins = intdiv($delta, 60);
+            return sprintf('%d minute%s ago', $mins, $mins === 1 ? '' : 's');
+        }
+        if ($delta < 86400) {
+            $hours = intdiv($delta, 3600);
+            return sprintf('%d hour%s ago', $hours, $hours === 1 ? '' : 's');
+        }
+
+        $days = intdiv($delta, 86400);
+
+        /*
+         * Past two months, a date instead of a count.
+         *
+         * "412 days ago" is arithmetic the reader has to do before it means
+         * anything, and the question being asked of an old account — has this
+         * person been gone since the spring? — is answered directly by a date
+         * and only indirectly by a number.
+         */
+        if ($days >= 60) {
+            return date('j M Y', $then);
+        }
+
+        return sprintf('%d day%s ago', $days, $days === 1 ? '' : 's');
+    }
 }
