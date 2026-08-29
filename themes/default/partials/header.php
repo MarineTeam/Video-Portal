@@ -65,14 +65,16 @@ $allowIndexing ??= false;
  *
  * theme-color paints the browser and task-switcher chrome to match the site.
  * The apple- tags are the iOS equivalent of the manifest, which Safari still
- * only partly reads — worth setting because they cost nothing, but iOS will
- * use a screenshot rather than the SVG icon. That limitation is real and is
- * recorded rather than papered over.
+ * only partly reads.
+ *
+ * apple-touch-icon points at the PNG, not the SVG. iOS ignores SVG here and
+ * would fall back to a screenshot of the page — which is what it did until the
+ * raster icons existed.
  */
 ?>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
-<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png">
 <meta name="theme-color" content="<?= e($themeColor ?? '#0f172a') ?>">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">

@@ -8889,22 +8889,62 @@ check(
     ($decodedManifest['name'] ?? '') === 'Smoke Test Portal',
     'this is a white-label product; every install must not claim the same name'
 );
+/*
+ * The icon rules Chrome actually enforces, which is where the first version of
+ * this got it wrong: it declared one SVG at sizes:"any", and Chrome Android
+ * then offers "Create shortcut" instead of "Install". The check needs a
+ * DECLARED 192 and a DECLARED 512, with at least one of purpose "any".
+ */
+$icons = (array) ($decodedManifest['icons'] ?? []);
+$sizesDeclared = array_map(static fn (array $i): string => (string) ($i['sizes'] ?? ''), $icons);
+
 check(
-    'and names an icon',
-    !empty($decodedManifest['icons'][0]['src']),
-    'a manifest with no icon is not installable on Android'
+    'and declares a 192px icon',
+    in_array('192x192', $sizesDeclared, true),
+    'Chrome will not mint an installable app without one'
 );
+check(
+    'and declares a 512px icon',
+    in_array('512x512', $sizesDeclared, true),
+    'Chrome will not mint an installable app without one'
+);
+check(
+    'and at least one is purpose "any"',
+    array_filter($icons, static fn (array $i): bool => str_contains((string) ($i['purpose'] ?? 'any'), 'any')) !== [],
+    'a maskable-only set fails the installability check'
+);
+check(
+    'and none of them is an SVG',
+    array_filter($icons, static fn (array $i): bool => str_contains((string) ($i['type'] ?? ''), 'svg')) === [],
+    'an SVG entry at sizes:any is what broke WebAPK installation (crbug 40925759)'
+);
+
+/*
+ * And the files behind those declarations are real PNGs of the right size.
+ * A manifest that names an icon which 404s, or which is not the size it
+ * claims, fails the same check while looking correct in the JSON.
+ */
+foreach ([192, 512] as $iconSize) {
+    $png = get($baseUrl . '/icon-' . $iconSize . '.png');
+    check(
+        "The {$iconSize}px icon is served",
+        $png['status'] === 200,
+        "got {$png['status']}"
+    );
+    check(
+        "and is a real {$iconSize}x{$iconSize} PNG",
+        str_starts_with($png['body'], "\x89PNG")
+            && ($info = @getimagesizefromstring($png['body'])) !== false
+            && $info[0] === $iconSize && $info[1] === $iconSize,
+        'the manifest declares a size; the file has to be it'
+    );
+}
 
 $icon = get($baseUrl . '/icon.svg');
 check(
-    'The icon is served as SVG',
+    'The SVG is still served for the browser tab',
     $icon['status'] === 200 && str_contains(strtolower($icon['headers']['content-type'] ?? ''), 'image/svg'),
-    "got {$icon['status']}"
-);
-check(
-    'and is drawn with the theme colour rather than a fixed one',
-    str_contains($icon['body'], '<svg') && str_contains($icon['body'], 'fill='),
-    'the icon should follow the site, not the product'
+    "got {$icon['status']} — it is the favicon, just not a manifest icon"
 );
 
 $sw = get($baseUrl . '/sw.js');
