@@ -47,28 +47,38 @@ final class PwaController extends Controller
             'display'    => 'standalone',
             'background_color' => $this->colour('bg', '#0f172a'),
             'theme_color'      => $this->colour('accent', '#38bdf8'),
+            /*
+             * PNG at 192 and 512, and DELIBERATELY NO SVG.
+             *
+             * The first version of this shipped a single SVG at sizes:"any",
+             * on the assumption that Chrome would use it and only iOS would
+             * fall back. That was wrong in the way that matters: Chrome
+             * Android then offers "Create shortcut" instead of "Install",
+             * because its installability check looks for a declared 192 and a
+             * declared 512 — and an SVG at "any" satisfies neither. There is a
+             * Chromium bug for exactly this shape (issue 40925759), where
+             * removing sizes:"any" from an SVG entry is what makes a site
+             * installable again.
+             *
+             * So these are raster files, served straight off disk by the web
+             * server rather than generated: gd is only RECOMMENDED on these
+             * hosts, and the one asset that decides whether the app can be
+             * installed must not depend on an optional extension, or on PHP
+             * running at all.
+             *
+             * The cost is that every install ships the same mark rather than
+             * one in the site's own accent. Replacing public/icon-192.png and
+             * public/icon-512.png changes it; a customizer upload would be the
+             * better answer and is not built.
+             *
+             * Both purposes are declared. A maskable-only set fails the check
+             * — Chrome wants at least one `any` — and an `any`-only set gets
+             * letterboxed inside whatever shape the launcher uses.
+             */
             'icons' => [
-                [
-                    'src'   => '/icon.svg',
-                    /*
-                     * "any" is what an SVG declares: it has no fixed pixel
-                     * size, which is the reason for using one here — a PNG set
-                     * would mean generating images, and gd is only RECOMMENDED
-                     * on these hosts, not required.
-                     *
-                     * The cost is stated rather than hidden: iOS ignores SVG
-                     * for a home-screen icon and will use a screenshot of the
-                     * page instead. Android and desktop Chrome use this.
-                     */
-                    'sizes' => 'any',
-                    'type'  => 'image/svg+xml',
-                    /*
-                     * `maskable` lets a launcher crop this to whatever shape it
-                     * uses without clipping the mark, which the icon is drawn
-                     * with padding to allow.
-                     */
-                    'purpose' => 'any maskable',
-                ],
+                ['src' => '/icon-192.png', 'sizes' => '192x192', 'type' => 'image/png', 'purpose' => 'any'],
+                ['src' => '/icon-512.png', 'sizes' => '512x512', 'type' => 'image/png', 'purpose' => 'any'],
+                ['src' => '/icon-512.png', 'sizes' => '512x512', 'type' => 'image/png', 'purpose' => 'maskable'],
             ],
         ];
 
