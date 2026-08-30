@@ -5047,6 +5047,33 @@ check(
     'a contribution that drops the core half is the collision this move exists to prevent'
 );
 
+/*
+ * A worker must never be cached by anything in between.
+ *
+ * Browsers largely bypass their own HTTP cache for a worker script, so a
+ * cacheable one looks fine in testing — but a CDN does not, and a stale worker
+ * is the one file a new deploy cannot replace. This shipped as
+ * `public, max-age=300` and a live host was found serving a worker that did
+ * not match its own source.
+ */
+check(
+    'and it is served uncacheable',
+    str_contains(strtolower($worker['headers']['cache-control'] ?? ''), 'no-cache'),
+    'a CDN caching the worker leaves a copy no deploy can replace'
+);
+
+/*
+ * And the admin screen says whether the worker carries the push handlers,
+ * because a push delivered to a worker with no push listener does nothing at
+ * all — no notification, no error, no record.
+ */
+$pushWorkerState = getWithJar($baseUrl . '/admin/push', $jar);
+check(
+    'The push screen reports whether the worker carries its handlers',
+    str_contains($pushWorkerState['body'], 'includes the push handlers'),
+    'the most silent failure in this plugin had no indicator anywhere'
+);
+
 $pushAdmin = getWithJar($baseUrl . '/admin/push', $jar);
 check('The push settings screen renders', $pushAdmin['status'] === 200, "got {$pushAdmin['status']}");
 

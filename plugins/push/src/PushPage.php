@@ -246,6 +246,34 @@ final class PushPage extends PluginPage
               . 'service worker it was bound to, and the push service goes on accepting messages '
               . 'for it. Forget them all and subscribe once more.</p>';
 
+        /*
+         * Does the worker this site would serve actually carry the push
+         * handlers?
+         *
+         * Asked of the filter directly, server-side, because the alternative is
+         * asking somebody to open /sw.js in a browser tab and read JavaScript —
+         * which is what it took to find this, and which cannot distinguish "the
+         * server is not producing it" from "something between the server and
+         * the browser is serving an old copy".
+         *
+         * A push arrives at a worker with no push listener and does nothing at
+         * all: no notification, no error, no record. It is the most silent
+         * failure in this plugin and it had no indicator anywhere.
+         */
+        $workerJs = (string) apply_filters('service_worker', '');
+        $handlerPresent = str_contains($workerJs, "addEventListener('push'");
+
+        $workerState = $handlerPresent
+            ? '<p class="pill ok">The service worker this site serves includes the push handlers.</p>'
+              . '<p class="muted small">If <code>/sw.js</code> in a browser does NOT contain '
+              . '<code>addEventListener(\'push\'</code>, the copy reaching the browser is stale — '
+              . 'a CDN or proxy is caching it. The worker is served with no-cache for exactly that '
+              . 'reason; purge the cache for <code>/sw.js</code> and reload twice.</p>'
+            : '<p class="pill bad">The service worker this site serves does NOT include the push '
+              . 'handlers.</p><p class="muted small">A push delivered to a worker with no push '
+              . 'listener does nothing at all — no notification, no error. Nothing can arrive '
+              . 'until this says otherwise.</p>';
+
         $keyState = $publicKey === ''
             ? '<p class="pill bad">No keys yet. Nothing can be sent until they are generated.</p>'
             : '<p class="pill ok">Keys are set.</p><p class="muted small">Public key: <code>'
@@ -265,6 +293,9 @@ final class PushPage extends PluginPage
            refuse to register a service worker on an insecure origin, so this does nothing on a site
            served over http. Members-only videos are never pushed: a push service is somebody else's
            server, and the title of a members-only video is not theirs to hold.</p>
+
+        <h2>The service worker</h2>
+        {$workerState}
 
         <h2>Keys</h2>
         {$keyState}
