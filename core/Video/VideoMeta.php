@@ -28,6 +28,25 @@ final class VideoMeta
         public readonly ?int $height = null,
         public readonly ?\DateTimeImmutable $createdAt = null,
         public readonly int $views = 0,
+        /**
+         * Whether the provider generated a downloadable MP4 at all.
+         *
+         * bunny.net only makes one when MP4 Fallback is switched on for the
+         * library, and it does not backfill: a video uploaded before that
+         * setting changed never gets one. Carried so a caller can say which of
+         * those two it is rather than answering "no file".
+         */
+        public readonly bool $hasMp4Fallback = false,
+        /**
+         * The rendition heights that actually exist, largest last.
+         *
+         * Read rather than assumed. Building `play_720p.mp4` from a configured
+         * default produces a URL that 404s on any library capped lower, and the
+         * 404 is indistinguishable from a rejected token or a missing video.
+         *
+         * @var list<int>
+         */
+        public readonly array $resolutions = [],
     ) {
     }
 

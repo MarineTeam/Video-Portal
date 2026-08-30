@@ -13,6 +13,7 @@ use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Support\Feed;
+use Portal\Video\BunnyStreamProvider;
 use Portal\Video\VideoProvider;
 use Throwable;
 
@@ -238,7 +239,28 @@ final class FeedController extends Controller
         try {
             /** @var VideoProvider $provider */
             $provider = $this->container->get(VideoProvider::class);
-            $url = $provider->downloadUrl($video->providerId, self::DOWNLOAD_TTL);
+
+            /*
+             * Ask for the reason as well as the URL, where the provider can
+             * give one. "Downloads are not configured for this site" was the
+             * answer to four different problems — the library setting being
+             * off, this video predating it, no rendition inside the height
+             * cap, and no pull zone — which are four different fixes, and the
+             * message named none of them.
+             */
+            if ($provider instanceof BunnyStreamProvider) {
+                $source = $provider->mp4Source($video->providerId, self::DOWNLOAD_TTL);
+
+                if (!$source->ok()) {
+                    throw HttpException::notFound($source->explain());
+                }
+
+                $url = $source->url;
+            } else {
+                $url = $provider->downloadUrl($video->providerId, self::DOWNLOAD_TTL);
+            }
+        } catch (HttpException $e) {
+            throw $e;
         } catch (Throwable $e) {
             throw HttpException::upstream('The video service is not responding: ' . $e->getMessage());
         }

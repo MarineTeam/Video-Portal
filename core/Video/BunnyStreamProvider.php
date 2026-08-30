@@ -259,7 +259,42 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
             height:         isset($item['height']) ? (int) $item['height'] : null,
             createdAt:      $created,
             views:          (int) ($item['views'] ?? 0),
+            hasMp4Fallback: (bool) ($item['hasMP4Fallback'] ?? false),
+            resolutions:    self::parseResolutions($item['availableResolutions'] ?? null),
         );
+    }
+
+    /**
+     * "360p,720p" into [360, 720].
+     *
+     * bunny.net sends this as a comma-separated string, and an empty or absent
+     * value is a real answer meaning "nothing encoded yet" — a video still
+     * processing has no renditions, which is different from a library with the
+     * setting switched off.
+     *
+     * Sorted ascending so a caller picking "the best at or under a cap" can
+     * walk it backwards without sorting again.
+     *
+     * @return list<int>
+     */
+    private static function parseResolutions(mixed $raw): array
+    {
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $out = [];
+        foreach (explode(',', $raw) as $part) {
+            $height = (int) filter_var($part, FILTER_SANITIZE_NUMBER_INT);
+            if ($height > 0) {
+                $out[$height] = true;
+            }
+        }
+
+        $heights = array_keys($out);
+        sort($heights);
+
+        return $heights;
     }
 
     // ------------------------------------------------------------------ URLs
@@ -306,26 +341,121 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
      * library that stops at 720 and every enclosure is a 404 — which a podcast
      * client reports as "episode unavailable" and nothing else notices.
      */
+    /**
+     * The interface's answer: a URL or nothing.
+     *
+     * Kept as it was so every existing caller is unaffected. Anything that
+     * needs to explain a failure should call mp4Source() instead, which is the
+     * same work with the reason attached.
+     */
     public function downloadUrl(string $providerId, int $ttlSeconds = 3600): ?string
     {
+        return $this->mp4Source($providerId, $ttlSeconds)->url;
+    }
+
+    /**
+     * The best MP4 rendition at or under the configured height, or why not.
+     *
+     * ASKS bunny.net what exists rather than assuming. The previous version
+     * built `play_{height}p.mp4` from a setting defaulting to 720 and signed it
+     * sight unseen — which works on a library that happens to encode 720p, and
+     * on any other produces a URL that 404s. That 404 arrives at the CDN, so it
+     * is indistinguishable from a rejected token, a missing video, or a library
+     * with MP4 Fallback switched off; and this is the URL a podcast client
+     * fetches and an offline download would save, so it is the one most likely
+     * to be reported as broken by somebody who cannot read a log.
+     *
+     * One extra API call per download. That is a real cost and it buys the
+     * difference between "no file" and four different fixable causes.
+     */
+    public function mp4Source(string $providerId, int $ttlSeconds = 3600): Mp4Source
+    {
         if (!$this->thumbnailsConfigured()) {
-            return null;
+            return Mp4Source::missing(Mp4Source::NOT_CONFIGURED);
         }
 
-        $height = (int) trim($this->credentials['download_height'] ?? '');
-        if ($height <= 0) {
-            $height = 720;
+        $cap = (int) trim($this->credentials['download_height'] ?? '');
+        if ($cap <= 0) {
+            $cap = 720;
         }
 
+        try {
+            $meta = $this->getVideo($providerId);
+        } catch (Throwable $e) {
+            /*
+             * COULD NOT ASK, which is not the same as "there is no file" — and
+             * treating it as one is a regression this very nearly shipped.
+             *
+             * The previous implementation signed a URL without contacting the
+             * provider at all, so it kept working when the API did not. Making
+             * the lookup mandatory would mean a brief API outage turning every
+             * podcast enclosure into a 404 for files that exist and are
+             * perfectly reachable on the CDN — trading a rare wrong answer for
+             * a common unavailable one.
+             *
+             * So an unreachable API falls back to exactly the old behaviour:
+             * sign the configured height and let the CDN be the judge. No
+             * worse than before, and better whenever the provider can be
+             * asked.
+             */
+            error_log('Could not ask the video service which renditions exist: ' . $e->getMessage());
+
+            return $this->signMp4($providerId, $cap, $ttlSeconds);
+        }
+
+        // Asked, and the answer was definitive: the provider has no such video.
+        if ($meta === null) {
+            return Mp4Source::missing(Mp4Source::NOT_AT_PROVIDER);
+        }
+
+        if (!$meta->hasMp4Fallback) {
+            return Mp4Source::missing(Mp4Source::NO_FALLBACK);
+        }
+
+        /*
+         * The largest rendition that is still within the cap. Walked backwards
+         * because parseResolutions() sorts ascending.
+         *
+         * An empty list with the flag set means the video is still encoding —
+         * reported as no rendition rather than as a missing setting, since the
+         * setting is plainly on.
+         */
+        $chosen = 0;
+        foreach (array_reverse($meta->resolutions) as $height) {
+            if ($height <= $cap) {
+                $chosen = $height;
+                break;
+            }
+        }
+
+        if ($chosen === 0) {
+            return Mp4Source::missing(Mp4Source::NO_RENDITION);
+        }
+
+        return $this->signMp4($providerId, $chosen, $ttlSeconds);
+    }
+
+    /**
+     * Sign one rendition's URL.
+     *
+     * Shared by the resolved path and the could-not-ask fallback, so the two
+     * cannot drift into signing differently — which would be a 403 that looks
+     * exactly like the 404s this class exists to tell apart.
+     */
+    private function signMp4(string $providerId, int $height, int $ttlSeconds): Mp4Source
+    {
         $path = '/' . trim($providerId) . '/play_' . $height . 'p.mp4';
         $expires = time() + max(60, $ttlSeconds);
 
-        return sprintf(
-            'https://%s%s?token=%s&expires=%d',
-            trim($this->cdnHostname()),
-            $path,
-            BunnySigner::cdnToken($this->cdnTokenKey(), $path, $expires),
-            $expires
+        return Mp4Source::found(
+            sprintf(
+                'https://%s%s?token=%s&expires=%d',
+                trim($this->cdnHostname()),
+                $path,
+                BunnySigner::cdnToken($this->cdnTokenKey(), $path, $expires),
+                $expires
+            ),
+            $height
         );
     }
 
