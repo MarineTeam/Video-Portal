@@ -643,3 +643,11 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 @media (max-width: 30rem) {
   .push-subscribe span { display: none; }
 }
+
+/* Subscribed. A filled state rather than a hidden control: the button used to
+   disappear on success, which left no way to tell "on" from "broken" and no
+   way to turn it off again. */
+.push-subscribe[data-subscribed="1"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
