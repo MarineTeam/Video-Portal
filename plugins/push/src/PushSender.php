@@ -71,10 +71,25 @@ final class PushSender
      * @param  array<string, mixed> $subscription
      * @return string 'sent', 'failed', or 'dropped'
      */
+    /**
+     * What the push service said about the most recent send.
+     *
+     * Kept so a caller can SHOW it. Until this existed the only record of a
+     * refusal was error_log, which on the shared hosting this ships to is a
+     * file nobody can read — the same defect the migration banner and the
+     * provider summary were built to fix, in a third place.
+     *
+     * Deliberately not stored: it describes one attempt, and the attempt that
+     * matters is the one somebody just made by pressing a button.
+     */
+    public ?string $lastOutcome = null;
+
     public function send(array $subscription, string $body): string
     {
         $id = (int) $subscription['id'];
         $endpoint = (string) $subscription['endpoint'];
+        $host = (string) (parse_url($endpoint, PHP_URL_HOST) ?: 'the push service');
+        $this->lastOutcome = null;
 
         try {
             $encrypted = PushCrypto::encrypt(
@@ -109,6 +124,7 @@ final class PushSender
             );
         } catch (Throwable $e) {
             error_log('Push: could not send to a subscription: ' . $e->getMessage());
+            $this->lastOutcome = 'The request to ' . $host . ' failed: ' . $e->getMessage();
 
             return $this->subscriptions->recordFailure($id) ? 'dropped' : 'failed';
         }
@@ -122,6 +138,8 @@ final class PushSender
          */
         if ($response->status === 404 || $response->status === 410) {
             $this->subscriptions->drop($id);
+            $this->lastOutcome = $host . ' says this subscription no longer exists (' . $response->status
+                . '). It has been removed — subscribe again from the site.';
 
             return 'dropped';
         }
@@ -129,14 +147,33 @@ final class PushSender
         if ($response->status >= 200 && $response->status < 300) {
             $this->subscriptions->recordSuccess($id);
 
+            /*
+             * ACCEPTED, which is not the same as delivered, and the difference
+             * is the whole reason this string exists.
+             *
+             * A push service returns 201 once it has taken custody of the
+             * bytes. It cannot tell whether the browser could DECRYPT them —
+             * and a payload encrypted wrongly is discarded by the browser
+             * before the service worker's push event ever fires, silently. So
+             * "it said 201 and nothing appeared" is a specific, diagnosable
+             * state rather than a mystery, and the message says which half
+             * succeeded.
+             */
+            $this->lastOutcome = $host . ' accepted it (' . $response->status . ').';
+
             return 'sent';
         }
 
-        error_log(sprintf(
-            'Push: %s answered %d for a subscription.',
-            (string) (parse_url($endpoint, PHP_URL_HOST) ?: 'the push service'),
-            $response->status
-        ));
+        error_log(sprintf('Push: %s answered %d for a subscription.', $host, $response->status));
+
+        /*
+         * The body, trimmed. Push services put the actual reason in it — an
+         * expired VAPID token, a bad subject, a payload too large — and
+         * without it a bare status code sends somebody guessing.
+         */
+        $detail = trim((string) $response->body);
+        $this->lastOutcome = $host . ' refused it (' . $response->status . ')'
+            . ($detail === '' ? '.' : ': ' . mb_substr($detail, 0, 300));
 
         return $this->subscriptions->recordFailure($id) ? 'dropped' : 'failed';
     }

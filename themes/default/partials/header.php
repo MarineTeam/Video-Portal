@@ -72,7 +72,23 @@ $allowIndexing ??= false;
  * raster icons existed.
  */
 ?>
-<link rel="manifest" href="/manifest.webmanifest">
+<?php
+/*
+ * crossorigin="use-credentials" on a SAME-ORIGIN manifest, which looks wrong
+ * and is not.
+ *
+ * Chrome fetches the manifest as a subresource with credentials OMITTED by
+ * default. Anything in front of the site that decides based on a cookie — a
+ * Cloudflare challenge, a WAF, an auth layer — therefore sees that fetch as an
+ * anonymous request and can answer it with an HTML challenge page. Chrome then
+ * fails to parse the manifest and silently degrades to offering a bookmark
+ * shortcut rather than an install, with nothing on the page saying why.
+ *
+ * This attribute makes the fetch carry cookies, so it is judged the same way
+ * the page around it was. Harmless when nothing is in front of the site.
+ */
+?>
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
 <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png">
 <meta name="theme-color" content="<?= e($themeColor ?? '#0f172a') ?>">
@@ -108,6 +124,21 @@ do_action('head');
         <a href="<?= e($item['href']) ?>"
            <?= $item['href'] === $currentPath ? 'aria-current="page"' : '' ?>><?= e($item['label']) ?></a>
       <?php endforeach ?>
+
+      <?php
+      /*
+       * Where a plugin puts a control rather than a link.
+       *
+       * `site_nav` can already add an anchor, which is no use to anything that
+       * needs a button and a script — the push subscribe control spent its
+       * first release as a floating box in the footer because there was
+       * nowhere else for it to go, and people did not find it.
+       *
+       * Before the account and sign-out links, so plugin controls sit together
+       * and the session links stay where people expect them.
+       */
+      do_action('header_actions');
+      ?>
 
       <?php if ($currentUser !== null): ?>
         <?php if (!empty($currentUser['isAdmin'])): ?>

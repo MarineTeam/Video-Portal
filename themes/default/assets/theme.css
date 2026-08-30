@@ -614,3 +614,32 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   border-left: 3px solid var(--accent);
   padding-left: .75rem;
 }
+
+/* ------------------------------------------------- push subscribe (header) */
+
+/*
+ * A control in the nav rather than a floating box in the footer, which is
+ * where this lived and where people did not find it. Sized to sit level with
+ * the nav links rather than as a full button.
+ */
+.push-subscribe {
+  display: inline-flex;
+  align-items: center;
+  gap: .375rem;
+  padding: .25rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: .875rem;
+  cursor: pointer;
+}
+.push-subscribe:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.push-subscribe[hidden] { display: none; }
+.push-subscribe:disabled { opacity: .6; cursor: default; }
+
+/* The word goes at wider than a phone; the bell alone is the affordance. */
+@media (max-width: 30rem) {
+  .push-subscribe span { display: none; }
+}
