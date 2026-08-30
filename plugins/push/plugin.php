@@ -210,22 +210,44 @@ $plugin->addAction('header_actions', static function () use ($plugin, $configure
       if (!button || !('serviceWorker' in navigator) || !('PushManager' in window)) { return; }
       if (Notification.permission === 'denied') { return; }
 
-      /*
-       * Shown immediately. Whether this browser COULD subscribe is answerable
-       * from the three checks above, and none of them needs the worker.
-       */
-      button.hidden = false;
+      var label = button.querySelector('span');
 
       /*
-       * And hidden again if it turns out they are already subscribed. That
-       * answer does need the worker, so it arrives late — which is fine in
-       * this direction: the worst case is the button being offered for a
-       * second to somebody who does not need it, rather than never offered to
-       * somebody who does.
+       * A TOGGLE, not a button that disappears.
+       *
+       * It used to hide itself once this browser was subscribed, which was
+       * wrong in three ways at once: there was no way to tell "subscribed"
+       * from "broken", no way to turn notifications off again, and
+       * /push/unsubscribe — which has existed since this plugin shipped — had
+       * no caller anywhere. A control that vanishes when it succeeds is a
+       * control nobody can use twice.
        */
+      function show(on) {
+        button.hidden = false;
+        button.disabled = false;
+        button.dataset.subscribed = on ? '1' : '0';
+        label.textContent = on ? 'Notifications on' : 'Notify me';
+        var text = on
+          ? 'Notifications are on for this browser. Turn them off.'
+          : 'Notify me about new videos';
+        button.title = text;
+        button.setAttribute('aria-label', text);
+        button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+
+      /*
+       * Shown immediately in the OFF state. Whether this browser could
+       * subscribe at all is answerable from the three checks above, none of
+       * which needs the worker — and waiting for the worker is what made this
+       * appear late or not at all.
+       */
+      show(false);
+
+      // The real state arrives once the worker is ready. Per browser, which is
+      // the point: subscribing on a phone says nothing about this laptop.
       navigator.serviceWorker.ready.then(function (registration) {
         return registration.pushManager.getSubscription().then(function (existing) {
-          if (existing) { button.hidden = true; }
+          show(!!existing);
         });
       }).catch(function () {});
 
@@ -252,24 +274,46 @@ $plugin->addAction('header_actions', static function () use ($plugin, $configure
        * where a failure during page load could only be swallowed.
        */
       button.addEventListener('click', function () {
+        var wasOn = button.dataset.subscribed === '1';
         button.disabled = true;
 
         navigator.serviceWorker.ready.then(function (registration) {
-          return registration.pushManager.subscribe({
-            // Required by every browser: a push that shows no notification is
-            // not allowed, and declaring it up front is how they enforce it.
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(KEY)
+          return registration.pushManager.getSubscription().then(function (existing) {
+            if (wasOn && existing) {
+              /*
+               * Off. The browser is told first and the server second: a
+               * subscription the browser has dropped is one no push will ever
+               * be delivered to, so leaving the row behind would have the site
+               * sending into nothing. The endpoint has to be read BEFORE
+               * unsubscribing, because it is gone afterwards.
+               */
+              var endpoint = existing.endpoint;
+
+              return existing.unsubscribe().then(function () {
+                return fetch('/push/unsubscribe', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ endpoint: endpoint })
+                });
+              }).then(function () { show(false); });
+            }
+
+            return registration.pushManager.subscribe({
+              // Required by every browser: a push that shows no notification is
+              // not allowed, and declaring it up front is how they enforce it.
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(KEY)
+            }).then(function (subscription) {
+              return fetch('/push/subscribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(subscription)
+              }).then(function (response) {
+                if (!response || !response.ok) { throw new Error('not stored'); }
+                show(true);
+              });
+            });
           });
-        }).then(function (subscription) {
-          return fetch('/push/subscribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(subscription)
-          });
-        }).then(function (response) {
-          if (!response || !response.ok) { throw new Error('not stored'); }
-          button.hidden = true;
         }).catch(function () {
           /*
            * Say so, rather than quietly re-enabling. Somebody who has just
@@ -277,8 +321,8 @@ $plugin->addAction('header_actions', static function () use ($plugin, $configure
            * whether it worked, and the commonest outcomes here — the site is
            * on http, or the browser refused — are ones they can act on.
            */
-          button.disabled = false;
-          button.querySelector('span').textContent = 'Could not subscribe';
+          show(wasOn);
+          label.textContent = wasOn ? 'Could not turn off' : 'Could not subscribe';
         });
       });
     })();

@@ -5110,6 +5110,25 @@ check(
     'a bare bell glyph is not a label'
 );
 
+/*
+ * A toggle rather than a control that disappears on success.
+ *
+ * Hiding it once subscribed left no way to tell "on" from "broken", no way to
+ * turn notifications off, and /push/unsubscribe — shipped with the plugin —
+ * with no caller anywhere in the product.
+ */
+check(
+    'and it can turn notifications off again',
+    str_contains($pushHome['body'], '/push/unsubscribe'),
+    'the endpoint has existed since the plugin shipped and nothing ever called it'
+);
+check(
+    'and it reports its state rather than vanishing',
+    str_contains($pushHome['body'], 'aria-pressed')
+        && str_contains($pushHome['body'], 'Notifications on'),
+    'a control that disappears when it succeeds cannot be used twice'
+);
+
 $db->execute(
     'UPDATE {plugins} SET settings = ? WHERE slug = ?',
     [$pushSettingsBefore, 'push']
