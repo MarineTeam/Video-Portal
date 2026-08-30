@@ -141,8 +141,21 @@ final class PwaController extends Controller
 
         return Response::text(ServiceWorker::script($extra))
             ->header('Content-Type', 'application/javascript; charset=utf-8')
-            // Short, because this is how a fix to the worker reaches anybody.
-            ->header('Cache-Control', 'public, max-age=300')
+            /*
+             * NEVER CACHED, by anything.
+             *
+             * `public, max-age=300` was wrong, and wrong in a way that hides
+             * itself: browsers largely bypass their own HTTP cache for a worker
+             * script, so it looks fine in testing — but a CDN in front of the
+             * site does not, and Cloudflare caches .js by extension. A stale
+             * worker then keeps running with no way to replace it, and the
+             * symptom is a site whose worker does not match its own source.
+             *
+             * A service worker is the one file where a stale copy cannot be
+             * fixed by shipping a new one, so it is the one file that must not
+             * be cached at all.
+             */
+            ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
             /*
              * Without this a worker served from /sw.js could only control
              * /sw.js. Getting it wrong produces a worker that registers
