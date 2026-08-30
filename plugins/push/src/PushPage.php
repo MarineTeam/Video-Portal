@@ -66,6 +66,42 @@ final class PushPage extends PluginPage
             return $this->sendTest($request);
         }
 
+        /*
+         * Forget one of your own subscriptions.
+         *
+         * The state this exists for: a browser subscribes, the service worker
+         * it was bound to is later replaced, and the push service goes on
+         * accepting messages for an endpoint that has no registration left to
+         * deliver to. That answers 201 and delivers nothing, which is
+         * indistinguishable from every other silent failure — and until this
+         * button there was no way to clear the dead row and start again.
+         *
+         * Scoped to the signed-in user's own rows. The id comes from a form and
+         * names somebody else's subscription just as well as your own.
+         */
+        if ($action === 'forget') {
+            $user = $this->plugin->user();
+            $id = (int) ($request->input('id') ?? 0);
+
+            if ($user === null) {
+                return $this->back($request, 'Sign in first.', 'error');
+            }
+
+            $repository = new PushRepository($this->plugin->db());
+            $mine = array_filter(
+                $repository->forUser($user->id),
+                static fn (array $row): bool => (int) $row['id'] === $id
+            );
+
+            if ($mine === []) {
+                return $this->back($request, 'That subscription is not one of yours.', 'error');
+            }
+
+            $repository->drop($id);
+
+            return $this->back($request, 'Forgotten. Subscribe again from the bell in the header.');
+        }
+
         return $this->back($request, 'Nothing to do.', 'error');
     }
 
@@ -164,7 +200,51 @@ final class PushPage extends PluginPage
 
         $publicKey = (string) $this->plugin->setting('public_key', '');
         $subject = e((string) $this->plugin->setting('subject', ''));
-        $subscribers = (new PushRepository($this->plugin->db()))->count();
+        $repository = new PushRepository($this->plugin->db());
+        $subscribers = $repository->count();
+        $mine = $this->plugin->user() === null ? [] : $repository->forUser($this->plugin->user()->id);
+
+        /*
+         * This browser's own subscriptions, listed rather than counted.
+         *
+         * A count cannot show the state that actually goes wrong: TWO rows,
+         * one of them bound to a service worker that no longer exists. The
+         * push service accepts messages for a dead endpoint and delivers
+         * nothing, so a test reports success and nothing arrives — and with
+         * only a number on the screen there is no way to see the stale row,
+         * let alone remove it.
+         */
+        $mineRows = '';
+        foreach ($mine as $row) {
+            $host = (string) (parse_url((string) $row['endpoint'], PHP_URL_HOST) ?: 'unknown');
+            $created = \Portal\Support\Str::since((string) ($row['created_at'] ?? ''));
+            $lastSent = ($row['last_sent_at'] ?? null) === null
+                ? 'never sent to'
+                : 'last sent ' . \Portal\Support\Str::since((string) $row['last_sent_at']);
+            $failures = (int) ($row['failure_count'] ?? 0);
+
+            $mineRows .= sprintf(
+                '<tr><td>%s</td><td class="muted small">added %s · %s%s</td>
+                 <td class="right"><form method="post" class="inline">%s
+                 <input type="hidden" name="id" value="%d">
+                 <button class="btn tiny danger" name="action" value="forget">Forget</button>
+                 </form></td></tr>',
+                e($host),
+                e($created),
+                e($lastSent),
+                $failures > 0 ? ' · ' . $failures . ' failure(s)' : '',
+                $token,
+                (int) $row['id']
+            );
+        }
+
+        $mineTable = $mineRows === ''
+            ? '<p class="muted">This browser is not subscribed. Use the bell in the site header.</p>'
+            : '<table><tbody>' . $mineRows . '</tbody></table>'
+              . '<p class="muted small">More than one row here is usually the problem when a test '
+              . 'says it was accepted and nothing arrives: an old subscription can outlive the '
+              . 'service worker it was bound to, and the push service goes on accepting messages '
+              . 'for it. Forget them all and subscribe once more.</p>';
 
         $keyState = $publicKey === ''
             ? '<p class="pill bad">No keys yet. Nothing can be sent until they are generated.</p>'
@@ -208,6 +288,9 @@ final class PushPage extends PluginPage
              own address is used.</p>
           <button class="btn" name="action" value="subject">Save</button>
         </form>
+
+        <h2>Yours</h2>
+        {$mineTable}
 
         <h2>Subscribers</h2>
         <p class="muted">{$subscribers} browser(s) subscribed.</p>
