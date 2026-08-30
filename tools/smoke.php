@@ -5121,6 +5121,26 @@ check(
 );
 
 /*
+ * This browser's own subscriptions, listed rather than counted.
+ *
+ * A bare count cannot show the state that actually goes wrong on a live host:
+ * two rows, one bound to a service worker that no longer exists. The push
+ * service accepts messages for the dead one and delivers nothing, so a test
+ * reports success and nothing arrives — with no way to see the stale row.
+ */
+$pushMine = getWithJar($baseUrl . '/admin/push', $jar);
+check(
+    'The push screen has a section for your own subscriptions',
+    str_contains($pushMine['body'], '<h2>Yours</h2>'),
+    'a count cannot show a stale subscription, let alone remove one'
+);
+check(
+    'and says so plainly when this browser has none',
+    str_contains($pushMine['body'], 'This browser is not subscribed'),
+    'an empty section reads as broken rather than as empty'
+);
+
+/*
  * The subscribe endpoint. A subscription with a key of the wrong length would
  * otherwise be picked up by every future run, fail, and count as a failure —
  * so it is refused at the door, where there is still somebody to tell.
