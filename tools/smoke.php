@@ -5049,6 +5049,7 @@ check(
 
 $pushAdmin = getWithJar($baseUrl . '/admin/push', $jar);
 check('The push settings screen renders', $pushAdmin['status'] === 200, "got {$pushAdmin['status']}");
+
 check(
     'It says there are no keys yet',
     str_contains($pushAdmin['body'], 'No keys yet'),
@@ -5067,6 +5068,56 @@ check(
 check(
     'Plugin pages appear in the admin navigation',
     str_contains(getWithJar($baseUrl . '/admin', $jar)['body'], '/admin/push')
+);
+
+/*
+ * The subscribe control, in the header rather than floating in the footer.
+ *
+ * It spent its first release at the bottom of the page, revealed only once
+ * navigator.serviceWorker.ready had resolved — which waits for a worker to
+ * install, activate AND claim the page. On a first visit that is seconds; on a
+ * failed registration it is never. So it appeared late or not at all, which
+ * reads as "sometimes the link is there". Nothing about deciding whether to
+ * OFFER a subscription needs the worker, so it is rendered up front now and
+ * hidden again only if this browser turns out to be subscribed already.
+ *
+ * Keys have to exist for the control to render at all — with none there is
+ * nothing to subscribe TO, and offering a button would be offering a failure.
+ * So one is staged here and put back exactly as it was: the checks above
+ * assert "No keys yet", and leaving a key behind would break them on the next
+ * run rather than this one.
+ */
+$pushSettingsBefore = $db->value('SELECT settings FROM {plugins} WHERE slug = ?', ['push']);
+$db->execute(
+    'UPDATE {plugins} SET settings = ? WHERE slug = ?',
+    [json_encode(['public_key' => 'smoke-public-key', 'private_key' => 'smoke-private-key']), 'push']
+);
+
+$pushHome = get($baseUrl . '/');
+check(
+    'The subscribe control is in the header',
+    str_contains($pushHome['body'], 'id="push-subscribe-button"'),
+    'a control people have to scroll to the bottom to find is one they do not find'
+);
+check(
+    'and it is shown without waiting for the service worker',
+    str_contains($pushHome['body'], 'button.hidden = false;'),
+    'gating visibility on serviceWorker.ready is what made it intermittent'
+);
+check(
+    'and it says what it does without relying on the icon',
+    str_contains($pushHome['body'], 'aria-label="Notify me about new videos"'),
+    'a bare bell glyph is not a label'
+);
+
+$db->execute(
+    'UPDATE {plugins} SET settings = ? WHERE slug = ?',
+    [$pushSettingsBefore, 'push']
+);
+check(
+    'and with no keys configured it is not offered at all',
+    !str_contains(get($baseUrl . '/')['body'], 'id="push-subscribe-button"'),
+    'a button with nothing to subscribe to fails for everybody, in the console only'
 );
 
 /*

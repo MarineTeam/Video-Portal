@@ -166,7 +166,7 @@ $plugin->addRoute('POST', '/push/unsubscribe', static function (Request $request
  * click — every browser now ignores a permission prompt that was not — and the
  * click has to be somewhere people are.
  */
-$plugin->addAction('footer', static function () use ($plugin, $configured): void {
+$plugin->addAction('header_actions', static function () use ($plugin, $configured): void {
     if (!$configured()) {
         // Nothing to subscribe TO. Rendering the button anyway would produce a
         // control that fails for everybody with an error only the console sees.
@@ -175,23 +175,59 @@ $plugin->addAction('footer', static function () use ($plugin, $configured): void
 
     $publicKey = json_encode((string) $plugin->setting('public_key', ''));
 
+    /*
+     * In the header, not floating in the footer.
+     *
+     * A control people have to scroll to the bottom of the page to find is one
+     * most people never find. A bell in the nav is where every other site puts
+     * this.
+     *
+     * Rendered VISIBLE and hidden again if it turns out to be unnecessary,
+     * which is the opposite of what this did before. It used to start hidden
+     * and be revealed only once navigator.serviceWorker.ready had resolved —
+     * and `ready` waits for a worker to install, activate and claim the page,
+     * which on a first visit is seconds and on a failed registration is never.
+     * So the button appeared late, or not at all, and looked intermittent.
+     * Nothing about deciding whether to OFFER the subscription needs the
+     * worker; only subscribing does.
+     */
     echo <<<HTML
-    <div class="push-subscribe" hidden>
-      <button type="button" id="push-subscribe-button" class="btn secondary">
-        Notify me about new videos
-      </button>
-    </div>
+    <button type="button" id="push-subscribe-button" class="push-subscribe" hidden
+            title="Notify me about new videos" aria-label="Notify me about new videos">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+        <path fill="currentColor" d="M12 2a6 6 0 0 0-6 6v3.6l-1.7 3.2A1 1 0 0 0 5.2 16h13.6a1 1 0 0 0 .9-1.2L18 11.6V8a6 6 0 0 0-6-6Zm0 20a3 3 0 0 0 2.8-2H9.2A3 3 0 0 0 12 22Z"/>
+      </svg>
+      <span>Notify me</span>
+    </button>
     <script>
     (function () {
       var KEY = {$publicKey};
-      var box = document.querySelector('.push-subscribe');
       var button = document.getElementById('push-subscribe-button');
 
       // Everything here is optional. A browser without service workers, or one
       // where the user has already refused, simply never sees the button —
       // rather than seeing one that does nothing.
-      if (!box || !button || !('serviceWorker' in navigator) || !('PushManager' in window)) { return; }
+      if (!button || !('serviceWorker' in navigator) || !('PushManager' in window)) { return; }
       if (Notification.permission === 'denied') { return; }
+
+      /*
+       * Shown immediately. Whether this browser COULD subscribe is answerable
+       * from the three checks above, and none of them needs the worker.
+       */
+      button.hidden = false;
+
+      /*
+       * And hidden again if it turns out they are already subscribed. That
+       * answer does need the worker, so it arrives late — which is fine in
+       * this direction: the worst case is the button being offered for a
+       * second to somebody who does not need it, rather than never offered to
+       * somebody who does.
+       */
+      navigator.serviceWorker.ready.then(function (registration) {
+        return registration.pushManager.getSubscription().then(function (existing) {
+          if (existing) { button.hidden = true; }
+        });
+      }).catch(function () {});
 
       function urlBase64ToUint8Array(base64) {
         var padded = (base64 + '='.repeat((4 - base64.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/');
@@ -209,36 +245,41 @@ $plugin->addAction('footer', static function () use ($plugin, $configured): void
        * replace core's worker and break every other thing that uses it, while
        * reporting success.
        */
-      navigator.serviceWorker.ready.then(function (registration) {
-        return registration.pushManager.getSubscription().then(function (existing) {
-          if (existing) { return; }
-          box.hidden = false;
+      /*
+       * The worker is waited for HERE, on the click, rather than before the
+       * button is shown. By this point somebody has asked for notifications,
+       * so a moment's wait is expected — and a failure now can be reported,
+       * where a failure during page load could only be swallowed.
+       */
+      button.addEventListener('click', function () {
+        button.disabled = true;
 
-          button.addEventListener('click', function () {
-            button.disabled = true;
-
-            registration.pushManager.subscribe({
-              // Required by every browser: a push that shows no notification is
-              // not allowed, and declaring it up front is how they enforce it.
-              userVisibleOnly: true,
-              applicationServerKey: urlBase64ToUint8Array(KEY)
-            }).then(function (subscription) {
-              return fetch('/push/subscribe', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(subscription)
-              });
-            }).then(function () {
-              box.hidden = true;
-            }).catch(function () {
-              button.disabled = false;
-            });
+        navigator.serviceWorker.ready.then(function (registration) {
+          return registration.pushManager.subscribe({
+            // Required by every browser: a push that shows no notification is
+            // not allowed, and declaring it up front is how they enforce it.
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(KEY)
           });
+        }).then(function (subscription) {
+          return fetch('/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(subscription)
+          });
+        }).then(function (response) {
+          if (!response || !response.ok) { throw new Error('not stored'); }
+          button.hidden = true;
+        }).catch(function () {
+          /*
+           * Say so, rather than quietly re-enabling. Somebody who has just
+           * granted permission and seen nothing happen has no way to tell
+           * whether it worked, and the commonest outcomes here — the site is
+           * on http, or the browser refused — are ones they can act on.
+           */
+          button.disabled = false;
+          button.querySelector('span').textContent = 'Could not subscribe';
         });
-      }).catch(function () {
-        // A registration failure is not worth telling a visitor about: it means
-        // the site is on http, or the browser refused, and neither is something
-        // they can act on.
       });
     })();
     </script>

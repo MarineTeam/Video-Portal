@@ -109,20 +109,43 @@ final class PushPage extends PluginPage
         ]);
 
         $sent = 0;
+        $outcomes = [];
+
         foreach ($mine as $subscription) {
             if ($sender->send($subscription, $body) === 'sent') {
                 $sent++;
             }
+            if ($sender->lastOutcome !== null) {
+                $outcomes[$sender->lastOutcome] = true;
+            }
         }
 
-        return $sent > 0
-            ? $this->back($request, 'Sent. It should appear in a moment.')
-            : $this->back(
+        /*
+         * The push service's own words, shown rather than logged.
+         *
+         * "It should appear in a moment" was the whole message before, which is
+         * useless in the case that actually happens: the service returns 201,
+         * nothing appears, and there is no way to tell whether the send failed
+         * or the browser discarded the payload. A 201 means the bytes were
+         * ACCEPTED, not that they were readable — a payload encrypted wrongly
+         * is dropped by the browser before the push event fires, silently. So
+         * the status is reported either way and the two states are named.
+         */
+        $detail = implode(' ', array_keys($outcomes));
+
+        if ($sent > 0) {
+            return $this->back(
                 $request,
-                'The push service would not take it. Check the error log — the commonest cause is '
-                . 'a contact address that is not a mailto: or https: URL.',
-                'error'
+                $detail . ' If nothing appears within a minute, the browser received it and could not '
+                . 'read it — which points at the payload encryption or the keys, not at the send.'
             );
+        }
+
+        return $this->back(
+            $request,
+            $detail === '' ? 'The push service would not take it.' : $detail,
+            'error'
+        );
     }
 
     private function subject(): string

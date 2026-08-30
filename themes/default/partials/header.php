@@ -125,6 +125,21 @@ do_action('head');
            <?= $item['href'] === $currentPath ? 'aria-current="page"' : '' ?>><?= e($item['label']) ?></a>
       <?php endforeach ?>
 
+      <?php
+      /*
+       * Where a plugin puts a control rather than a link.
+       *
+       * `site_nav` can already add an anchor, which is no use to anything that
+       * needs a button and a script — the push subscribe control spent its
+       * first release as a floating box in the footer because there was
+       * nowhere else for it to go, and people did not find it.
+       *
+       * Before the account and sign-out links, so plugin controls sit together
+       * and the session links stay where people expect them.
+       */
+      do_action('header_actions');
+      ?>
+
       <?php if ($currentUser !== null): ?>
         <?php if (!empty($currentUser['isAdmin'])): ?>
           <a href="/admin">Admin</a>
