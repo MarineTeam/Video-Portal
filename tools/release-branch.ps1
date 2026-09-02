@@ -115,6 +115,19 @@ try {
     }
     Write-Host "  Every class resolves."
 
+    # Loading a class does not execute its method bodies, so a name written
+    # without its import - which resolves against the CURRENT namespace and
+    # points at nothing - survives the check above. It is a fatal the moment
+    # that line runs, and for instanceof it is not an error at all: the
+    # comparison is silently always false and the code takes its fallback path
+    # forever. Both have shipped from this repository.
+    & $php (Join-Path $PSScriptRoot 'check-imports.php') | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        & $php (Join-Path $PSScriptRoot 'check-imports.php')
+        Write-Error "A class reference does not resolve. Refusing to publish."
+    }
+    Write-Host "  Every class reference resolves."
+
     $probe = Join-Path $env:TEMP "portal-release-check-$(Get-Random).php"
     @"
 <?php
