@@ -59,7 +59,28 @@ final class Video
         public readonly bool $premiere = false,
         public readonly ?string $recordedAt = null,
         public readonly ?string $providerCreatedAt = null,
+        /**
+         * What the provider last said about this video's downloadable MP4.
+         *
+         * A cache of two provider-owned facts, so deciding whether a video can
+         * be downloaded costs no outbound call. Read them only when
+         * $mp4CheckedAt is not null — before anything has asked, `false` and
+         * `[]` are the column defaults rather than an answer, and reading them
+         * as one tells every site that upgrades that none of its videos has a
+         * file. `Mp4Locator` is where that rule lives; nothing else should be
+         * touching these three directly.
+         */
+        public readonly bool $hasMp4 = false,
+        /** @var list<int> Rendition heights, ascending. */
+        public readonly array $mp4Heights = [],
+        public readonly ?string $mp4CheckedAt = null,
     ) {
+    }
+
+    /** Has the provider ever been asked what renditions this video has? */
+    public function mp4IsKnown(): bool
+    {
+        return $this->mp4CheckedAt !== null;
     }
 
     /** @param array<string, mixed> $row */
@@ -99,7 +120,38 @@ final class Video
             premiere:             (bool) ($row['premiere'] ?? false),
             recordedAt:           $nullableString('recorded_at'),
             providerCreatedAt:    $nullableString('provider_created_at'),
+            hasMp4:               (bool) ($row['has_mp4'] ?? false),
+            mp4Heights:           self::parseHeights($row['mp4_heights'] ?? null),
+            mp4CheckedAt:         $nullableString('mp4_checked_at'),
         );
+    }
+
+    /**
+     * "360,720" back into [360, 720].
+     *
+     * The inverse of what the repository stores, kept here so the column's
+     * format is written down in exactly two places that face each other.
+     *
+     * @return list<int>
+     */
+    private static function parseHeights(mixed $raw): array
+    {
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $out = [];
+        foreach (explode(',', $raw) as $part) {
+            $height = (int) trim($part);
+            if ($height > 0) {
+                $out[$height] = true;
+            }
+        }
+
+        $heights = array_keys($out);
+        sort($heights);
+
+        return $heights;
     }
 
     public function isReady(): bool

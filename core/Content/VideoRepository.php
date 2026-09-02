@@ -975,21 +975,82 @@ final class VideoRepository
      */
     private function applyProviderFields(int $videoId, VideoMeta $meta): void
     {
-        $this->db->update('videos', [
+        $fields = [
             'duration'               => $meta->duration,
             'thumbnail_file'         => $meta->thumbnailFile,
             'status'                 => $meta->status,
             'encode_progress'        => $meta->encodeProgress,
             'provider_collection_id' => $meta->collectionId,
             'updated_at'             => date('Y-m-d H:i:s'),
-        ], ['id' => $videoId]);
+        ];
+
+        /*
+         * The MP4 columns are written only when the provider actually said
+         * something about them. A payload that does not mention the fields
+         * leaves the previous answer — and the timestamp — exactly as they
+         * were, so "we asked in March and it had a 720" is not overwritten by
+         * "today's response was silent".
+         *
+         * This is the whole reason hasMp4Fallback is nullable. Writing a
+         * default here would stamp mp4_checked_at with NOW() and license every
+         * later caller to trust a `false` nobody ever established.
+         */
+        if ($meta->hasMp4Fallback !== null) {
+            $fields += $this->mp4Fields($meta->hasMp4Fallback, $meta->resolutions);
+        }
+
+        $this->db->update('videos', $fields, ['id' => $videoId]);
+    }
+
+    /**
+     * Record what the provider says about a video's downloadable MP4.
+     *
+     * Public because the resolver needs it: a video the sync has never covered
+     * gets asked about on first use, and that answer is worth keeping rather
+     * than paying for again on the next request.
+     *
+     * @param list<int> $heights
+     */
+    public function recordMp4Availability(int $videoId, bool $hasFallback, array $heights): void
+    {
+        $this->db->update('videos', $this->mp4Fields($hasFallback, $heights), ['id' => $videoId]);
+    }
+
+    /**
+     * @param list<int> $heights
+     * @return array<string, scalar>
+     */
+    private function mp4Fields(bool $hasFallback, array $heights): array
+    {
+        $clean = [];
+        foreach ($heights as $height) {
+            $height = (int) $height;
+            if ($height > 0) {
+                $clean[$height] = true;
+            }
+        }
+
+        $sorted = array_keys($clean);
+        sort($sorted);
+
+        return [
+            'has_mp4'        => $hasFallback ? 1 : 0,
+            // Ascending and comma-separated, the shape Video::fromRow reads.
+            'mp4_heights'    => implode(',', $sorted),
+            // The licence to trust the two above. Never written without them.
+            'mp4_checked_at' => date('Y-m-d H:i:s'),
+        ];
     }
 
     private function insertFromProvider(VideoMeta $meta, string $provider): int
     {
         $now = date('Y-m-d H:i:s');
 
-        return $this->db->insert('videos', [
+        $mp4 = $meta->hasMp4Fallback !== null
+            ? $this->mp4Fields($meta->hasMp4Fallback, $meta->resolutions)
+            : [];
+
+        return $this->db->insert('videos', $mp4 + [
             'provider'               => $provider,
             'provider_id'            => $meta->id,
             'provider_collection_id' => $meta->collectionId,

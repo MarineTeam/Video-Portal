@@ -13,7 +13,7 @@ use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Support\Feed;
-use Portal\Video\BunnyStreamProvider;
+use Portal\Video\Mp4Locator;
 use Portal\Video\VideoProvider;
 use Throwable;
 
@@ -247,26 +247,29 @@ final class FeedController extends Controller
              * off, this video predating it, no rendition inside the height
              * cap, and no pull zone — which are four different fixes, and the
              * message named none of them.
+             *
+             * Through the locator rather than the provider, so this pays for
+             * an API call only on the first fetch of a video nothing has asked
+             * about yet.
              */
-            if ($provider instanceof BunnyStreamProvider) {
-                $source = $provider->mp4Source($video->providerId, self::DOWNLOAD_TTL);
+            $source = (new Mp4Locator($provider, $this->videos()))
+                ->locate($video, self::DOWNLOAD_TTL);
 
-                if (!$source->ok()) {
-                    throw HttpException::notFound($source->explain());
-                }
-
-                $url = $source->url;
-            } else {
-                $url = $provider->downloadUrl($video->providerId, self::DOWNLOAD_TTL);
+            /*
+             * Tested on the URL rather than on ok(), which asks the same
+             * question — so that the guard below it, which used to answer
+             * "Downloads are not configured for this site" to all four causes,
+             * is gone rather than left behind as a branch nothing can reach.
+             */
+            if ($source->url === null) {
+                throw HttpException::notFound($source->explain());
             }
+
+            $url = $source->url;
         } catch (HttpException $e) {
             throw $e;
         } catch (Throwable $e) {
             throw HttpException::upstream('The video service is not responding: ' . $e->getMessage());
-        }
-
-        if ($url === null) {
-            throw HttpException::notFound('Downloads are not configured for this site.');
         }
 
         /*

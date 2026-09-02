@@ -408,6 +408,80 @@ final class ContentTest extends DatabaseTestCase
     }
 
     /**
+     * The sync already fetches which MP4 renditions exist. Now it keeps them.
+     *
+     * This is what makes a download decision free: without it, every video card
+     * asking "can this be downloaded" is an outbound call, and a fifty-row
+     * listing is fifty of them inside one visitor's page view.
+     */
+    public function testSyncStoresWhatTheProviderSaysAboutMp4s(): void
+    {
+        $this->videos->syncFromProvider([
+            new VideoMeta(
+                id: 'abc-1',
+                title: 'Fresh upload',
+                status: VideoMeta::STATUS_READY,
+                hasMp4Fallback: true,
+                resolutions: [720, 360],
+            ),
+        ]);
+
+        $video = $this->videos->findByProviderId('abc-1');
+        self::assertNotNull($video);
+        self::assertTrue($video->hasMp4);
+        self::assertSame([360, 720], $video->mp4Heights, 'Stored ascending, whatever order they arrived in.');
+        self::assertTrue($video->mp4IsKnown());
+    }
+
+    /**
+     * A reply that says nothing about MP4s leaves the previous answer alone —
+     * including the timestamp that licenses trusting it.
+     *
+     * Without this, one payload missing a field would overwrite "we asked in
+     * March and it had a 720" with a `false` nobody established, and then keep
+     * reporting it as a settled answer.
+     */
+    public function testSyncLeavesTheMp4AnswerAloneWhenTheProviderIsSilent(): void
+    {
+        $this->videos->syncFromProvider([
+            new VideoMeta(
+                id: 'abc-1',
+                title: 'Fresh upload',
+                status: VideoMeta::STATUS_READY,
+                hasMp4Fallback: true,
+                resolutions: [720],
+            ),
+        ]);
+
+        // The same video again, from a payload that omits the fields.
+        $this->videos->syncFromProvider([
+            new VideoMeta(id: 'abc-1', title: 'Fresh upload', status: VideoMeta::STATUS_READY, duration: 90),
+        ]);
+
+        $video = $this->videos->findByProviderId('abc-1');
+        self::assertNotNull($video);
+        self::assertSame(90, $video->duration, 'The fields it did carry are still refreshed.');
+        self::assertTrue($video->hasMp4, 'A silent reply is not the provider withdrawing an answer.');
+        self::assertSame([720], $video->mp4Heights);
+    }
+
+    /**
+     * And a video first seen through a silent payload is left UNASKED rather
+     * than recorded as having no MP4 — the state the locator sends back to the
+     * provider instead of trusting.
+     */
+    public function testAVideoCreatedFromASilentReplyIsNotMarkedAsAnswered(): void
+    {
+        $this->videos->syncFromProvider([
+            new VideoMeta(id: 'abc-1', title: 'Fresh upload', status: VideoMeta::STATUS_READY),
+        ]);
+
+        $video = $this->videos->findByProviderId('abc-1');
+        self::assertNotNull($video);
+        self::assertFalse($video->mp4IsKnown());
+    }
+
+    /**
      * The rule that protects editorial work: sync refreshes provider-owned
      * fields only. Someone who renamed final_v3_REALFINAL.mp4 keeps their name.
      */

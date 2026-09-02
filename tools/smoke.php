@@ -4616,6 +4616,74 @@ check(
 );
 
 /*
+ * What the MP4 columns on the video row are for, driven end to end.
+ *
+ * This install has the real bunny.net provider with placeholder credentials,
+ * so every lookup fails — which is exactly the environment that makes these
+ * checks honest. A cached answer has to work with the API unreachable; that is
+ * the whole point of caching it, and it is also the only way to tell a cached
+ * answer apart from a fresh one here.
+ *
+ * The heights are chosen so the two paths cannot be confused: 480 is not what
+ * the could-not-ask fallback signs. That signs the configured cap, 720. So a
+ * redirect to play_480p.mp4 could only have come from the row.
+ */
+$db->execute(
+    "UPDATE {videos} SET has_mp4 = 1, mp4_heights = '360,480', mp4_checked_at = NOW() WHERE id = ?",
+    [$videoRow]
+);
+$mediaCached = get($baseUrl . '/media/' . $videoSlug . '.mp4');
+
+check(
+    'A cached rendition list is used without asking the provider',
+    str_contains($mediaCached['headers']['location'] ?? '', '/play_480p.mp4'),
+    'went to ' . ($mediaCached['headers']['location'] ?? 'nowhere')
+        . ' — 720p means the cache was ignored and the unreachable-API fallback ran'
+);
+
+/* A recorded "no" is a specific, actionable answer rather than a blank 404. */
+$db->execute(
+    "UPDATE {videos} SET has_mp4 = 0, mp4_heights = '', mp4_checked_at = NOW() WHERE id = ?",
+    [$videoRow]
+);
+$mediaNoFallback = get($baseUrl . '/media/' . $videoSlug . '.mp4');
+
+check(
+    'A video the provider said has no MP4 is refused',
+    $mediaNoFallback['status'] === 404,
+    "got {$mediaNoFallback['status']}"
+);
+check(
+    'And the refusal names the setting and says it is not retroactive',
+    str_contains($mediaNoFallback['body'], 'MP4 Fallback')
+        && str_contains($mediaNoFallback['body'], 'retroactive'),
+    'the four causes of a missing MP4 need four different fixes, so the message has to say which'
+);
+
+/*
+ * And the rule the whole cache rests on: an unasked row must not be READ as a
+ * no, and a provider that could not be reached must not leave one behind.
+ *
+ * Every row on every upgrading install looks exactly like this one.
+ */
+$db->execute(
+    'UPDATE {videos} SET has_mp4 = 0, mp4_heights = ?, mp4_checked_at = NULL WHERE id = ?',
+    ['', $videoRow]
+);
+$mediaUnasked = get($baseUrl . '/media/' . $videoSlug . '.mp4');
+
+check(
+    'An unasked video is not refused on the strength of a column default',
+    $mediaUnasked['status'] === 302,
+    "got {$mediaUnasked['status']} — has_mp4 = 0 was read as an answer nobody gave"
+);
+check(
+    'A provider that could not be reached records no verdict',
+    $db->value('SELECT mp4_checked_at FROM {videos} WHERE id = ?', [$videoRow]) === null,
+    'a failed lookup stamped the row, so nothing would ever ask again'
+);
+
+/*
  * Indexing is off until somebody says otherwise, and all three signals have to
  * agree — a sitemap inviting crawlers while every page says noindex is the kind
  * of contradiction nobody notices until the wrong page is in a search result.

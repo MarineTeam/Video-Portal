@@ -17,8 +17,13 @@ use Portal\Video\VideoProvider;
  * thumbnail URL is weaker than asserting that no URL was ever minted: a URL
  * that gets created and then discarded still existed, and the next refactor
  * puts it back into the array.
+ *
+ * Not final, so `RecordingMp4Provider` can be the same double that additionally
+ * declares SupportsMp4Downloads. Which of the two a test picks is itself the
+ * subject of a test: a provider that cannot explain a missing MP4 has to be
+ * handled differently from one that can.
  */
-final class RecordingVideoProvider implements VideoProvider
+class RecordingVideoProvider implements VideoProvider
 {
     public const THUMBNAIL = 'https://cdn.test/thumbnail.jpg?token=signed';
     public const EMBED = 'https://iframe.test/embed?token=signed';

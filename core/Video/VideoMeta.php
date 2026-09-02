@@ -35,8 +35,20 @@ final class VideoMeta
          * library, and it does not backfill: a video uploaded before that
          * setting changed never gets one. Carried so a caller can say which of
          * those two it is rather than answering "no file".
+         *
+         * NULL is a third answer and it is load-bearing: the provider's payload
+         * did not mention the field, so nothing is known. False means the
+         * provider was asked and said no.
+         *
+         * The two are one `false` apart and lead to opposite actions — one is a
+         * dashboard setting to change, the other is a reason to go and ask.
+         * They are kept apart because the alternative is what this codebase has
+         * already got wrong twice: rounding "could not tell" off to a verdict
+         * and then acting on it. Here the cost would land in the cache, where a
+         * wrong `false` is written to every row and then repeated forever
+         * without anything ever asking again.
          */
-        public readonly bool $hasMp4Fallback = false,
+        public readonly ?bool $hasMp4Fallback = null,
         /**
          * The rendition heights that actually exist, largest last.
          *

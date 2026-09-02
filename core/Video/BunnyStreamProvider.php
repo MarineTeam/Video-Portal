@@ -25,7 +25,7 @@ use Throwable;
  * Playback working while thumbnails 403 is the signature of having pasted the
  * first key into both fields.
  */
-final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
+final class BunnyStreamProvider implements VideoProvider, SupportsCaptions, SupportsMp4Downloads
 {
     private const API_BASE = 'https://video.bunnycdn.com/library';
     private const TUS_ENDPOINT = 'https://video.bunnycdn.com/tusupload';
@@ -259,7 +259,19 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
             height:         isset($item['height']) ? (int) $item['height'] : null,
             createdAt:      $created,
             views:          (int) ($item['views'] ?? 0),
-            hasMp4Fallback: (bool) ($item['hasMP4Fallback'] ?? false),
+            /*
+             * Absent means unknown, not false.
+             *
+             * Both fields come from the same object whether it arrives from
+             * the list endpoint or the single-video one, so in practice they
+             * are always here. "In practice" is the problem: the answer is
+             * about to be written to a column and trusted without re-asking,
+             * so a payload that stops carrying the field must not be recorded
+             * as the provider saying no.
+             */
+            hasMp4Fallback: array_key_exists('hasMP4Fallback', $item)
+                ? (bool) $item['hasMP4Fallback']
+                : null,
             resolutions:    self::parseResolutions($item['availableResolutions'] ?? null),
         );
     }
@@ -366,17 +378,25 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
      * to be reported as broken by somebody who cannot read a log.
      *
      * One extra API call per download. That is a real cost and it buys the
-     * difference between "no file" and four different fixable causes.
+     * difference between "no file" and four different fixable causes — and
+     * `Mp4Locator` spends it once per video rather than once per request, by
+     * storing what the answer was.
+     *
+     * $onAnswer, when given, receives the provider's own reply on the paths
+     * where there was one. It exists so a caller can cache that reply without
+     * this method knowing anything about storage, and — more to the point —
+     * without a second copy of the could-not-ask rule below, which is the one
+     * piece of this class that must not be reimplemented anywhere.
+     *
+     * @param null|callable(VideoMeta): void $onAnswer
      */
-    public function mp4Source(string $providerId, int $ttlSeconds = 3600): Mp4Source
-    {
+    public function mp4Source(
+        string $providerId,
+        int $ttlSeconds = 3600,
+        ?callable $onAnswer = null
+    ): Mp4Source {
         if (!$this->thumbnailsConfigured()) {
             return Mp4Source::missing(Mp4Source::NOT_CONFIGURED);
-        }
-
-        $cap = (int) trim($this->credentials['download_height'] ?? '');
-        if ($cap <= 0) {
-            $cap = 720;
         }
 
         try {
@@ -400,7 +420,7 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
              */
             error_log('Could not ask the video service which renditions exist: ' . $e->getMessage());
 
-            return $this->signMp4($providerId, $cap, $ttlSeconds);
+            return $this->signAtCap($providerId, $ttlSeconds);
         }
 
         // Asked, and the answer was definitive: the provider has no such video.
@@ -408,21 +428,67 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
             return Mp4Source::missing(Mp4Source::NOT_AT_PROVIDER);
         }
 
-        if (!$meta->hasMp4Fallback) {
+        /*
+         * Reached the provider, and it did not mention the field. Same
+         * situation as an unreachable API and handled the same way, because
+         * "the response said nothing about MP4s" is not the provider saying
+         * there are none. Nothing is offered to $onAnswer here: there is no
+         * answer to cache.
+         */
+        if ($meta->hasMp4Fallback === null) {
+            return $this->signAtCap($providerId, $ttlSeconds);
+        }
+
+        if ($onAnswer !== null) {
+            $onAnswer($meta);
+        }
+
+        return $this->mp4SourceFrom($providerId, $meta->hasMp4Fallback, $meta->resolutions, $ttlSeconds);
+    }
+
+    /**
+     * The same answer, from renditions somebody already knows about.
+     *
+     * The choosing and signing half of `mp4Source()` with the API call taken
+     * out, so a caller holding a cached copy of the provider's reply gets the
+     * identical decision rather than a second implementation of it. The two
+     * agreeing is the whole point: a cached path that picks a different
+     * rendition than the live one produces a URL that works until the cache is
+     * cold, which is the worst available way to be wrong.
+     *
+     * @param list<int> $resolutions
+     */
+    public function mp4SourceFrom(
+        string $providerId,
+        bool $hasFallback,
+        array $resolutions,
+        int $ttlSeconds = 3600
+    ): Mp4Source {
+        if (!$this->thumbnailsConfigured()) {
+            return Mp4Source::missing(Mp4Source::NOT_CONFIGURED);
+        }
+
+        if (!$hasFallback) {
             return Mp4Source::missing(Mp4Source::NO_FALLBACK);
         }
 
         /*
          * The largest rendition that is still within the cap. Walked backwards
-         * because parseResolutions() sorts ascending.
+         * because parseResolutions() sorts ascending — and sorted again here,
+         * because a cached list has been through a database column and back
+         * and nothing else guarantees its order.
          *
          * An empty list with the flag set means the video is still encoding —
          * reported as no rendition rather than as a missing setting, since the
          * setting is plainly on.
          */
+        $heights = array_map('intval', $resolutions);
+        sort($heights);
+
+        $cap = $this->downloadCap();
         $chosen = 0;
-        foreach (array_reverse($meta->resolutions) as $height) {
-            if ($height <= $cap) {
+        foreach (array_reverse($heights) as $height) {
+            if ($height > 0 && $height <= $cap) {
                 $chosen = $height;
                 break;
             }
@@ -433,6 +499,32 @@ final class BunnyStreamProvider implements VideoProvider, SupportsCaptions
         }
 
         return $this->signMp4($providerId, $chosen, $ttlSeconds);
+    }
+
+    /**
+     * Sign the configured height without asking anything.
+     *
+     * Exactly what this class did before it learned to ask, kept as the answer
+     * for every case where the provider could not tell us: unreachable, or
+     * reachable and silent on the subject. No worse than the behaviour that
+     * shipped, and it lets the CDN be the judge rather than this site
+     * announcing a verdict it does not have.
+     */
+    public function signAtCap(string $providerId, int $ttlSeconds = 3600): Mp4Source
+    {
+        if (!$this->thumbnailsConfigured()) {
+            return Mp4Source::missing(Mp4Source::NOT_CONFIGURED);
+        }
+
+        return $this->signMp4($providerId, $this->downloadCap(), $ttlSeconds);
+    }
+
+    /** The largest rendition this site is willing to hand out. */
+    private function downloadCap(): int
+    {
+        $cap = (int) trim($this->credentials['download_height'] ?? '');
+
+        return $cap > 0 ? $cap : 720;
     }
 
     /**
