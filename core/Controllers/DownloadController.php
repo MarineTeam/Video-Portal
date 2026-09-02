@@ -11,6 +11,7 @@ use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Support\Audit;
+use Portal\Support\ServiceWorker;
 use Portal\Video\Mp4Locator;
 use Portal\Video\VideoProvider;
 use Throwable;
@@ -57,14 +58,46 @@ final class DownloadController extends Controller
     /** @param array<string, string> $params */
     public function media(Request $request, array $params): Response
     {
+        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''));
+        $video = $resolved['video'];
+        $source = $resolved['source'];
+
+        /*
+         * 302 and never cacheable, for the same reason as the podcast route: a
+         * permanent redirect would be stored by the browser and by anything
+         * between, which is exactly the expiry problem signing on demand exists
+         * to avoid.
+         */
+        return Response::redirect((string) $source->url, 302)
+            ->header('Cache-Control', 'private, max-age=0, no-store');
+    }
+
+    /**
+     * The four gates, in one place.
+     *
+     * Both entry points run this. A second copy of an access decision is how
+     * the two come to disagree, and the disagreement here would be a JSON
+     * endpoint handing out a signed URL for something the redirect refuses —
+     * which is the same file, without the refusal.
+     *
+     * @return array{video: \Portal\Content\Video, source: \Portal\Video\Mp4Source}
+     */
+    private function resolve(Request $request, string $slug): array
+    {
         $user = $this->user();
         if ($user === null) {
-            return $this->redirect('/auth/login');
+            /*
+             * Not a redirect, because one of the two callers is fetch(). A
+             * sign-in page delivered as the answer to an API call is parsed as
+             * JSON, fails, and reports as a broken feature rather than a
+             * signed-out session.
+             */
+            throw HttpException::forbidden('Sign in to download.');
         }
 
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
-        $video = $videos->findBySlug((string) ($params['slug'] ?? ''));
+        $video = $videos->findBySlug($slug);
 
         /*
          * A 404 rather than a 403 for a video that is not there or not
@@ -140,14 +173,43 @@ final class DownloadController extends Controller
             $video->title . ' (' . $source->height . 'p)'
         );
 
-        /*
-         * 302 and never cacheable, for the same reason as the podcast route: a
-         * permanent redirect would be stored by the browser and by anything
-         * between, which is exactly the expiry problem signing on demand exists
-         * to avoid.
-         */
-        return Response::redirect($source->url, 302)
-            ->header('Cache-Control', 'private, max-age=0, no-store');
+        return ['video' => $video, 'source' => $source];
+    }
+
+    /**
+     * The same decision, as JSON, for the code that saves a video offline.
+     *
+     * The browser cannot use the redirect above for this. `fetch()` following a
+     * cross-origin 302 gives back a response whose URL it will not reveal, and
+     * saving into Cache Storage needs the URL as well as the bytes. So the
+     * signed URL is handed over directly, after exactly the same four gates —
+     * `media()` and this call the same method, so there is no arrangement in
+     * which one of them permits something the other refuses.
+     *
+     * @param array<string, string> $params
+     */
+    public function meta(Request $request, array $params): Response
+    {
+        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''));
+        $video = $resolved['video'];
+        $source = $resolved['source'];
+
+        return $this->json([
+            'id'       => $video->id,
+            'title'    => $video->title,
+            'slug'     => $video->slug,
+            'duration' => $video->duration,
+            'height'   => $source->height,
+            'url'      => $source->url,
+            /*
+             * Where the worker will serve it from. Sent by the server rather
+             * than assembled in JavaScript so the path exists in exactly one
+             * place — a client that built its own would keep working until
+             * ServiceWorker::VIDEO_PREFIX changed, and then fail by silently
+             * saving to a URL nothing reads.
+             */
+            'cacheKey' => ServiceWorker::VIDEO_PREFIX . $video->id . '.mp4',
+        ]);
     }
 
     /**

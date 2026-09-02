@@ -169,6 +169,7 @@ final class Routes
          */
         $router->get('/account', [AccountController::class, 'index'], ['auth.user']);
         $router->get('/account/shared-links', [AccountController::class, 'sharedLinks'], ['auth.user']);
+        $router->get('/account/downloads', [AccountController::class, 'downloads'], ['auth.user']);
 
         /*
          * Member sharing.
@@ -220,6 +221,16 @@ final class Routes
          * checked.
          */
         $router->get('/download/{slug}.mp4', [DownloadController::class, 'media'], ['auth.authorized']);
+
+        /*
+         * The same decision as JSON, for the code that saves a video for
+         * offline viewing. It cannot use the redirect above: fetch() following
+         * a cross-origin 302 will not reveal where it landed, and putting the
+         * file in Cache Storage needs the URL as well as the bytes.
+         *
+         * Both run the same four gates, in the same method.
+         */
+        $router->get('/download/{slug}.json', [DownloadController::class, 'meta'], ['auth.authorized']);
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
 

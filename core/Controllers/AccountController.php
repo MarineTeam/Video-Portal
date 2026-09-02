@@ -90,6 +90,31 @@ final class AccountController extends Controller
     }
 
     /**
+     * What is saved on this device.
+     *
+     * The one screen in this application the server cannot fill in. Everything
+     * on it lives in Cache Storage in this browser, so the page ships empty
+     * and JavaScript renders it — and the page says so, because a list that is
+     * blank in a second browser looks broken unless somebody explains that it
+     * is a property of the design.
+     *
+     * The alternative was a table on the server describing what is on people's
+     * phones. That is a worse thing to keep than a list which does not survive
+     * clearing site data.
+     */
+    public function downloads(Request $request): Response
+    {
+        if ($this->user() === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        return $this->view(['account-downloads'], [
+            'title' => 'Saved for offline',
+            'flash' => $this->flash(),
+        ]);
+    }
+
+    /**
      * What this site has told you.
      *
      * The channels it sends over cannot be re-read: an email is in a mailbox

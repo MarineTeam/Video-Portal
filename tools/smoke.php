@@ -182,9 +182,9 @@ function postJson(string $url, array $payload): array
  *
  * @return array{status: int, body: string, headers: array<string, string>}
  */
-function getWithJar(string $url, string $jar): array
+function getWithJar(string $url, string $jar, array $headers = []): array
 {
-    return withJar($url, $jar, null);
+    return withJar($url, $jar, null, $headers);
 }
 
 /**
@@ -6786,6 +6786,30 @@ check(
     'an account area reachable only by typing its URL is the defect this repeats'
 );
 
+/*
+ * The one screen the server cannot fill in. Everything on it lives in Cache
+ * Storage in the visitor's browser, so what is checked here is that the shell
+ * arrives, is reachable, and explains itself — an empty list on a second
+ * device looks like a bug in every other screen in this product.
+ */
+$acctDownloads = getWithJar($baseUrl . '/account/downloads', $jar);
+check('The offline downloads page renders', $acctDownloads['status'] === 200, "got {$acctDownloads['status']}");
+check(
+    'and it is linked from the account area',
+    str_contains($acctPage['body'], '/account/downloads'),
+    'a page reachable only by typing its URL is the defect this project repeats'
+);
+check(
+    'and it says the list belongs to this browser, not the site',
+    str_contains($acctDownloads['body'], 'kept by this browser'),
+    'a per-device list that does not say so is reported as data loss'
+);
+check(
+    'and it loads the script that fills it in',
+    str_contains($acctDownloads['body'], '/assets/offline.js'),
+    'a shell with nothing to fill it is a permanently empty page'
+);
+
 $inbox = getWithJar($baseUrl . '/account/notifications', $jar);
 check('The notifications page renders', $inbox['status'] === 200, "got {$inbox['status']}");
 check(
@@ -8806,6 +8830,52 @@ $db->execute(
 );
 $db->execute('DELETE FROM {series} WHERE id = ?', [$dlSeriesId]);
 
+/*
+ * The JSON half, which is what actually saves a video for offline viewing.
+ *
+ * It exists because fetch() following a cross-origin 302 will not say where it
+ * landed, and putting the file in Cache Storage needs the URL. That makes it a
+ * second door to the same file, so the checks below are the same boundary
+ * checks as above — a JSON endpoint that hands out a signed URL for something
+ * the redirect refuses is the whole file, without the refusal.
+ */
+$dlJson = getWithJar(
+    $baseUrl . '/download/' . $insideSlug . '.json',
+    $shareJar,
+    ['Accept: application/json']
+);
+$dlMeta = json_decode($dlJson['body'], true);
+
+check('The offline endpoint answers', $dlJson['status'] === 200, "got {$dlJson['status']}");
+check(
+    'and carries a signed URL and a cache key',
+    is_array($dlMeta)
+        && str_contains((string) ($dlMeta['url'] ?? ''), 'token=')
+        && str_starts_with((string) ($dlMeta['cacheKey'] ?? ''), '/offline-video/'),
+    'the browser cannot save what it cannot address: ' . substr($dlJson['body'], 0, 120)
+);
+check(
+    'and the cache key names the video rather than the slug',
+    ($dlMeta['cacheKey'] ?? '') === '/offline-video/' . $scopeVideos['inside'] . '.mp4',
+    'a renamed video must not orphan a file somebody already saved'
+);
+
+$dlJsonOutside = getWithJar(
+    $baseUrl . '/download/' . $outsideSlug . '.json',
+    $shareJar,
+    ['Accept: application/json']
+);
+check(
+    'The offline endpoint refuses outside the grant, like the redirect',
+    $dlJsonOutside['status'] === 403,
+    "got {$dlJsonOutside['status']} — a second door with a weaker lock"
+);
+check(
+    'and refuses as JSON rather than a sign-in page',
+    str_contains($dlJsonOutside['body'], '"error"'),
+    'an HTML page returned to fetch() parses as a broken feature, not a refusal'
+);
+
 /* Signed out, the route is a sign-in redirect rather than a file. */
 $dlAnon = get($baseUrl . '/download/' . $insideSlug . '.mp4');
 check(
@@ -9351,6 +9421,31 @@ check(
 );
 
 /*
+ * Offline video, checked on the served bytes.
+ *
+ * The behaviour itself needs a browser and is not claimed here. What CAN be
+ * proved from the wire is that the range machinery reached the device at all —
+ * a worker that lost it during a deploy would still install, still serve the
+ * offline page, and still pass every check above, while every saved video
+ * became unseekable.
+ */
+check(
+    'and it serves saved videos from the device',
+    str_contains($sw['body'], '/offline-video/'),
+    'without this a saved file has no same-origin URL a player can use'
+);
+check(
+    'and answers byte ranges itself',
+    str_contains($sw['body'], 'status: 206') && str_contains($sw['body'], 'Content-Range'),
+    'a range answered with the whole body cannot be seeked — Safari refuses it outright'
+);
+check(
+    'and its video cache is not swept when the worker updates',
+    !str_contains($sw['body'], "caches.delete('portal-offline-videos-v1')"),
+    'a worker update must not discard hundreds of megabytes somebody chose to keep'
+);
+
+/*
  * The push plugin's contribution is checked in the Push section above, where
  * it is still active — by this point it has been deactivated, and asserting it
  * here would be asserting against a plugin that is switched off.
@@ -9362,6 +9457,16 @@ check(
     'and it needs no session and names nobody',
     !str_contains($offline['body'], 'admin@smoke.test') && !str_contains($offline['body'], 'Sign out'),
     'this page is stored on the device and shown to whoever opens the app next'
+);
+check(
+    'and it can list what is saved on the device',
+    str_contains($offline['body'], 'portal-offline-videos-v1'),
+    'the only page that renders with no network is the only place the list is useful'
+);
+check(
+    'while still holding no content of its own',
+    !str_contains($offline['body'], 'A Test Video'),
+    'a precached page carrying a title is a title shown to whoever opens the app next'
 );
 
 $home = get($baseUrl . '/');

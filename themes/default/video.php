@@ -392,12 +392,78 @@ $sharePanel ??= null;
  * setting.
  */
 $downloadUrl ??= null;
+$downloadSlug ??= '';
 ?>
 <?php if ($downloadUrl !== null): ?>
-  <p style="margin:1rem 0">
-    <a class="btn secondary" href="<?= e($downloadUrl) ?>" download>Download this video</a>
-    <span class="muted small">Saves an MP4 to this device to watch offline.</span>
+  <p style="margin:1rem 0" data-download-slug="<?= e((string) ($downloadSlug ?? '')) ?>">
+    <a class="btn secondary" href="<?= e($downloadUrl) ?>" download>Download the file</a>
+    <button class="btn secondary" id="offline-save" hidden>Save for offline</button>
+    <span class="muted small" id="offline-status">Downloading gives you an MP4 to keep.</span>
   </p>
+
+  <script src="<?= e(asset_url('/assets/offline.js')) ?>" defer></script>
+  <script defer>
+  /*
+   * Two different things, offered side by side because they are not the same
+   * and people want both.
+   *
+   * The LINK hands over an MP4 the way any download works — it lands in the
+   * downloads folder and can be copied to a memory stick. It cannot be played
+   * inside this site with no network.
+   *
+   * SAVE FOR OFFLINE puts the same file in this browser's storage, where the
+   * service worker can serve it back with the range requests a player needs to
+   * seek. It is not a file anybody can find in a folder.
+   *
+   * The button is hidden until the script decides the browser can do it, so a
+   * browser that cannot shows only the link rather than a control that fails.
+   */
+  window.addEventListener('DOMContentLoaded', function () {
+    var api = window.PortalOffline;
+    var wrap = document.querySelector('[data-download-slug]');
+    var button = document.getElementById('offline-save');
+    var status = document.getElementById('offline-status');
+
+    if (!api || !api.supported() || !wrap || !button) { return; }
+
+    var slug = wrap.getAttribute('data-download-slug');
+    button.hidden = false;
+
+    api.list().then(function (rows) {
+      var saved = rows.some(function (row) { return row.slug === slug; });
+      if (saved) {
+        button.disabled = true;
+        status.textContent = 'Already saved on this device.';
+      }
+    });
+
+    button.addEventListener('click', function () {
+      button.disabled = true;
+      status.textContent = 'Saving…';
+
+      api.save(slug, function (loaded, total) {
+        // Progress matters more than it looks. This is several hundred
+        // megabytes; a silent wait reads as a broken button and people press
+        // it again.
+        status.textContent = total
+          ? 'Saving… ' + Math.round((loaded / total) * 100) + '%'
+          : 'Saving… ' + api.bytes(loaded);
+      }).then(function () {
+        status.textContent = 'Saved. It is in ';
+        var link = document.createElement('a');
+        link.href = '/account/downloads';
+        link.textContent = 'your downloads';
+        status.appendChild(link);
+        status.appendChild(document.createTextNode('.'));
+      }).catch(function (error) {
+        // The reason, verbatim. "Download failed" is the answer to four
+        // different problems and useful for none of them.
+        button.disabled = false;
+        status.textContent = error && error.message ? error.message : 'It could not be saved.';
+      });
+    });
+  });
+  </script>
 <?php endif; ?>
 <?php if ($sharePanel !== null): ?>
   <section class="card" id="share" style="margin:2rem 0;padding:1rem 1.25rem">

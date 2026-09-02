@@ -81,6 +81,19 @@ echo $template->partial('header', get_defined_vars());
 
   <?php
   /*
+   * Always listed, and not gated on download_content. The tile answers "what
+   * is on this device", which stays a fair question after the permission is
+   * withdrawn — the files are still there, and deleting them is exactly what
+   * somebody would come here to do.
+   */
+  ?>
+  <a class="card account-tile" href="/account/downloads">
+    <strong>Saved for offline</strong>
+    <span class="muted small">Videos kept on this device</span>
+  </a>
+
+  <?php
+  /*
    * Only for accounts that have a local password. Somebody who signs in
    * through an identity provider has no credential here, and the page itself
    * refuses them — linking to it would be offering a door that is locked.

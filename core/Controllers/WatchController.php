@@ -182,6 +182,13 @@ final class WatchController extends Controller
                 'downloadUrl' => $this->canDownload($video)
                     ? '/download/' . rawurlencode($video->slug) . '.mp4'
                     : null,
+                /*
+                 * The slug on its own, for the offline-save script. The theme's
+                 * $video is a prepared array rather than the model, and giving
+                 * a template a value it has to parse out of a URL is how the
+                 * two come to disagree the first time the URL changes shape.
+                 */
+                'downloadSlug' => $video->slug,
                 'related' => $this->related($video),
                 'backUrl' => '/',
             ]
