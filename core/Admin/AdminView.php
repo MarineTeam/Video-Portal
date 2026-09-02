@@ -6,6 +6,7 @@ namespace Portal\Admin;
 
 use Portal\Auth\Guard;
 use Portal\Content\Category;
+use Portal\Content\DownloadPolicy;
 use Portal\Content\Series;
 use Portal\Content\Speaker;
 use Portal\Content\ThumbnailPolicy;
@@ -857,6 +858,12 @@ final class AdminView
             'off'     => 'Never watermark',
         ], $video->watermarkMode);
 
+        $download = $this->modeSelect(
+            'download_mode',
+            DownloadPolicy::choices((string) ($data['inheritedDownloadLabel'] ?? 'Inherit')),
+            $video->downloadMode
+        );
+
         $memberOnly = $video->memberOnly ? ' checked' : '';
         $hidden = $video->hidden ? ' checked' : '';
         $premiere = $video->premiere ? ' checked' : '';
@@ -1108,6 +1115,16 @@ final class AdminView
                    /watch is not, so anyone can browse titles while only an approved account can play.
                    Choose "members only" to withhold the artwork too — the image URL is never sent to a
                    visitor who cannot watch, so it is not merely hidden.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Downloads</legend>
+                <label>Offline downloads {$download}</label>
+                <p class="muted small">Resolved most-specific-first: this setting, then the series, then
+                   the categories, then the site default. Downloading also needs the "download content"
+                   permission, so this decides <em>what</em> may be taken and the Permissions screen
+                   decides <em>who</em> may take it. A downloaded file cannot be revoked or expired the
+                   way a share link can.</p>
               </fieldset>
 
               <fieldset>
@@ -1654,6 +1671,12 @@ final class AdminView
             $category->thumbnailMode
         );
 
+        $download = $this->modeSelect(
+            'download_mode',
+            DownloadPolicy::choices((string) ($data['inheritedDownloadLabel'] ?? 'Inherit')),
+            $category->downloadMode
+        );
+
         $publishedAttr = $category->isPublished ? ' checked' : '';
         $memberOnlyAttr = $category->memberOnly ? ' checked' : '';
         $hiddenAttr = $category->hidden ? ' checked' : '';
@@ -1705,6 +1728,15 @@ final class AdminView
                 <p class="muted small">Applies to every video in this category and, unless they say
                    otherwise, everything nested beneath it. A video's own setting always wins, and where
                    a video sits in two categories that disagree, "members only" is what applies.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Downloads</legend>
+                <label>Offline downloads {$download}</label>
+                <p class="muted small">Applies to every video in this category and, unless they say
+                   otherwise, everything nested beneath it. A video's own setting wins, then its series,
+                   then this. Where a video sits in two categories that disagree, "block" is what
+                   applies — a thumbnail shown by mistake can be withdrawn, a downloaded file cannot.</p>
               </fieldset>
             </div>
           </div>
@@ -1890,6 +1922,12 @@ final class AdminView
         $featuredAttr = $series->featured ? ' checked' : '';
         $sequentialAttr = $series->sequential ? ' checked' : '';
 
+        $download = $this->modeSelect(
+            'download_mode',
+            DownloadPolicy::choices((string) ($data['inheritedDownloadLabel'] ?? 'Inherit')),
+            $series->downloadMode
+        );
+
         return <<<HTML
         <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
         <h1>{$title}</h1>
@@ -1927,6 +1965,15 @@ final class AdminView
                 <p class="muted small">Only the episode immediately before counts, so adding one in the
                    middle later locks exactly one thing rather than closing the whole course for
                    somebody who had finished it. Editors are never locked out, so you can still review.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Downloads</legend>
+                <label>Offline downloads {$download}</label>
+                <p class="muted small">Applies to every episode. This is usually the level worth setting:
+                   a course is what somebody wants offline, and saying it once beats editing every
+                   video. An episode's own setting still wins over this, and this wins over the
+                   categories.</p>
               </fieldset>
 
               <button class="btn" name="action" value="update">Save</button>
@@ -3867,6 +3914,7 @@ final class AdminView
         ) ? ' checked' : '';
 
         $membersDefault = $checked('members_thumbnail_default');
+        $downloadsEnabled = $checked('downloads_enabled');
         $allowIndexing = $checked('allow_indexing');
         $podcastExplicit = $checked('podcast_explicit');
         $subscriptionsEnabled = $checked('subscriptions_enabled');
@@ -3896,6 +3944,17 @@ final class AdminView
           <p class="muted small">The starting point for every video and category. Anyone signed out or
              not yet approved sees a "Members only" placeholder instead of the artwork — the image URL
              is never sent to them. Individual categories and videos can override this either way.</p>
+
+          <label class="checkbox">
+            <input type="checkbox" name="downloads_enabled" value="1"{$downloadsEnabled}>
+            Allow offline downloads by default
+          </label>
+          <p class="muted small">The bottom of the chain, reached only when a video, its series and its
+             categories all say "inherit". Off to begin with: a download is the one thing this site hands
+             out that it cannot take back — a share link expires and an unpublished video stops playing,
+             but a file on somebody's phone is there for good. Turning this on is not enough on its own;
+             a person also needs the "download content" permission, which nobody but administrators
+             holds until you grant it.</p>
 
           <fieldset>
             <legend>Search engines</legend>

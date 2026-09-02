@@ -11,6 +11,7 @@ use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
+use Portal\Controllers\DownloadController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\MemberShareController;
@@ -168,6 +169,7 @@ final class Routes
          */
         $router->get('/account', [AccountController::class, 'index'], ['auth.user']);
         $router->get('/account/shared-links', [AccountController::class, 'sharedLinks'], ['auth.user']);
+        $router->get('/account/downloads', [AccountController::class, 'downloads'], ['auth.user']);
 
         /*
          * Member sharing.
@@ -206,6 +208,29 @@ final class Routes
         // requireAuthorized, not requireUser: signing in proves identity,
         // watching requires an administrator's approval.
         $router->get('/watch/{slug}', [WatchController::class, 'show'], ['auth.authorized']);
+
+        /*
+         * Taking a copy away. Behind the same guard as watching, and then
+         * behind three more of its own — see DownloadController, which is the
+         * only place the capability and the content policy are put together.
+         *
+         * Not merged with /media/{slug}.mp4: that one is the podcast enclosure
+         * and is deliberately anonymous, serving public videos to a feed reader
+         * with no session. One handler answering both is how the anonymous
+         * route eventually inherits a branch that trusts a capability nobody
+         * checked.
+         */
+        $router->get('/download/{slug}.mp4', [DownloadController::class, 'media'], ['auth.authorized']);
+
+        /*
+         * The same decision as JSON, for the code that saves a video for
+         * offline viewing. It cannot use the redirect above: fetch() following
+         * a cross-origin 302 will not reveal where it landed, and putting the
+         * file in Cache Storage needs the URL as well as the bytes.
+         *
+         * Both run the same four gates, in the same method.
+         */
+        $router->get('/download/{slug}.json', [DownloadController::class, 'meta'], ['auth.authorized']);
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
 

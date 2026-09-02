@@ -9,6 +9,7 @@ use Portal\Auth\Capability;
 use Portal\Auth\UserRepository;
 use Portal\Content\BulkAction;
 use Portal\Content\CategoryRepository;
+use Portal\Content\DownloadPolicy;
 use Portal\Content\RevisionRepository;
 use Portal\Content\ThumbnailPolicy;
 use Portal\Content\VideoRepository;
@@ -238,6 +239,7 @@ final class AdminController extends Controller
             'series'         => $this->seriesRepo()->all(true),
             'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
+            'inheritedDownloadLabel' => $this->inheritedDownloadLabel($videos, $video),
             'transcript'     => $this->transcriptSummary($video->id),
             'chapters'       => $this->chapterText($video->id),
             'assets'         => $this->attachments($video->id),
@@ -745,6 +747,7 @@ final class AdminController extends Controller
                         : $request->input('description'),
                     'watermark_mode' => $request->input('watermark_mode') ?? $video->watermarkMode,
                     'thumbnail_mode' => $request->input('thumbnail_mode') ?? $video->thumbnailMode,
+                    'download_mode'  => $request->input('download_mode') ?? $video->downloadMode,
                     // Zero means "none", which has to be expressible — so an
                     // empty selection becomes null rather than 0, which no
                     // series or speaker will ever have as an id.
@@ -1207,6 +1210,7 @@ final class AdminController extends Controller
         'timezone',
         'watermark_default',
         'members_thumbnail_default',
+        'downloads_enabled',
         'require_verified_email',
         'allow_access_requests',
         'geo_enabled',
@@ -1519,6 +1523,7 @@ final class AdminController extends Controller
             // In series order, so the list on screen is the running order.
             'episodes'   => $videos->forSeries($series->id, true),
             'available'  => $this->unassignedVideos($series->id),
+            'inheritedDownloadLabel' => $this->inheritedSeriesDownloadLabel(),
         ]);
     }
 
@@ -1575,6 +1580,7 @@ final class AdminController extends Controller
                         'hidden'       => $request->input('hidden') !== null,
                         'featured'     => $request->input('featured') !== null,
                         'sequential'   => $request->input('sequential') !== null,
+                        'download_mode' => $request->input('download_mode'),
                     ]);
                     Audit::log($this->db(), $this->user()?->email, 'series.update', 'series', (string) $id);
                     return $this->back($request, 'Series saved.');
@@ -2937,6 +2943,7 @@ final class AdminController extends Controller
             'flat'           => $categories->all(true),
             'ancestors'      => $categories->ancestors($category->id),
             'inheritedLabel' => $this->inheritedCategoryThumbnailLabel($categories, $category),
+            'inheritedDownloadLabel' => $this->inheritedCategoryDownloadLabel($categories, $category),
         ]);
     }
 
@@ -3023,6 +3030,7 @@ final class AdminController extends Controller
                         'description'    => $request->input('description'),
                         'parent_id'      => ($p = (int) ($request->input('parent_id') ?? 0)) > 0 ? $p : null,
                         'thumbnail_mode' => $request->input('thumbnail_mode'),
+                        'download_mode'  => $request->input('download_mode'),
                         // Absent means unchecked; see updateVideo().
                         'is_published'   => $request->input('is_published') !== null,
                         'member_only'    => $request->input('member_only') !== null,
@@ -3082,6 +3090,73 @@ final class AdminController extends Controller
         return $resolved === ThumbnailPolicy::MEMBERS
             ? 'Inherit — currently members only'
             : 'Inherit — currently shows the real thumbnail';
+    }
+
+    /**
+     * What "Inherit" resolves to for this video's download setting.
+     *
+     * Same reasoning as the thumbnail label above, and more necessary: this
+     * chain has four levels rather than three, and getting it wrong hands out a
+     * file that cannot be taken back.
+     */
+    private function inheritedDownloadLabel(VideoRepository $videos, \Portal\Content\Video $video): string
+    {
+        // Asked with the video's OWN setting removed, which is the only way to
+        // learn what it would fall back to. The series and the id are kept,
+        // because those are what the fallback is read from.
+        $withoutOwn = new \Portal\Content\Video(
+            id: $video->id,
+            providerId: $video->providerId,
+            slug: $video->slug,
+            title: $video->title,
+            seriesId: $video->seriesId,
+            downloadMode: DownloadPolicy::INHERIT,
+        );
+
+        return DownloadPolicy::allows($videos->downloadModeFor($withoutOwn, $this->downloadsEnabled()))
+            ? 'Inherit — currently allowed'
+            : 'Inherit — currently blocked';
+    }
+
+    /** The same question for a category: what do its ancestors say? */
+    private function inheritedCategoryDownloadLabel(
+        CategoryRepository $categories,
+        \Portal\Content\Category $category
+    ): string {
+        foreach (array_reverse($categories->ancestors($category->id)) as $ancestor) {
+            if ($ancestor->downloadMode === DownloadPolicy::ALLOW) {
+                return 'Inherit — allowed, from ' . $ancestor->name;
+            }
+            if ($ancestor->downloadMode === DownloadPolicy::BLOCK) {
+                return 'Inherit — blocked, from ' . $ancestor->name;
+            }
+        }
+
+        return $this->downloadsEnabled()
+            ? 'Inherit — allowed, from the site setting'
+            : 'Inherit — blocked, from the site setting';
+    }
+
+    /**
+     * And for a series, where the honest answer is "it depends on the episode".
+     *
+     * A series sits above the categories in the resolution order but does not
+     * own them — each episode falls back to ITS OWN categories, which may
+     * differ from one another. So this names the fallback rather than
+     * pretending there is a single answer, and states the site setting, which
+     * is the one part that is the same for all of them.
+     */
+    private function inheritedSeriesDownloadLabel(): string
+    {
+        return $this->downloadsEnabled()
+            ? 'Inherit — each episode falls back to its categories, then the site setting (allowed)'
+            : 'Inherit — each episode falls back to its categories, then the site setting (blocked)';
+    }
+
+    /** The site-wide download default. Off unless somebody turned it on. */
+    private function downloadsEnabled(): bool
+    {
+        return $this->config()->settingBool('downloads_enabled', false);
     }
 
     /**
@@ -3428,6 +3503,7 @@ final class AdminController extends Controller
                 'site_name' => $this->config()->setting('site_name', 'Video Portal'),
                 'timezone'  => $this->config()->setting('timezone', 'UTC'),
                 'members_thumbnail_default' => $this->config()->setting('members_thumbnail_default', '0'),
+                'downloads_enabled'   => $this->config()->setting('downloads_enabled', '0'),
                 'allow_indexing'      => $this->config()->setting('allow_indexing', '0'),
                 'podcast_author'      => $this->config()->setting('podcast_author', ''),
                 'podcast_owner_name'  => $this->config()->setting('podcast_owner_name', ''),
@@ -3509,6 +3585,7 @@ final class AdminController extends Controller
             'timezone'  => $timezone,
 
             'members_thumbnail_default' => $checkbox('members_thumbnail_default', false),
+            'downloads_enabled'         => $checkbox('downloads_enabled', false),
             'allow_indexing'            => $checkbox('allow_indexing', false),
             'podcast_explicit'          => $checkbox('podcast_explicit', false),
             'subscriptions_enabled'     => $checkbox('subscriptions_enabled', true),

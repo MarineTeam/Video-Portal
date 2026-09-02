@@ -304,6 +304,10 @@ final class CategoryRepository
                 $fields['thumbnail_mode'] = ThumbnailPolicy::sanitize($attributes['thumbnail_mode']);
             }
 
+            if (isset($attributes['download_mode'])) {
+                $fields['download_mode'] = DownloadPolicy::sanitize($attributes['download_mode']);
+            }
+
             if (array_key_exists('position', $attributes)) {
                 $fields['position'] = (int) $attributes['position'];
             }
