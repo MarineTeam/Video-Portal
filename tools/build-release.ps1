@@ -231,6 +231,27 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "Not every class resolves. The release would fatal on the routes that use them."
 }
 
+Write-Host "Resolving every class REFERENCE..." -ForegroundColor Cyan
+
+# The step above loads each class. This one reads inside the method bodies.
+#
+# A class named without an import resolves against the CURRENT namespace, so
+# `DownloadPolicy::allows()` written in a controller means
+# Portal\Controllers\DownloadPolicy - which does not exist, and which PHP does
+# not complain about until that line runs. php -l parses without resolving;
+# load-all.php resolves the class without executing it. Both pass.
+#
+# Worse for instanceof: a missing import there is not an error at all. The
+# comparison is silently always false and the code takes its fallback path
+# forever.
+#
+# Run against the SOURCE rather than the stage, because the stage has no tests
+# directory and the check wants the whole tree.
+& $php (Join-Path $PSScriptRoot 'check-imports.php')
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "A class reference does not resolve. It is a fatal the moment that line runs."
+}
+
 Write-Host "Checking .htaccess files..." -ForegroundColor Cyan
 
 # A directive that is illegal in .htaccess context makes Apache abort EVERY
