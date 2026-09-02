@@ -54,6 +54,8 @@ final class Video
         public readonly bool $hidden = false,
         public readonly string $watermarkMode = 'default',
         public readonly string $thumbnailMode = 'default',
+        /** Tri-state download rule; resolved against series, categories, site. */
+        public readonly string $downloadMode = DownloadPolicy::INHERIT,
         public readonly ?string $publishedAt = null,
         public readonly ?string $unpublishAt = null,
         public readonly bool $premiere = false,
@@ -115,6 +117,7 @@ final class Video
             hidden:               (bool) ($row['hidden'] ?? false),
             watermarkMode:        (string) ($row['watermark_mode'] ?? 'default'),
             thumbnailMode:        (string) ($row['thumbnail_mode'] ?? 'default'),
+            downloadMode:         (string) ($row['download_mode'] ?? DownloadPolicy::INHERIT),
             publishedAt:          $nullableString('published_at'),
             unpublishAt:          $nullableString('unpublish_at'),
             premiere:             (bool) ($row['premiere'] ?? false),

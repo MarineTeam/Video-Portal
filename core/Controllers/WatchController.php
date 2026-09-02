@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Portal\Controllers;
 
 use Portal\Auth\Capability;
+use Portal\Content\DownloadPolicy;
 use Portal\Content\Video;
 use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
@@ -162,6 +163,25 @@ final class WatchController extends Controller
                         'minimumPass' => \Portal\Sharing\SharePassword::MINIMUM,
                     ]
                     : null,
+                /*
+                 * The download link, when both halves say yes: the capability
+                 * on this video, and the content policy resolved through its
+                 * series and categories.
+                 *
+                 * Asked here so the control appears only when it would work. A
+                 * link that 403s is worse than no link — it reads as the site
+                 * being broken rather than as a setting, and there is nothing
+                 * on the page to say which.
+                 *
+                 * Whether a FILE exists is deliberately not asked. That is
+                 * `Mp4Locator`, and until the video row has been synced once it
+                 * costs an API call — on a page render, for a control most
+                 * people will not press. The route answers with the specific
+                 * reason if there is none.
+                 */
+                'downloadUrl' => $this->canDownload($video)
+                    ? '/download/' . rawurlencode($video->slug) . '.mp4'
+                    : null,
                 'related' => $this->related($video),
                 'backUrl' => '/',
             ]
@@ -187,6 +207,33 @@ final class WatchController extends Controller
      *
      * @return list<array<string, mixed>>
      */
+    /**
+     * Both halves of a download decision, without the file lookup.
+     *
+     * WHO — the capability, scoped to this video, so a grant on one category
+     * does not offer the button on everything else. WHAT — the content policy
+     * resolved video → series → categories → site setting.
+     *
+     * The route asks the same two questions again rather than trusting this.
+     * The answer here decides whether a control is DRAWN; the answer there
+     * decides whether a file is handed over, and a control that has been on a
+     * page since before a setting changed must not be the thing that grants it.
+     */
+    private function canDownload(Video $video): bool
+    {
+        if (!$this->guard()->can(Capability::DOWNLOAD_CONTENT, 'video', $video->id)) {
+            return false;
+        }
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        return DownloadPolicy::allows($videos->downloadModeFor(
+            $video,
+            $this->config()->settingBool('downloads_enabled', false)
+        ));
+    }
+
     private function related(Video $video): array
     {
         try {

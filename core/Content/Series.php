@@ -39,6 +39,15 @@ final class Series
          * collection people dip into, and locking those would be wrong.
          */
         public readonly bool $sequential = false,
+
+        /**
+         * Tri-state download rule for every episode.
+         *
+         * The level videos and categories do not have between them, and the one
+         * people actually reach for: a course is the unit somebody wants
+         * available offline, and saying it once beats ticking forty videos.
+         */
+        public readonly string $downloadMode = DownloadPolicy::INHERIT,
     ) {
     }
 
@@ -65,6 +74,7 @@ final class Series
             // Only present when the query asked for it.
             videoCount:  (int) ($row['video_count'] ?? 0),
             sequential:  (bool) ($row['sequential'] ?? false),
+            downloadMode: (string) ($row['download_mode'] ?? DownloadPolicy::INHERIT),
         );
     }
 

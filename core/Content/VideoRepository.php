@@ -592,7 +592,12 @@ final class VideoRepository
             $opinions = [];
 
             foreach ($categoriesByVideo[$video->id] ?? [] as $categoryId) {
-                $opinion = $this->nearestCategoryOpinion($categoryId, $paths, $modes);
+                $opinion = $this->nearestCategoryOpinion(
+                    $categoryId,
+                    $paths,
+                    $modes,
+                    [ThumbnailPolicy::MEMBERS, ThumbnailPolicy::PUBLIC_ART]
+                );
                 if ($opinion !== null) {
                     $opinions[] = $opinion;
                 }
@@ -614,11 +619,22 @@ final class VideoRepository
     /**
      * Walk one category's ancestors, nearest first, for the first real opinion.
      *
+     * $decisive is the set of values that count as an answer, which is what
+     * lets thumbnails and downloads share this rather than each keeping a copy.
+     * Two implementations of an inheritance rule eventually disagree, and the
+     * disagreement here would be a category quietly resolving one way for
+     * artwork and the other way for a file.
+     *
      * @param array<int, string> $paths
      * @param array<int, string> $modes
+     * @param list<string> $decisive
      */
-    private function nearestCategoryOpinion(int $categoryId, array $paths, array $modes): ?string
-    {
+    private function nearestCategoryOpinion(
+        int $categoryId,
+        array $paths,
+        array $modes,
+        array $decisive
+    ): ?string {
         // path is root-first ("/1/7/22/"), and the nearest ancestor wins, so it
         // is walked in reverse. A category with no path row still gets its own
         // mode consulted rather than being skipped entirely.
@@ -627,13 +643,77 @@ final class VideoRepository
             : [$categoryId];
 
         foreach ($chain as $id) {
-            $mode = $modes[$id] ?? ThumbnailPolicy::INHERIT;
-            if ($mode === ThumbnailPolicy::MEMBERS || $mode === ThumbnailPolicy::PUBLIC_ART) {
+            $mode = $modes[$id] ?? '';
+            if (in_array($mode, $decisive, true)) {
                 return $mode;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Whether this video may be downloaded, before asking who is asking.
+     *
+     * The WHAT half of a download decision. The WHO half is
+     * `Capability::DOWNLOAD_CONTENT`, resolved by the permission system, and
+     * both have to say yes — see DownloadController, which is the only place
+     * the two are put together.
+     *
+     * One video at a time, deliberately. The thumbnail equivalent is batched
+     * because every card on a listing needs it; this is asked on a watch page
+     * and at a download, which are one video each. A batch version belongs with
+     * the first screen that shows a download control on a grid, not before.
+     */
+    public function downloadModeFor(Video $video, bool $siteDefault = false): string
+    {
+        // The video's own opinion settles it without touching the database.
+        if ($video->downloadMode !== DownloadPolicy::INHERIT) {
+            return DownloadPolicy::resolve($video->downloadMode);
+        }
+
+        $seriesMode = DownloadPolicy::INHERIT;
+        if ($video->seriesId !== null) {
+            $seriesMode = (string) ($this->db->value(
+                'SELECT download_mode FROM {series} WHERE id = ?',
+                [$video->seriesId]
+            ) ?? DownloadPolicy::INHERIT);
+        }
+
+        if ($seriesMode !== DownloadPolicy::INHERIT) {
+            return DownloadPolicy::resolve(DownloadPolicy::INHERIT, $seriesMode);
+        }
+
+        $categoryIds = array_map(
+            static fn (array $row): int => (int) $row['category_id'],
+            $this->db->all('SELECT category_id FROM {video_categories} WHERE video_id = ?', [$video->id])
+        );
+
+        $opinions = [];
+        if ($categoryIds !== []) {
+            $paths = [];
+            $modes = [];
+            foreach ($this->db->all('SELECT id, path, download_mode FROM {categories}') as $row) {
+                $id = (int) $row['id'];
+                $paths[$id] = (string) $row['path'];
+                $modes[$id] = (string) $row['download_mode'];
+            }
+
+            $decisive = [DownloadPolicy::ALLOW, DownloadPolicy::BLOCK];
+            foreach ($categoryIds as $categoryId) {
+                $opinion = $this->nearestCategoryOpinion($categoryId, $paths, $modes, $decisive);
+                if ($opinion !== null) {
+                    $opinions[] = $opinion;
+                }
+            }
+        }
+
+        return DownloadPolicy::resolve(
+            DownloadPolicy::INHERIT,
+            DownloadPolicy::INHERIT,
+            DownloadPolicy::reconcile($opinions),
+            $siteDefault
+        );
     }
 
     // ---------------------------------------------------------------- writes
@@ -720,6 +800,10 @@ final class VideoRepository
 
         if (isset($attributes['thumbnail_mode'])) {
             $fields['thumbnail_mode'] = ThumbnailPolicy::sanitize($attributes['thumbnail_mode']);
+        }
+
+        if (isset($attributes['download_mode'])) {
+            $fields['download_mode'] = DownloadPolicy::sanitize($attributes['download_mode']);
         }
 
         if ($fields === []) {

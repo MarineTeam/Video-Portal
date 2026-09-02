@@ -41,6 +41,21 @@ final class Capability
     public const SHARE_CONTENT     = 'share_content';
     public const MANAGE_VIEWERS    = 'manage_viewers';
 
+    /**
+     * Take a copy of something you can already watch, to keep.
+     *
+     * Separate from SHARE_CONTENT because it is a different risk. A share link
+     * expires, can be revoked, and names the person it was made for; a
+     * downloaded file does none of those things and cannot be recalled once it
+     * exists. Somebody trusted to hand out a link for a week is not
+     * automatically somebody trusted to hand out the file.
+     *
+     * Scopable, which is most of the point: a course can be made available
+     * offline to the group taking it without opening the rest of the library.
+     * It answers WHO; `DownloadPolicy` answers WHAT, and a download needs both.
+     */
+    public const DOWNLOAD_CONTENT  = 'download_content';
+
     // Community (phase 4, declared now so grants made today keep meaning)
     public const MODERATE_COMMENTS = 'moderate_comments';
 
@@ -89,6 +104,7 @@ final class Capability
             self::PUBLISH_CONTENT     => 'Publish and unpublish content',
             self::MANAGE_SHARES       => 'Create and revoke private share links',
             self::SHARE_CONTENT       => 'Share a video they can watch, and revoke their own links',
+            self::DOWNLOAD_CONTENT    => 'Download a video they can watch, for offline viewing',
             self::MANAGE_VIEWERS      => 'Approve viewers and manage viewer groups',
             self::MODERATE_COMMENTS   => 'Review and remove comments',
             self::MANAGE_USERS        => 'Create and edit user accounts',

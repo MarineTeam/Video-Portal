@@ -11,6 +11,7 @@ use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
+use Portal\Controllers\DownloadController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\MemberShareController;
@@ -206,6 +207,19 @@ final class Routes
         // requireAuthorized, not requireUser: signing in proves identity,
         // watching requires an administrator's approval.
         $router->get('/watch/{slug}', [WatchController::class, 'show'], ['auth.authorized']);
+
+        /*
+         * Taking a copy away. Behind the same guard as watching, and then
+         * behind three more of its own — see DownloadController, which is the
+         * only place the capability and the content policy are put together.
+         *
+         * Not merged with /media/{slug}.mp4: that one is the podcast enclosure
+         * and is deliberately anonymous, serving public videos to a feed reader
+         * with no session. One handler answering both is how the anonymous
+         * route eventually inherits a branch that trusts a capability nobody
+         * checked.
+         */
+        $router->get('/download/{slug}.mp4', [DownloadController::class, 'media'], ['auth.authorized']);
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
 

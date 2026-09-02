@@ -187,6 +187,10 @@ final class SeriesRepository
             }
         }
 
+        if (isset($attributes['download_mode'])) {
+            $fields['download_mode'] = DownloadPolicy::sanitize($attributes['download_mode']);
+        }
+
         if ($fields === []) {
             return $series;
         }

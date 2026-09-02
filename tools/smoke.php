@@ -1065,12 +1065,19 @@ check('Video edit screen renders', $videoEdit['status'] === 200, "got {$videoEdi
 check('It offers category assignment', str_contains($videoEdit['body'], 'name="categories[]"'));
 check('It offers the thumbnail setting', str_contains($videoEdit['body'], 'name="thumbnail_mode"'));
 check('It says what "inherit" currently resolves to', str_contains($videoEdit['body'], 'Inherit — currently'));
+check('It offers the download setting', str_contains($videoEdit['body'], 'name="download_mode"'));
+check(
+    'and says which way that inherits, which is a four-level chain',
+    str_contains($videoEdit['body'], 'Inherit — currently blocked'),
+    'nothing has been turned on, so the honest answer is blocked'
+);
 
 $categoryRow = (int) $db->value('SELECT id FROM {categories} LIMIT 1');
 
 $categoryEdit = getWithJar($baseUrl . '/admin/categories/' . $categoryRow, $jar);
 check('Category edit screen renders', $categoryEdit['status'] === 200, "got {$categoryEdit['status']}");
 check('It offers the thumbnail setting', str_contains($categoryEdit['body'], 'name="thumbnail_mode"'));
+check('It offers the download setting', str_contains($categoryEdit['body'], 'name="download_mode"'));
 
 /* Put the video in the category — the thing that was impossible before. */
 $assigned = postWithJar($baseUrl . '/admin/videos', [
@@ -1291,6 +1298,11 @@ check(
     str_contains($permsScreen['body'], 'Administrator is not on this screen'),
     'the no-self-escalation rule should be stated where someone would look for it'
 );
+check(
+    'It offers the download capability',
+    str_contains($permsScreen['body'], 'download_content'),
+    'this is the WHO half of a download, so a capability nobody can grant is half a feature'
+);
 
 $permsToken = csrfFrom($permsScreen['body']);
 
@@ -1458,6 +1470,11 @@ check(
 $seriesEdit = getWithJar($baseUrl . '/admin/series/' . $seriesId, $jar);
 check('Series edit screen renders', $seriesEdit['status'] === 200, "got {$seriesEdit['status']}");
 check('It offers an episode picker', str_contains($seriesEdit['body'], 'name="videos[]"'));
+check(
+    'It offers the download setting',
+    str_contains($seriesEdit['body'], 'name="download_mode"'),
+    'the series is the level people actually reach for — a course is the unit somebody wants offline'
+);
 
 /* Put the seeded video in it, then confirm the public page works. */
 $episodes = postWithJar($baseUrl . '/admin/series', [
@@ -4701,6 +4718,11 @@ check('Feeds are still advertised', str_contains($publicHome['body'], 'applicati
 /* Turn it on through the settings form, the way an owner would. */
 $settingsScreen = getWithJar($baseUrl . '/admin/settings', $jar);
 check('Settings offers the indexing switch', str_contains($settingsScreen['body'], 'name="allow_indexing"'));
+check(
+    'Settings offers the download default',
+    str_contains($settingsScreen['body'], 'name="downloads_enabled"'),
+    'the bottom of the inheritance chain has to be reachable from a screen'
+);
 check('Settings offers the podcast fields', str_contains($settingsScreen['body'], 'name="podcast_owner_email"'));
 
 /*
@@ -8631,6 +8653,173 @@ check(
     $adminMade !== '' && $db->value('SELECT revoked_at FROM {shares} WHERE id = ?', [$adminMade]) === null,
     'the id alone was enough to switch off a link they did not make'
 );
+
+/* ------------------------------------------------------ offline downloads
+ *
+ * Two independent gates, and the whole design is that BOTH have to say yes:
+ * download_content says WHO may take a copy, DownloadPolicy says WHAT may be
+ * taken. Either one alone is not permission, and the checks below turn each on
+ * separately to prove the other still refuses.
+ *
+ * Reuses the scoped user from member sharing above, because the property most
+ * worth proving is the same one: a grant on ONE category is not permission to
+ * download the library. It is more consequential here — a share link expires
+ * and can be revoked, a downloaded file can be neither.
+ */
+echo "\nOffline downloads\n";
+
+$dlInside = getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar);
+check(
+    'No download link before anything is granted',
+    !str_contains($dlInside['body'], '/download/' . $insideSlug . '.mp4'),
+    'a control that 403s reads as a broken site rather than a setting'
+);
+
+$dlRefused = getWithJar($baseUrl . '/download/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'and the route refuses without the capability',
+    $dlRefused['status'] === 403,
+    "got {$dlRefused['status']} — a hidden link is not a permission check"
+);
+
+/*
+ * The capability alone. Nothing has said this video may be downloaded, so the
+ * answer must still be no — this is the check that would pass just as happily
+ * against an implementation that forgot the content policy entirely.
+ */
+$db->execute(
+    'INSERT INTO {grants} (subject_type, subject_id, email, capability_id, scope_type, scope_id, created_at)
+     VALUES ("user", ?, "", (SELECT id FROM {capabilities} WHERE slug = ?), "category", ?, NOW())',
+    [$scopedUserId, 'download_content', $scopeInside]
+);
+
+$dlCapOnly = getWithJar($baseUrl . '/download/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'The capability alone is not enough',
+    $dlCapOnly['status'] === 403,
+    "got {$dlCapOnly['status']} — permission to download is not permission to download THIS"
+);
+check(
+    'and the refusal says it is the content setting, not the person',
+    str_contains($dlCapOnly['body'], 'turned off for this video'),
+    'two refusals that read alike send somebody to the wrong screen'
+);
+
+/* Now the content half, on the video itself. */
+$db->execute("UPDATE {videos} SET download_mode = 'allow' WHERE id = ?", [$scopeVideos['inside']]);
+
+$dlAllowed = getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar);
+check(
+    'With both halves granted the link appears',
+    str_contains($dlAllowed['body'], '/download/' . $insideSlug . '.mp4'),
+    'a capability with no way to use it is the defect this project keeps repeating'
+);
+
+$dlGo = getWithJar($baseUrl . '/download/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'and the download redirects to a signed URL',
+    $dlGo['status'] === 302 && str_contains($dlGo['headers']['location'] ?? '', 'token='),
+    "got {$dlGo['status']}, went to " . ($dlGo['headers']['location'] ?? 'nowhere')
+);
+check(
+    'and it is not cacheable',
+    str_contains(strtolower($dlGo['headers']['cache-control'] ?? ''), 'no-store'),
+    'a cached redirect outlives the signature it carries'
+);
+check(
+    'and the download is in the audit log',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {audit_log} WHERE action = ? AND target_id = ?',
+        ['video.download', (string) $scopeVideos['inside']]
+    ) === 1,
+    'a download outlives the session, so who took a copy has to be answerable later'
+);
+
+/*
+ * The boundary, posted directly. The video OUTSIDE the grant is set to allow
+ * downloads, so the only thing refusing is the scope on the capability.
+ */
+$db->execute("UPDATE {videos} SET download_mode = 'allow' WHERE id = ?", [$scopeVideos['outside']]);
+
+$dlOutside = getWithJar($baseUrl . '/download/' . $outsideSlug . '.mp4', $shareJar);
+check(
+    'A video outside the grant is refused even when it allows downloads',
+    $dlOutside['status'] === 403,
+    "got {$dlOutside['status']} — a grant on one category reached the whole library"
+);
+
+/*
+ * A blocking series closes an episode its own video row opened, which is the
+ * only ordering in the chain that is not obvious. The video says allow; the
+ * series says block; the video wins — so the video is set back to inherit
+ * first, and THEN the series decides.
+ */
+$db->execute("UPDATE {videos} SET download_mode = 'default' WHERE id = ?", [$scopeVideos['inside']]);
+$db->execute(
+    "UPDATE {categories} SET download_mode = 'allow' WHERE id = ?",
+    [$scopeInside]
+);
+
+$dlByCategory = getWithJar($baseUrl . '/download/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'A category can allow downloads for everything in it',
+    $dlByCategory['status'] === 302,
+    "got {$dlByCategory['status']}"
+);
+
+/*
+ * The series is STAGED rather than taken from whatever the fixture happens to
+ * have. The first version of this read `series_id` off the video and skipped
+ * when it was null — which is how a check that never runs comes to look
+ * exactly like one that passed. It was null, and the level this section exists
+ * to prove went unexercised while the section reported green.
+ */
+$dlPriorSeries = $db->value('SELECT series_id FROM {videos} WHERE id = ?', [$scopeVideos['inside']]);
+$dlSeriesId = $db->insert('series', [
+    'slug'          => 'download-order-' . bin2hex(random_bytes(3)),
+    'title'         => 'Download ordering',
+    'download_mode' => 'block',
+    'created_at'    => date('Y-m-d H:i:s'),
+    'updated_at'    => date('Y-m-d H:i:s'),
+]);
+$db->execute('UPDATE {videos} SET series_id = ? WHERE id = ?', [$dlSeriesId, $scopeVideos['inside']]);
+
+$dlBlocked = getWithJar($baseUrl . '/download/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'and a blocking series overrides an allowing category',
+    $dlBlocked['status'] === 403,
+    "got {$dlBlocked['status']} — the series sits above the categories"
+);
+
+/* And the video's own setting outranks the series that just blocked it. */
+$db->execute("UPDATE {videos} SET download_mode = 'allow' WHERE id = ?", [$scopeVideos['inside']]);
+$dlVideoWins = getWithJar($baseUrl . '/download/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'and the video itself outranks the series',
+    $dlVideoWins['status'] === 302,
+    "got {$dlVideoWins['status']} — most-specific-first stops at the video"
+);
+
+$db->execute(
+    "UPDATE {videos} SET series_id = ?, download_mode = 'default' WHERE id = ?",
+    [$dlPriorSeries, $scopeVideos['inside']]
+);
+$db->execute('DELETE FROM {series} WHERE id = ?', [$dlSeriesId]);
+
+/* Signed out, the route is a sign-in redirect rather than a file. */
+$dlAnon = get($baseUrl . '/download/' . $insideSlug . '.mp4');
+check(
+    'Downloading signed out is refused',
+    $dlAnon['status'] === 302 && !str_contains($dlAnon['headers']['location'] ?? '', 'b-cdn.net'),
+    'went to ' . ($dlAnon['headers']['location'] ?? 'nowhere')
+);
+
+/* Put the fixtures back for anything downstream. */
+$db->execute(
+    "UPDATE {videos} SET download_mode = 'default' WHERE id IN (?, ?)",
+    [$scopeVideos['inside'], $scopeVideos['outside']]
+);
+$db->execute("UPDATE {categories} SET download_mode = 'default' WHERE id = ?", [$scopeInside]);
 
 @unlink($shareJar);
 @unlink($scopeJar);

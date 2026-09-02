@@ -28,6 +28,8 @@ final class Category
         public readonly bool $memberOnly = false,
         public readonly bool $hidden = false,
         public readonly string $thumbnailMode = 'default',
+        /** Tri-state download rule for this category and everything beneath it. */
+        public readonly string $downloadMode = DownloadPolicy::INHERIT,
     ) {
     }
 
@@ -51,6 +53,7 @@ final class Category
             memberOnly:  (bool) ($row['member_only'] ?? false),
             hidden:      (bool) ($row['hidden'] ?? false),
             thumbnailMode: (string) ($row['thumbnail_mode'] ?? 'default'),
+            downloadMode:  (string) ($row['download_mode'] ?? DownloadPolicy::INHERIT),
         );
     }
 

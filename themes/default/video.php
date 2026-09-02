@@ -382,7 +382,23 @@ $transcript ??= [];
  * the same video, because a hidden form is not a permission check.
  */
 $sharePanel ??= null;
+
+/*
+ * Download this, when the capability and the content policy both allow it.
+ *
+ * Null otherwise, for the same reason as the share panel above: the controller
+ * asks both questions again at the route, so this is a control rather than a
+ * permission, and a link that 403s reads as a broken site rather than a
+ * setting.
+ */
+$downloadUrl ??= null;
 ?>
+<?php if ($downloadUrl !== null): ?>
+  <p style="margin:1rem 0">
+    <a class="btn secondary" href="<?= e($downloadUrl) ?>" download>Download this video</a>
+    <span class="muted small">Saves an MP4 to this device to watch offline.</span>
+  </p>
+<?php endif; ?>
 <?php if ($sharePanel !== null): ?>
   <section class="card" id="share" style="margin:2rem 0;padding:1rem 1.25rem">
     <h2 class="section-title">Share this</h2>
