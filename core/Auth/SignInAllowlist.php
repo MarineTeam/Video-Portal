@@ -97,6 +97,8 @@ final class SignInAllowlist
             self::NOT_LISTED => 'This address is not on the list of people who may sign in.',
             self::SUSPENDED_ENTRY => 'This address was on the list and has been suspended.',
             self::NOT_APPROVED => 'This account exists but has not been approved yet.',
+            'registration_refused' => 'The sign-in provider was told not to create an account for this '
+                . 'address, because it is not on the list. No account was made.',
             default => 'This address cannot sign in here.',
         };
     }

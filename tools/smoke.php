@@ -178,6 +178,36 @@ function postJson(string $url, array $payload): array
 }
 
 /**
+ * A POST with a raw body and headers of the caller's choosing.
+ *
+ * For endpoints a machine calls rather than a browser: no cookie jar, no CSRF
+ * token, and an Authorization header the other helpers have no way to set.
+ *
+ * @param list<string> $headers
+ * @return array{status: int, body: string, headers: array<string, string>}
+ */
+function postRaw(string $url, string $body, array $headers): array
+{
+    /*
+     * The header list is asserted rather than assumed.
+     *
+     * This helper was first written against a send() that took four arguments,
+     * and PHP passes extra arguments to a user function silently — so every
+     * header here was dropped without a word and five checks reported the
+     * application refusing a valid secret it had never been sent. A harness
+     * that cannot tell "the application is wrong" from "I did not ask it
+     * properly" is the failure this project has already paid for twice.
+     */
+    if ($headers === []) {
+        throw new RuntimeException('postRaw() needs headers; that is the only reason it exists.');
+    }
+
+    $sent = send($url, 'POST', $body, 'application/json', $headers);
+
+    return $sent;
+}
+
+/**
  * Requests that carry a session, via a cookie jar.
  *
  * @return array{status: int, body: string, headers: array<string, string>}
@@ -349,7 +379,10 @@ function csrfFrom(string $html): string
 }
 
 /** @return array{status: int, body: string, headers: array<string, string>} */
-function send(string $url, string $method, string $body, string $contentType): array
+/**
+ * @param list<string> $headers replaces the default Content-Type when given
+ */
+function send(string $url, string $method, string $body, string $contentType, array $headers = []): array
 {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -357,7 +390,7 @@ function send(string $url, string $method, string $body, string $contentType): a
         CURLOPT_HEADER         => true,
         CURLOPT_CUSTOMREQUEST  => $method,
         CURLOPT_POSTFIELDS     => $body,
-        CURLOPT_HTTPHEADER     => ['Content-Type: ' . $contentType],
+        CURLOPT_HTTPHEADER     => $headers !== [] ? $headers : ['Content-Type: ' . $contentType],
         CURLOPT_TIMEOUT        => SMOKE_TIMEOUT,
     ]);
 
@@ -8992,6 +9025,7 @@ check(
 /* Cleared again so it plays no part in the allowlist checks below. */
 $db->execute("DELETE FROM {settings} WHERE `key` IN ('signin_claim_name','signin_claim_values','signin_authorize_param')");
 
+
 /*
  * Refused while the list is empty. This is the one way the feature can take a
  * site down, and the screen has to stop it rather than report it afterwards.
@@ -9099,6 +9133,117 @@ check(
     (int) $db->value('SELECT COUNT(*) FROM {access_attempts} WHERE reviewed_at IS NULL') === 0,
     'a list that only grows is one nobody reads twice'
 );
+
+/*
+ * The pre-registration endpoint, which an identity provider calls before it
+ * creates an account.
+ *
+ * It answers a question this site otherwise refuses to answer — whether an
+ * address is expected here — so the checks below are mostly about it staying
+ * shut: silent until configured, constant-time secret, and 404 rather than any
+ * answer that would confirm it exists.
+ */
+$regUnconfigured = postRaw($baseUrl . '/auth/registration-check', '{"email":"anyone@smoke.test"}', [
+    'Content-Type: application/json',
+    'Accept: application/json',
+]);
+check(
+    'The registration endpoint is silent until it is configured',
+    $regUnconfigured['status'] === 404,
+    "got {$regUnconfigured['status']} — an endpoint that says \"not configured\" has confirmed it exists"
+);
+
+postWithJar($baseUrl . '/admin/access', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/access', $jar)['body']),
+    'action' => 'registration-secret',
+], $jar);
+
+$regSecret = (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_registration_secret'");
+check('A registration secret can be generated', $regSecret !== '', 'nothing was stored');
+
+$regScreen = getWithJar($baseUrl . '/admin/access', $jar);
+check(
+    'and the screen shows the Action to paste into Auth0',
+    str_contains($regScreen['body'], 'onExecutePreUserRegistration')
+        && str_contains($regScreen['body'], '/auth/registration-check'),
+    'a secret and an endpoint with no instructions is a mechanism nobody can wire up'
+);
+check(
+    'and says plainly that it is advisory rather than a boundary',
+    str_contains($regScreen['body'], 'advisory, not a boundary'),
+    'somebody has to know an unreachable endpoint weakens nothing'
+);
+
+/* A wrong secret is 404, not 403 — the same answer as no endpoint at all. */
+$regWrong = postRaw($baseUrl . '/auth/registration-check', '{"email":"listed@smoke.test"}', [
+    'Content-Type: application/json',
+    'Accept: application/json',
+    'Authorization: Bearer not-the-secret',
+]);
+check(
+    'A wrong secret gets the same answer as no endpoint',
+    $regWrong['status'] === 404,
+    "got {$regWrong['status']}"
+);
+
+$regHeaders = [
+    'Content-Type: application/json',
+    'Accept: application/json',
+    'Authorization: Bearer ' . $regSecret,
+];
+
+/*
+ * The allowlist is switched on at this point in the run, and `listed@` is on
+ * it while `stranger@` is not. The endpoint must agree with the gate.
+ */
+$regListed = postRaw($baseUrl . '/auth/registration-check', '{"email":"listed@smoke.test"}', $regHeaders);
+$regStranger = postRaw($baseUrl . '/auth/registration-check', '{"email":"nobody@smoke.test"}', $regHeaders);
+
+check(
+    'A listed address may register',
+    $regListed['status'] === 200 && str_contains($regListed['body'], '"allowed":true'),
+    "got {$regListed['status']}: " . substr($regListed['body'], 0, 80)
+);
+check(
+    'and an unlisted one may not',
+    $regStranger['status'] === 200 && str_contains($regStranger['body'], '"allowed":false'),
+    "got {$regStranger['status']}: " . substr($regStranger['body'], 0, 80)
+);
+check(
+    'and the refusal is recorded, since no account is ever created to show it',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {access_attempts} WHERE email = ? AND reason = ?',
+        ['nobody@smoke.test', 'registration_refused']
+    ) === 1,
+    'a refusal at the provider is the most invisible one in the product'
+);
+
+/*
+ * An address that already has an account is allowed whatever the list says.
+ * Refusing would lock somebody out of an account this site can already see,
+ * which no screen here would be able to explain.
+ */
+$regExisting = postRaw($baseUrl . '/auth/registration-check', '{"email":"admin@smoke.test"}', $regHeaders);
+check(
+    'An address that already has an account is not refused',
+    str_contains($regExisting['body'], '"allowed":true'),
+    'got ' . substr($regExisting['body'], 0, 80)
+);
+
+/*
+ * And with the gate off the endpoint must not be stricter than the site it
+ * guards, or somebody hits a wall at the provider that nothing here explains.
+ */
+$db->execute("UPDATE {settings} SET `value` = '0' WHERE `key` = 'signin_allowlist_enabled'");
+$regGateOff = postRaw($baseUrl . '/auth/registration-check', '{"email":"nobody2@smoke.test"}', $regHeaders);
+check(
+    'With the gate off the endpoint refuses nobody',
+    str_contains($regGateOff['body'], '"allowed":true'),
+    'an endpoint stricter than the application it guards refuses people the site would admit'
+);
+$db->execute("UPDATE {settings} SET `value` = '1' WHERE `key` = 'signin_allowlist_enabled'");
+
+$db->execute("DELETE FROM {settings} WHERE `key` = 'signin_registration_secret'");
 
 /* Put everything back for whatever runs after this. */
 $db->execute("UPDATE {settings} SET `value` = '0' WHERE `key` = 'signin_allowlist_enabled'");

@@ -3353,6 +3353,8 @@ final class AdminController extends Controller
                 (string) $this->config()->setting('signin_gate_mode', \Portal\Auth\ClaimGate::ALL)
             ),
             'authParam'   => (string) $this->config()->setting('signin_authorize_param', ''),
+            'regSecret'   => (string) $this->config()->setting('signin_registration_secret', ''),
+            'regUrl'      => $this->config()->url('/auth/registration-check'),
         ]);
     }
 
@@ -3419,6 +3421,35 @@ final class AdminController extends Controller
                 (new \Portal\Auth\AccessAttempts($this->db()))->markReviewed(date('Y-m-d H:i:s'));
 
                 return $this->back($request, 'Marked as dealt with.');
+
+            case 'registration-secret':
+                /*
+                 * Regenerating is the only way to change it, and the old one
+                 * stops working the instant it is pressed — which is the point
+                 * of the button. Rotating a shared secret is what you do when
+                 * you think it has leaked, and a rotation that leaves the
+                 * previous value working for a grace period is not a rotation.
+                 */
+                $secret = \Portal\Support\Crypto::token(32);
+                $this->config()->setSettings(['signin_registration_secret' => $secret]);
+                Audit::log($this->db(), $actor, 'signin.registration.secret');
+
+                return $this->back(
+                    $request,
+                    'A new secret was generated. Paste it into the Auth0 Action now — the previous one '
+                    . 'stopped working just then, so any Action still holding it will refuse every signup.'
+                );
+
+            case 'registration-off':
+                $this->config()->setSettings(['signin_registration_secret' => '']);
+                Audit::log($this->db(), $actor, 'signin.registration.off');
+
+                return $this->back(
+                    $request,
+                    'Turned off. The endpoint now answers 404 to everybody, so remove the Auth0 Action '
+                    . 'or it will refuse every signup.',
+                    'error'
+                );
 
             case 'membership':
                 $values = \Portal\Auth\ClaimGate::parseValues((string) ($request->input('claim_values') ?? ''));

@@ -3513,6 +3513,77 @@ final class AdminView
         $allSelected = $mode === 'either' ? '' : ' selected';
         $eitherSelected = $mode === 'either' ? ' selected' : '';
 
+        $regSecret = (string) ($data['regSecret'] ?? '');
+        $regUrl = e((string) ($data['regUrl'] ?? ''));
+
+        $regState = $regSecret !== ''
+            ? '<span class="pill on">On</span>'
+            : '<span class="pill">Off</span>';
+
+        if ($regSecret === '') {
+            $regBody = <<<REG
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <button class="btn" name="action" value="registration-secret">Generate a secret</button>
+              <span class="muted small">Nothing happens at the provider until you also install the
+                 Action below.</span>
+            </form>
+REG;
+        } else {
+            $secret = e($regSecret);
+
+            /*
+             * The Action itself, ready to paste.
+             *
+             * A secret and an endpoint with no instructions is a mechanism
+             * nobody can wire up, which this project has shipped before and had
+             * to go back for. The snippet is shown in full rather than linked,
+             * because the person configuring it is in the Auth0 dashboard in
+             * another tab and the one thing they cannot do is guess the shape
+             * of the request this endpoint expects.
+             *
+             * `api.access.deny` on refusal, and a bare `return` on anything
+             * else: a portal that is slow or down must not stop signups
+             * altogether. The endpoint is advisory, and an Action that failed
+             * closed would make an outage here into an outage at the provider.
+             */
+            $regBody = <<<REG
+            <p><strong>Endpoint</strong> <code>{$regUrl}</code></p>
+            <p><strong>Secret</strong> <code>{$secret}</code></p>
+            <p class="muted small">Add this as a Pre-User-Registration Action in Auth0, with the secret
+               stored as an Action secret named <code>PORTAL_SECRET</code>:</p>
+            <pre><code>exports.onExecutePreUserRegistration = async (event, api) =&gt; {
+  try {
+    const res = await fetch("{$regUrl}", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + event.secrets.PORTAL_SECRET,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ email: event.user.email })
+    });
+
+    if (!res.ok) return;            // portal unreachable: do not block signups
+    const body = await res.json();
+    if (body.allowed === false) {
+      api.access.deny("not_listed", "This address is not expected at this site.");
+    }
+  } catch (e) {
+    // Same reasoning: an outage here must not become an outage at Auth0.
+  }
+};</code></pre>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="_token" value="{$token}">
+              <button class="btn small secondary" name="action" value="registration-secret">Generate a new secret</button>
+            </form>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="_token" value="{$token}">
+              <button class="btn small danger" name="action" value="registration-off">Turn off</button>
+            </form>
+REG;
+        }
+
         $state = $enabled
             ? '<span class="pill on">On</span>'
             : '<span class="pill">Off</span>';
@@ -3616,6 +3687,23 @@ final class AdminView
             <button class="btn" name="action" value="{$toggleAction}">{$toggleLabel}</button>
             <span class="muted small">{$activeCount} address(es) currently active.</span>
           </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>Refuse signups at the provider {$regState}</legend>
+          <p class="muted small">
+            Without this, an address nobody listed still gets an account here — unapproved, able to
+            watch nothing, but a row on the Accounts screen all the same. On a site whose sign-in page
+            is public that list fills with people who were never going to be let in, and the ones who
+            genuinely need approving are lost among them.
+          </p>
+          <p class="muted small">
+            <strong>It is advisory, not a boundary.</strong> Refusing here stops a row being created;
+            it is not what stops somebody watching. If this endpoint is unreachable, or the Action is
+            never installed, or somebody signs in through a provider with no such hook, nothing is
+            weakened — an unlisted account is refused on its first request exactly as it is now.
+          </p>
+          {$regBody}
         </fieldset>
 
         <fieldset>
