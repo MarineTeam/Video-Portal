@@ -127,13 +127,13 @@ final class Guard
              * what makes removal take effect immediately instead of whenever a
              * cookie happens to expire.
              */
-            $refusal = $this->allowlistRefusal($user);
+            $refusal = $this->signInRefusal($user);
 
             if ($refusal !== null) {
                 $this->attempts->record($user->email, $refusal, $user->authProvider, $request->ip());
 
                 if ($request->wantsJson()) {
-                    return Response::error(SignInAllowlist::explain($refusal), 403);
+                    return Response::error($this->explainRefusal($refusal), 403);
                 }
 
                 return Response::html($this->refusedPage($user, $refusal), 403);
@@ -323,6 +323,73 @@ final class Guard
     }
 
     /**
+     * Both sign-in gates, combined the way the site asked for.
+     *
+     *   all     the allowlist AND the membership claim
+     *   either  one of them is enough
+     *
+     * The exemptions are applied ONCE, here, to both gates together. Applying
+     * them per-gate would be the same rule written twice, and a local-password
+     * account carries no claim at all, so a claim gate without the exemption
+     * refuses every one of them — including the account that is the documented
+     * way back in when the identity provider is the thing that is broken.
+     *
+     * Fails to the DEFAULT rather than closed, for the reason written on
+     * allowlistRefusal(): both gates are off unless configured, and a
+     * half-migrated install must not become a site nobody can enter.
+     */
+    private function signInRefusal(User $user): ?string
+    {
+        if ($user->isAdmin() || $user->hasPassword) {
+            return null;
+        }
+
+        try {
+            $accepted = ClaimGate::parseValues(
+                (string) $this->config->setting('signin_claim_values', '')
+            );
+
+            $claimOn = trim((string) $this->config->setting('signin_claim_name', '')) !== ''
+                && $accepted !== [];
+            $listOn = $this->config->settingBool('signin_allowlist_enabled', false);
+
+            /*
+             * Which gates are configured is settled BEFORE either is asked, and
+             * that ordering is the whole correctness of `either` mode.
+             *
+             * An unconfigured gate returns null, which is indistinguishable
+             * from "this one let them through" — so combining a configured gate
+             * with an unconfigured one under OR waves everybody past the gate
+             * that is actually switched on. The mode only applies when there
+             * are genuinely two answers to combine.
+             */
+            if (!$claimOn && !$listOn) {
+                return null;
+            }
+
+            if (!$claimOn) {
+                return $this->allowlistRefusal($user);
+            }
+
+            $claimRefusal = ClaimGate::decide(true, $user->authClaim, $accepted);
+
+            if (!$listOn) {
+                return $claimRefusal;
+            }
+
+            return ClaimGate::combine(
+                (string) $this->config->setting('signin_gate_mode', ClaimGate::ALL),
+                $this->allowlistRefusal($user),
+                $claimRefusal
+            );
+        } catch (\Throwable $e) {
+            error_log('Portal: could not read the sign-in gates: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
      * The page somebody refused by the allowlist sees.
      *
      * Names the reason, which is three different situations needing three
@@ -332,10 +399,25 @@ final class Guard
      * differently: an administrator reading it over somebody's shoulder should
      * know which screen to open.
      */
+    /**
+     * The right words for a refusal, whichever gate produced it.
+     *
+     * Two vocabularies, kept apart because the reasons are about different
+     * things — a list this site maintains, and a claim somebody else's system
+     * asserts — and one enum holding both would blur exactly the distinction
+     * that makes the messages useful.
+     */
+    private function explainRefusal(string $reason): string
+    {
+        return in_array($reason, [ClaimGate::NOT_A_MEMBER, ClaimGate::NO_CLAIM, ClaimGate::NEITHER], true)
+            ? ClaimGate::explain($reason)
+            : SignInAllowlist::explain($reason);
+    }
+
     private function refusedPage(User $user, string $reason): string
     {
         $email = e($user->email);
-        $why = e(SignInAllowlist::explain($reason));
+        $why = e($this->explainRefusal($reason));
 
         return $this->noticePage(
             'You cannot sign in here',

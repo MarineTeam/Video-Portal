@@ -26,6 +26,8 @@ final class User
         public readonly bool $emailVerified = false,
         public readonly ?string $authProvider = null,
         public readonly ?string $authSubject = null,
+        /** What the provider last said about the membership claim this site asks for. */
+        public readonly ?string $authClaim = null,
         public readonly bool $hasPassword = false,
     ) {
     }
@@ -42,6 +44,7 @@ final class User
             emailVerified: (bool) ($row['email_verified'] ?? false),
             authProvider:  isset($row['auth_provider']) && $row['auth_provider'] !== null ? (string) $row['auth_provider'] : null,
             authSubject:   isset($row['auth_subject']) && $row['auth_subject'] !== null ? (string) $row['auth_subject'] : null,
+            authClaim:     isset($row['auth_claim']) && $row['auth_claim'] !== null ? (string) $row['auth_claim'] : null,
             hasPassword:   isset($row['password_hash']) && (string) $row['password_hash'] !== '',
         );
     }
