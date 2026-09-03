@@ -47,7 +47,10 @@ final class VerifiedEmailTest extends DatabaseTestCase
             $session,
             $this->users,
             new Capabilities($this->db()),
-            new \Portal\Auth\LocalProvider([], $this->db())
+            new \Portal\Auth\LocalProvider([], $this->db()),
+            new Config(),
+            new \Portal\Auth\SignInAllowlist($this->db()),
+            new \Portal\Auth\AccessAttempts($this->db()),
         );
 
         // Guard reads the setting through the container, because it is built in
@@ -184,7 +187,10 @@ final class VerifiedEmailTest extends DatabaseTestCase
             $session,
             $this->users,
             new Capabilities($this->db()),
-            new \Portal\Auth\LocalProvider([], $this->db())
+            new \Portal\Auth\LocalProvider([], $this->db()),
+            new Config(),
+            new \Portal\Auth\SignInAllowlist($this->db()),
+            new \Portal\Auth\AccessAttempts($this->db()),
         );
 
         $response = ($guard->requireAuthorized())(Request::capture());

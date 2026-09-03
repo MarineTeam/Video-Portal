@@ -8891,6 +8891,149 @@ $db->execute(
 );
 $db->execute("UPDATE {categories} SET download_mode = 'default' WHERE id = ?", [$scopeInside]);
 
+/* ------------------------------------------------------ who can sign in
+ *
+ * The second gate, in front of the approval flag: the list says which
+ * ADDRESSES may be here at all, `users.authorized` says which ACCOUNTS an
+ * administrator has approved. Both must pass, and neither is computed from the
+ * other — the application this is ported from kept one fact in both places and
+ * needed a later commit to stop the accounts screen being silently undone.
+ *
+ * The exemptions get the hardest checks, because they are the difference
+ * between a setting somebody can undo and a site nobody can recover. Everything
+ * below runs as people who are deliberately NOT on the list.
+ */
+echo "\nWho can sign in\n";
+
+$accessScreen = getWithJar($baseUrl . '/admin/access', $jar);
+check('The sign-in access screen renders', $accessScreen['status'] === 200, "got {$accessScreen['status']}");
+check(
+    'and it says which question it answers, and which the other screen does',
+    str_contains($accessScreen['body'], '/admin/users')
+        && str_contains($accessScreen['body'], 'Both have to say yes'),
+    'two screens that both sound like "access" is the confusion this naming exists to avoid'
+);
+check(
+    'and it states the exemptions rather than leaving them to be discovered',
+    str_contains($accessScreen['body'], 'never refused by it'),
+    'an administrator has to know why they can still get in before they trust the gate'
+);
+
+$accessToken = csrfFrom($accessScreen['body']);
+
+/*
+ * Refused while the list is empty. This is the one way the feature can take a
+ * site down, and the screen has to stop it rather than report it afterwards.
+ */
+$emptyEnable = postWithJar($baseUrl . '/admin/access', [
+    '_token' => $accessToken,
+    'action' => 'enable',
+], $jar);
+check(
+    'Turning it on with an empty list is refused',
+    (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_allowlist_enabled'") !== '1',
+    'an empty allowlist switched on refuses everybody who is not an administrator'
+);
+
+/* Bulk add, in the shapes people actually paste. */
+postWithJar($baseUrl . '/admin/access', [
+    '_token' => $accessToken,
+    'action' => 'add',
+    'emails' => "listed@smoke.test, Second Person <second@smoke.test>\nthird@smoke.test",
+    'note'   => 'smoke cohort',
+], $jar);
+check(
+    'Addresses are added in bulk',
+    (int) $db->value('SELECT COUNT(*) FROM {signin_allowlist}') === 3,
+    'got ' . $db->value('SELECT COUNT(*) FROM {signin_allowlist}')
+);
+check(
+    'and a mail-client paste yields one address, not a name and an address',
+    (int) $db->value('SELECT COUNT(*) FROM {signin_allowlist} WHERE email = ?', ['second@smoke.test']) === 1,
+    'splitting on whitespace before unwrapping <> turns a display name into two rejected entries'
+);
+
+/* Now switch it on for real, with the list non-empty. */
+$enabled = postWithJar($baseUrl . '/admin/access', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/access', $jar)['body']),
+    'action' => 'enable',
+], $jar);
+check(
+    'With addresses on it, enforcement can be turned on',
+    (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_allowlist_enabled'") === '1',
+    'got ' . $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_allowlist_enabled'")
+);
+
+/*
+ * The administrator running this is NOT on the list.
+ *
+ * The rule is load-bearing rather than a courtesy, and that was established by
+ * deleting it: with the exemptions removed from SignInAllowlist::decide(), both
+ * exemption tests in SignInAllowlistTest fail. This check is the same claim
+ * driven through a real session and a real request.
+ */
+$adminStillIn = getWithJar($baseUrl . '/admin/access', $jar);
+check(
+    'An administrator not on the list is still let in',
+    $adminStillIn['status'] === 200,
+    "got {$adminStillIn['status']} — the gate closed the only screen that could switch it off"
+);
+check(
+    'and can still watch',
+    getWithJar($baseUrl . '/watch/' . $insideSlug, $jar)['status'] === 200,
+    'an administrator refused by this cannot recover the site on a host with no shell'
+);
+
+/*
+ * And the scoped member, who has a local password here and is also not on the
+ * list. A local password is the documented way back in when a sign-in provider
+ * is misconfigured — the failure this feature is most likely to cause — so the
+ * gate must never close it.
+ */
+check(
+    'A local-password account not on the list is still let in',
+    getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar)['status'] === 200,
+    'the break-glass path was closed by the gate that needs it most'
+);
+
+check(
+    'and nothing was recorded against anyone exempt',
+    (int) $db->value('SELECT COUNT(*) FROM {access_attempts}') === 0,
+    'an exemption that still logs a refusal fills the screen with non-events'
+);
+
+/*
+ * A refusal, and the record of it. Staged directly because every account this
+ * script can sign in as is deliberately exempt — which is the correct state and
+ * also the reason the refusing path needs staging to be seen at all.
+ */
+$db->execute(
+    'INSERT INTO {access_attempts} (email, reason, provider, created_at) VALUES (?, ?, ?, NOW())',
+    ['stranger@smoke.test', 'not_listed', 'oidc']
+);
+$withRefusal = getWithJar($baseUrl . '/admin/access', $jar);
+check(
+    'A refusal is listed with a reason somebody can act on',
+    str_contains($withRefusal['body'], 'stranger@smoke.test')
+        && str_contains($withRefusal['body'], 'not on the list'),
+    '"access denied" is true of every refusal and useful for none'
+);
+
+postWithJar($baseUrl . '/admin/access', [
+    '_token' => csrfFrom($withRefusal['body']),
+    'action' => 'reviewed',
+], $jar);
+check(
+    'and can be marked as dealt with',
+    (int) $db->value('SELECT COUNT(*) FROM {access_attempts} WHERE reviewed_at IS NULL') === 0,
+    'a list that only grows is one nobody reads twice'
+);
+
+/* Put everything back for whatever runs after this. */
+$db->execute("UPDATE {settings} SET `value` = '0' WHERE `key` = 'signin_allowlist_enabled'");
+$db->execute('DELETE FROM {signin_allowlist}');
+$db->execute('DELETE FROM {access_attempts}');
+
 @unlink($shareJar);
 @unlink($scopeJar);
 

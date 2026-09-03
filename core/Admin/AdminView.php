@@ -46,6 +46,7 @@ final class AdminView
             'speakers'      => $this->speakers($data),
             'tags'          => $this->tags($data),
             'users'       => $this->users($data),
+            'signin-access' => $this->signInAccess($data),
             'permissions' => $this->permissions($data),
             'plugins'    => $this->plugins($data),
             'themes'     => $this->themes($data),
@@ -3444,6 +3445,176 @@ final class AdminView
     // ---------------------------------------------------------------- users
 
     /** @param array<string, mixed> $data */
+    /**
+     * Who can sign in: the address list, and everyone the door was shut on.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function signInAccess(array $data): string
+    {
+        $token = e((string) ($data['token'] ?? ''));
+        $enabled = (bool) ($data['enabled'] ?? false);
+        $activeCount = (int) ($data['activeCount'] ?? 0);
+        $search = e((string) ($data['search'] ?? ''));
+        $unreviewed = (int) ($data['unreviewed'] ?? 0);
+
+        /** @var array{items: list<array<string, mixed>>, total: int, pages: int} $list */
+        $list = $data['list'] ?? ['items' => [], 'total' => 0, 'pages' => 1];
+        /** @var array{items: list<array<string, mixed>>, total: int, pages: int} $attempts */
+        $attempts = $data['attempts'] ?? ['items' => [], 'total' => 0, 'pages' => 1];
+
+        $state = $enabled
+            ? '<span class="pill on">On</span>'
+            : '<span class="pill">Off</span>';
+
+        $toggleAction = $enabled ? 'disable' : 'enable';
+        $toggleLabel = $enabled ? 'Turn off' : 'Turn on';
+
+        $rows = '';
+        foreach ($list['items'] as $row) {
+            $id = (int) $row['id'];
+            $suspended = ($row['status'] ?? '') === 'suspended';
+            $status = $suspended
+                ? '<span class="pill warn">Suspended</span>'
+                : '<span class="pill on">Active</span>';
+
+            $flip = $suspended ? 'reinstate' : 'suspend';
+            $flipLabel = $suspended ? 'Reinstate' : 'Suspend';
+
+            $rows .= sprintf(
+                '<tr><td>%s</td><td>%s</td><td class="muted small">%s</td><td class="muted small">%s</td>
+                 <td class="right">
+                   <form method="post" style="display:inline">
+                     <input type="hidden" name="_token" value="%s">
+                     <input type="hidden" name="id" value="%d">
+                     <button class="btn small secondary" name="action" value="%s">%s</button>
+                   </form>
+                   <form method="post" style="display:inline">
+                     <input type="hidden" name="_token" value="%s">
+                     <input type="hidden" name="id" value="%d">
+                     <button class="btn small danger" name="action" value="remove">Remove</button>
+                   </form>
+                 </td></tr>',
+                e((string) $row['email']),
+                $status,
+                e((string) ($row['note'] ?? '')),
+                e((string) ($row['added_by'] ?? '')),
+                $token,
+                $id,
+                $flip,
+                $flipLabel,
+                $token,
+                $id
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="5" class="muted">Nobody has been added yet.</td></tr>';
+        }
+
+        $refusals = '';
+        foreach ($attempts['items'] as $row) {
+            $refusals .= sprintf(
+                '<tr><td>%s</td><td class="muted small">%s</td><td class="muted small">%s</td><td class="muted small">%s</td></tr>',
+                e((string) $row['email']),
+                e(\Portal\Auth\SignInAllowlist::explain((string) $row['reason'])),
+                e((string) ($row['provider'] ?? '')),
+                e((string) $row['created_at'])
+            );
+        }
+
+        if ($refusals === '') {
+            $refusals = '<tr><td colspan="4" class="muted">Nobody has been refused.</td></tr>';
+        }
+
+        $reviewButton = $unreviewed > 0
+            ? sprintf(
+                '<form method="post" style="display:inline">
+                   <input type="hidden" name="_token" value="%s">
+                   <button class="btn small secondary" name="action" value="reviewed">Mark %d as dealt with</button>
+                 </form>',
+                $token,
+                $unreviewed
+            )
+            : '';
+
+        return <<<HTML
+        <h1>Who can sign in</h1>
+        <p class="muted">
+          The list of addresses allowed to sign in at all. Separate from
+          <a href="/admin/users">Accounts</a>, which is about people who already have one and what
+          they may do — this decides who is let through the door, that one decides what they find
+          on the other side. Both have to say yes.
+        </p>
+
+        <fieldset>
+          <legend>Enforcement {$state}</legend>
+          <p class="muted small">
+            While this is off the list is kept and nobody is refused by it, so you can build it up
+            before switching it on. While it is on, anyone whose address is not on it is refused on
+            their next request — not when a cookie expires.
+          </p>
+          <p class="muted small">
+            <strong>Administrators and accounts with a password here are never refused by it.</strong>
+            That is not a convenience: deployment is a pull on a host with no shell, and a list that
+            could lock out the last administrator would have closed the only screen that could undo
+            it. A local password is also the documented way back in when a sign-in provider is
+            misconfigured, which is the failure this is most likely to cause.
+          </p>
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <button class="btn" name="action" value="{$toggleAction}">{$toggleLabel}</button>
+            <span class="muted small">{$activeCount} address(es) currently active.</span>
+          </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>Add addresses</legend>
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <label>Addresses
+              <textarea name="emails" rows="5" placeholder="one per line, or separated by commas"></textarea>
+            </label>
+            <p class="muted small">
+              Paste as many as you like. Commas, semicolons, new lines and "Name &lt;address&gt;"
+              all work, so a column out of a spreadsheet or a row of recipients out of a mail client
+              can go straight in. Anything that is not an address is named back to you rather than
+              silently dropped.
+            </p>
+            <label>Note <input type="text" name="note" maxlength="500" placeholder="which group, which course, who asked"></label>
+            <button class="btn" name="action" value="add">Add to the list</button>
+          </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>On the list ({$list['total']})</legend>
+          <form method="get" style="margin-bottom:.75rem">
+            <input type="search" name="q" value="{$search}" placeholder="Search addresses">
+            <button class="btn small secondary">Search</button>
+          </form>
+          <table>
+            <thead><tr><th>Address</th><th>Status</th><th>Note</th><th>Added by</th><th></th></tr></thead>
+            <tbody>{$rows}</tbody>
+          </table>
+        </fieldset>
+
+        <fieldset>
+          <legend>Refused ({$attempts['total']})</legend>
+          <p class="muted small">
+            Everyone the door was shut on. The activity log records what accounts did; somebody
+            refused at sign-in has no account, so without this there is no record anywhere that they
+            tried — and you would hear about it only if they could reach you some other way. Kept
+            for 90 days. No password is ever stored here, only the address that was offered.
+          </p>
+          {$reviewButton}
+          <table>
+            <thead><tr><th>Address</th><th>Why</th><th>Through</th><th>When</th></tr></thead>
+            <tbody>{$refusals}</tbody>
+          </table>
+        </fieldset>
+        HTML;
+    }
+
     private function users(array $data): string
     {
         $token = e((string) $data['token']);

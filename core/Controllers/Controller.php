@@ -552,6 +552,16 @@ abstract class Controller
                 'cap' => Capability::MANAGE_USERS, 'screens' => [],
                 'children' => [
                     ['label' => 'Accounts',    'path' => '/admin/users',       'key' => 'users',       'cap' => Capability::MANAGE_USERS,       'screens' => ['users']],
+                    /*
+                     * "Who can sign in" rather than anything with "access" or
+                     * "authorized" in it. The screen above answers "who has an
+                     * account and what may they do"; this one answers "which
+                     * addresses may be here at all". Two labels that both sound
+                     * like access shipped in the application this is ported
+                     * from and had to be renamed a commit later, because
+                     * nobody could tell which was which from the menu.
+                     */
+                    ['label' => 'Who can sign in', 'path' => '/admin/access', 'key' => 'signin-access', 'cap' => Capability::MANAGE_USERS, 'screens' => ['signin-access'], 'siteWide' => true],
                     ['label' => 'Permissions', 'path' => '/admin/permissions', 'key' => 'permissions', 'cap' => Capability::MANAGE_PERMISSIONS, 'screens' => ['permissions']],
                 ],
             ],

@@ -278,6 +278,15 @@ final class Routes
         $router->post('/admin/tags', [AdminController::class, 'saveTag'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
         $router->post('/admin/users', [AdminController::class, 'saveUser'], ['admin.area']);
+
+        /*
+         * Who may sign in at all — a different question from who has an
+         * account, and on its own screen because the answer lives in a
+         * different place. Registered as a literal path before nothing else
+         * claims it, so no /admin/users/{id} pattern can ever swallow it.
+         */
+        $router->get('/admin/access', [AdminController::class, 'signInAccess'], ['admin.area']);
+        $router->post('/admin/access', [AdminController::class, 'saveSignInAccess'], ['admin.area']);
         $router->get('/admin/permissions', [AdminController::class, 'permissions'], ['admin.area']);
         $router->post('/admin/permissions', [AdminController::class, 'savePermissions'], ['admin.area']);
         $router->get('/admin/plugins', [AdminController::class, 'plugins'], ['admin.area']);
