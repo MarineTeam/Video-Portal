@@ -1060,12 +1060,37 @@ echo "\nContent editing (signed in)\n";
 $videoList = getWithJar($baseUrl . '/admin/videos', $jar);
 check('Videos screen links to an edit page', str_contains($videoList['body'], '/admin/videos/' . $videoRow));
 
+/*
+ * Whether each video has a downloadable MP4, which was stored by the sync and
+ * shown nowhere until now.
+ *
+ * "Not checked" is the honest state here: this install has placeholder
+ * credentials, so nothing has successfully asked the provider. Reporting that
+ * as "no MP4" would be the column default read as an answer — the exact
+ * distinction mp4_checked_at exists to preserve.
+ */
+check(
+    'The videos screen says whether each video has a downloadable MP4',
+    str_contains($videoList['body'], 'Not checked') || str_contains($videoList['body'], 'No MP4'),
+    'a column written by the sync and shown on no screen is the defect this project keeps repeating'
+);
+check(
+    'and an unasked video is not reported as having none',
+    !str_contains($videoList['body'], 'No MP4'),
+    'nothing here has reached the provider, so "no MP4" would be a verdict nobody gave'
+);
+
 $videoEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
 check('Video edit screen renders', $videoEdit['status'] === 200, "got {$videoEdit['status']}");
 check('It offers category assignment', str_contains($videoEdit['body'], 'name="categories[]"'));
 check('It offers the thumbnail setting', str_contains($videoEdit['body'], 'name="thumbnail_mode"'));
 check('It says what "inherit" currently resolves to', str_contains($videoEdit['body'], 'Inherit — currently'));
 check('It offers the download setting', str_contains($videoEdit['body'], 'name="download_mode"'));
+check(
+    'and a way to ask the CDN whether the download actually works',
+    str_contains($videoEdit['body'], 'value="test-download"'),
+    'a rejected signature and a missing file both reach the viewer as a broken download'
+);
 check(
     'and says which way that inherits, which is a four-level chain',
     str_contains($videoEdit['body'], 'Inherit — currently blocked'),
@@ -8919,7 +8944,53 @@ check(
     'an administrator has to know why they can still get in before they trust the gate'
 );
 
+check(
+    'and it offers the membership check as a separate question',
+    str_contains($accessScreen['body'], 'name="claim_name"')
+        && str_contains($accessScreen['body'], 'name="gate_mode"'),
+    'the provider asserts membership; this site only says which values it accepts'
+);
+
 $accessToken = csrfFrom($accessScreen['body']);
+
+/*
+ * The membership check, saved and read back.
+ *
+ * Its enforcement cannot be driven here — it needs a real OIDC sign-in
+ * carrying a claim, and this install signs in with local passwords, which are
+ * exempt by design. So what is proved is that the settings round-trip and that
+ * an unrecognised mode is stored as the strict one; ClaimGateTest owns the
+ * decision rules.
+ */
+postWithJar($baseUrl . '/admin/access', [
+    '_token'       => $accessToken,
+    'action'       => 'membership',
+    'claim_name'   => 'org_id',
+    'claim_values' => 'org_a, org_b',
+    'gate_mode'    => 'either',
+    'auth_param'   => 'organization',
+], $jar);
+
+check(
+    'The membership check saves',
+    (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_claim_name'") === 'org_id'
+        && (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_gate_mode'") === 'either',
+    'got ' . $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_gate_mode'")
+);
+
+postWithJar($baseUrl . '/admin/access', [
+    '_token'    => csrfFrom(getWithJar($baseUrl . '/admin/access', $jar)['body']),
+    'action'    => 'membership',
+    'gate_mode' => 'nonsense',
+], $jar);
+check(
+    'and an unrecognised mode is stored as the strict one',
+    (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_gate_mode'") === 'all',
+    'a typo must not loosen a boundary — it is stored, and later read, as the loose one'
+);
+
+/* Cleared again so it plays no part in the allowlist checks below. */
+$db->execute("DELETE FROM {settings} WHERE `key` IN ('signin_claim_name','signin_claim_values','signin_authorize_param')");
 
 /*
  * Refused while the list is empty. This is the one way the feature can take a

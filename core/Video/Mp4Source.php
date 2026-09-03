@@ -53,6 +53,50 @@ final class Mp4Source
     }
 
     /**
+     * What the CDN said when the signed URL was actually fetched.
+     *
+     * The four reasons above are all answers this site works out for itself,
+     * from what the provider's API said. There is a fifth situation none of
+     * them covers: everything looks right here, the URL is signed and handed
+     * over, and the CDN refuses it. That refusal reaches the BROWSER, so the
+     * site never sees it — the person reports "the download does not work" and
+     * every screen here says it should.
+     *
+     * 403 and 404 mean opposite things and are indistinguishable from the
+     * outside: a rejected token is the wrong pull-zone key, which is a
+     * credentials problem on the Services screen; a 404 is a file that is not
+     * there, which is an encoding problem at the provider. Guessing between
+     * them is how somebody spends an afternoon re-entering a key that was
+     * always correct.
+     *
+     * Deliberately NOT run on the download path. It is one extra round trip per
+     * download, paid on every request, to answer a question that is only asked
+     * when something is already wrong. It belongs on a button.
+     */
+    public static function diagnose(int $httpStatus, ?string $transportError): string
+    {
+        if ($transportError !== null) {
+            return 'The CDN could not be reached at all: ' . $transportError
+                . '. That is a network or DNS problem rather than a setting.';
+        }
+
+        return match (true) {
+            $httpStatus >= 200 && $httpStatus < 300 => 'The file is there and the signature was accepted. '
+                . 'Downloads of this video work.',
+            $httpStatus === 403 => 'The CDN rejected the signature (403). The pull zone URL token key is '
+                . 'wrong — note it is a DIFFERENT key from the Token Authentication Key that signs '
+                . 'playback, and pasting one into both fields is the usual cause. Services → Video.',
+            $httpStatus === 404 => 'The CDN has no file at that address (404). The signature was fine, so '
+                . 'this is the MP4 itself missing — the rendition was never encoded, or the video was '
+                . 'uploaded before MP4 Fallback was switched on and needs re-uploading.',
+            $httpStatus === 401 => 'The CDN refused the request as unauthenticated (401), which usually '
+                . 'means token authentication is enabled on the pull zone but no key is configured here.',
+            default => sprintf('The CDN answered %d, which is neither a refusal nor a file. '
+                . 'That is usually the pull zone itself being misconfigured.', $httpStatus),
+        };
+    }
+
+    /**
      * Something an administrator can act on.
      *
      * Written for the person who has to fix it rather than for a log: each one

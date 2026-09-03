@@ -633,6 +633,9 @@ final class AdminController extends Controller
             case 'recheck':
                 return $this->recheckVideo($request, $videos, $video, $id);
 
+            case 'test-download':
+                return $this->testDownload($request, $videos, $video);
+
             case 'restore-revision':
                 return $this->restoreRevision($request, RevisionRepository::VIDEO, $id);
 
@@ -1936,6 +1939,51 @@ final class AdminController extends Controller
      * repository only writes `failed` on a real 404; a thrown error never
      * reaches it.
      */
+    /**
+     * Fetch the signed download URL and report what the CDN actually said.
+     *
+     * The one question no screen here could answer. Every other check runs
+     * against what the provider's API says; this runs against the CDN, which is
+     * a different host with different credentials and its own opinion — and
+     * whose refusal reaches the person's browser rather than this site, so the
+     * report is always "the download does not work" while every screen here
+     * insists it should.
+     *
+     * A button rather than part of the download path: one extra round trip per
+     * download, on every request, to answer a question only asked when
+     * something is already wrong.
+     *
+     * A single byte is requested. The point is the status code, and pulling a
+     * whole sermon through shared hosting to read one would be its own outage.
+     */
+    private function testDownload(Request $request, VideoRepository $videos, \Portal\Content\Video $video): Response
+    {
+        try {
+            /** @var \Portal\Video\VideoProvider $provider */
+            $provider = $this->container->get(\Portal\Video\VideoProvider::class);
+            $source = (new \Portal\Video\Mp4Locator($provider, $videos))->locate($video, 600);
+        } catch (Throwable $e) {
+            return $this->back($request, 'The video service is not responding: ' . $e->getMessage(), 'error');
+        }
+
+        // No URL at all is already a specific, actionable answer — one of the
+        // four this site works out for itself, so there is nothing to fetch.
+        if ($source->url === null) {
+            return $this->back($request, $source->explain(), 'error');
+        }
+
+        $response = \Portal\Support\Http::get($source->url, ['Range' => 'bytes=0-0']);
+
+        $verdict = \Portal\Video\Mp4Source::diagnose($response->status, $response->transportError);
+        $ok = $response->transportError === null && $response->status >= 200 && $response->status < 300;
+
+        return $this->back(
+            $request,
+            sprintf('Tested the %dp download. %s', $source->height, $verdict),
+            $ok ? 'success' : 'error'
+        );
+    }
+
     private function recheckVideo(Request $request, VideoRepository $videos, \Portal\Content\Video $video, int $id): Response
     {
         try {
@@ -3299,6 +3347,12 @@ final class AdminController extends Controller
             ),
             'unreviewed'  => $attempts->unreviewedCount(),
             'search'      => $search,
+            'claimName'   => (string) $this->config()->setting('signin_claim_name', ''),
+            'claimValues' => (string) $this->config()->setting('signin_claim_values', ''),
+            'gateMode'    => \Portal\Auth\ClaimGate::normalizeMode(
+                (string) $this->config()->setting('signin_gate_mode', \Portal\Auth\ClaimGate::ALL)
+            ),
+            'authParam'   => (string) $this->config()->setting('signin_authorize_param', ''),
         ]);
     }
 
@@ -3365,6 +3419,34 @@ final class AdminController extends Controller
                 (new \Portal\Auth\AccessAttempts($this->db()))->markReviewed(date('Y-m-d H:i:s'));
 
                 return $this->back($request, 'Marked as dealt with.');
+
+            case 'membership':
+                $values = \Portal\Auth\ClaimGate::parseValues((string) ($request->input('claim_values') ?? ''));
+
+                $this->config()->setSettings([
+                    'signin_claim_name'   => trim((string) ($request->input('claim_name') ?? '')),
+                    'signin_claim_values' => implode(', ', $values),
+                    /*
+                     * Through normalizeMode, so anything unrecognised becomes
+                     * the strict mode rather than being stored verbatim and
+                     * interpreted later. A value nobody can select from the
+                     * form can still arrive by other means, and it must not be
+                     * the loose one.
+                     */
+                    'signin_gate_mode'    => \Portal\Auth\ClaimGate::normalizeMode(
+                        (string) ($request->input('gate_mode') ?? '')
+                    ),
+                    'signin_authorize_param' => trim((string) ($request->input('auth_param') ?? '')),
+                ]);
+
+                Audit::log($this->db(), $actor, 'signin.membership.save');
+
+                return $this->back(
+                    $request,
+                    $values === []
+                        ? 'Saved. With no accepted values the membership check is off.'
+                        : sprintf('Saved. %d accepted value(s).', count($values))
+                );
 
             case 'enable':
             case 'disable':

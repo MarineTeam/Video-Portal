@@ -515,6 +515,40 @@ final class AdminView
                     $video->id
                 );
 
+            /*
+             * Whether this video has a downloadable MP4, which until now was
+             * recorded and shown nowhere.
+             *
+             * Three states, and the third is the reason this exists. bunny.net
+             * only generates an MP4 when MP4 Fallback is on for the library and
+             * it does NOT backfill, so a library that has had the setting
+             * switched on holds two kinds of video that are indistinguishable
+             * from any screen: the ones uploaded since, which have a file, and
+             * the ones uploaded before, which never will unless somebody
+             * re-uploads them. An administrator wondering why one sermon can be
+             * downloaded and the next cannot has had no way to find out.
+             *
+             * "Not checked" is separate from "none" for the same reason it is
+             * separate in the database: before anything has asked, the column
+             * default is not an answer, and showing it as one would tell a site
+             * that has just upgraded that none of its videos has a file.
+             */
+            if (!$video->mp4IsKnown()) {
+                $mp4 = '<span class="pill" title="Nothing has asked the video service yet. '
+                    . 'The sync job fills this in.">Not checked</span>';
+            } elseif (!$video->hasMp4) {
+                $mp4 = '<span class="pill warn" title="The video service has no MP4 for this. '
+                    . 'MP4 Fallback is not retroactive, so a video uploaded before it was switched '
+                    . 'on has to be re-uploaded to get one.">No MP4</span>';
+            } elseif ($video->mp4Heights === []) {
+                $mp4 = '<span class="pill warn" title="MP4 Fallback is on for this video but nothing '
+                    . 'has finished encoding yet.">MP4 pending</span>';
+            } else {
+                $mp4 = '<span class="pill ok" title="Heights the video service actually has.">'
+                    . e(implode(', ', array_map(static fn (int $h): string => $h . 'p', $video->mp4Heights)))
+                    . '</span>';
+            }
+
             $published = $video->isPublished
                 ? '<span class="pill ok">Published</span>'
                 : '<span class="pill">Draft</span>';
@@ -535,6 +569,7 @@ final class AdminView
                    <td><a href="/admin/videos/%d"><strong>%s</strong></a><br><span class="muted">%s</span>%s</td>
                    <td>%s</td>
                    <td>%s</td>
+                   <td>%s</td>
                    <td class="right">
                      <a class="btn tiny secondary" href="/admin/videos/%d">Edit</a>
                      %s<button form="video-row-%d" name="action" value="%s" class="btn tiny">%s</button>
@@ -548,6 +583,7 @@ final class AdminView
                 e(Str::duration($video->duration) ?: '—'),
                 $tagsFor($video->id),
                 $status,
+                $mp4,
                 $published,
                 $video->id,
                 $recheck,
@@ -654,7 +690,7 @@ final class AdminView
           <input type="hidden" name="_token" value="{$token}">
           <table>
             <thead>
-              <tr><th></th><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr>
+              <tr><th></th><th>Title</th><th>Status</th><th>Download</th><th>Visibility</th><th></th></tr>
             </thead>
             <tbody>{$rows}</tbody>
           </table>
@@ -1126,6 +1162,13 @@ final class AdminView
                    permission, so this decides <em>what</em> may be taken and the Permissions screen
                    decides <em>who</em> may take it. A downloaded file cannot be revoked or expired the
                    way a share link can.</p>
+                <p>
+                  <button class="btn small secondary" name="action" value="test-download">Test the download</button>
+                  <span class="muted small">Fetches one byte of the signed file and reports what the CDN
+                     said. It is the only check here that asks the CDN rather than the API — a rejected
+                     signature and a missing file both reach the viewer as a broken download, and they
+                     need opposite fixes.</span>
+                </p>
               </fieldset>
 
               <fieldset>
@@ -3463,6 +3506,13 @@ final class AdminView
         /** @var array{items: list<array<string, mixed>>, total: int, pages: int} $attempts */
         $attempts = $data['attempts'] ?? ['items' => [], 'total' => 0, 'pages' => 1];
 
+        $claimName = e((string) ($data['claimName'] ?? ''));
+        $claimValues = e((string) ($data['claimValues'] ?? ''));
+        $authParam = e((string) ($data['authParam'] ?? ''));
+        $mode = (string) ($data['gateMode'] ?? 'all');
+        $allSelected = $mode === 'either' ? '' : ' selected';
+        $eitherSelected = $mode === 'either' ? ' selected' : '';
+
         $state = $enabled
             ? '<span class="pill on">On</span>'
             : '<span class="pill">Off</span>';
@@ -3565,6 +3615,55 @@ final class AdminView
             <input type="hidden" name="_token" value="{$token}">
             <button class="btn" name="action" value="{$toggleAction}">{$toggleLabel}</button>
             <span class="muted small">{$activeCount} address(es) currently active.</span>
+          </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>Membership at the sign-in provider</legend>
+          <p class="muted small">
+            A second, independent check: require that whoever signs in carries a particular claim with
+            a particular value. An Auth0 organization (<code>org_id</code>), a Google Workspace domain
+            (<code>hd</code>), an Azure tenant (<code>tid</code>). Unlike the list below, this is a fact
+            asserted by the provider — all this site does is say which values it accepts.
+          </p>
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <label>Claim <input type="text" name="claim_name" value="{$claimName}" placeholder="org_id"></label>
+            <p class="muted small">Leave empty for no membership check.</p>
+
+            <label>Accepted values
+              <input type="text" name="claim_values" value="{$claimValues}" placeholder="org_abc123, org_def456">
+            </label>
+            <p class="muted small">
+              Comma-separated. Case is kept as you type it, because these are identifiers from somebody
+              else&rsquo;s system and two that differ only in case are two different organizations.
+            </p>
+
+            <label>When both this and the list are on
+              <select name="gate_mode">
+                <option value="all"{$allSelected}>Require both</option>
+                <option value="either"{$eitherSelected}>Either one is enough</option>
+              </select>
+            </label>
+            <p class="muted small">
+              <strong>Either</strong> is what a site wants when some people sign in through the
+              organization and others have personal accounts — the list is then how you let an
+              individual in without adding them to the organization. There is deliberately no setting
+              that switches both off; the way to have no gate is to configure no gate.
+            </p>
+
+            <label>Extra sign-in parameter <input type="text" name="auth_param" value="{$authParam}" placeholder="organization"></label>
+            <p class="muted small">
+              Optional, and Auth0-specific in practice. With <code>organization</code> here, Auth0
+              renders that organization&rsquo;s login page directly. It is only sent when exactly one
+              value is accepted and both checks are required — with several values Auth0 shows its own
+              picker instead, and under <strong>either</strong> sending it would make Auth0 refuse a
+              non-member before this site could check its own list, which is the whole point of that
+              mode. For that route to work the Auth0 application also needs
+              <em>Login Experience &rarr; Type of Users</em> set to <strong>Both</strong>, which is what
+              lets a personal account in alongside organization members.
+            </p>
+            <button class="btn" name="action" value="membership">Save membership check</button>
           </form>
         </fieldset>
 
