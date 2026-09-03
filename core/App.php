@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Portal;
 
+use Portal\Auth\AccessAttempts;
 use Portal\Auth\AuthProvider;
 use Portal\Auth\Capabilities;
+use Portal\Auth\SignInAllowlist;
 use Portal\Auth\Guard;
 use Portal\Auth\Session;
 use Portal\Auth\UserRepository;
@@ -163,6 +165,9 @@ final class App
             $c->get(UserRepository::class),
             $c->get(Capabilities::class),
             $c->get(AuthProvider::class),
+            $c->get(Config::class),
+            new SignInAllowlist($c->get(Db::class)),
+            new AccessAttempts($c->get(Db::class)),
         ));
 
         $c->singleton(CategoryRepository::class, static fn (Container $c): CategoryRepository

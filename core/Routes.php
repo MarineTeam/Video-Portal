@@ -16,6 +16,7 @@ use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\MemberShareController;
 use Portal\Controllers\PwaController;
+use Portal\Controllers\RegistrationCheckController;
 use Portal\Controllers\ShareController;
 use Portal\Controllers\SubscriptionController;
 use Portal\Controllers\UploadController;
@@ -278,6 +279,26 @@ final class Routes
         $router->post('/admin/tags', [AdminController::class, 'saveTag'], ['admin.area']);
         $router->get('/admin/users', [AdminController::class, 'users'], ['admin.area']);
         $router->post('/admin/users', [AdminController::class, 'saveUser'], ['admin.area']);
+
+        /*
+         * Who may sign in at all — a different question from who has an
+         * account, and on its own screen because the answer lives in a
+         * different place. Registered as a literal path before nothing else
+         * claims it, so no /admin/users/{id} pattern can ever swallow it.
+         */
+        $router->get('/admin/access', [AdminController::class, 'signInAccess'], ['admin.area']);
+        $router->post('/admin/access', [AdminController::class, 'saveSignInAccess'], ['admin.area']);
+
+        /*
+         * The question an identity provider asks before it creates an account.
+         *
+         * No middleware, deliberately: the caller is Auth0's servers, which
+         * have no session and no CSRF token. Authenticated by a bearer secret
+         * compared in constant time, rate limited, and answering 404 to
+         * everything until a secret is configured — see the controller, which
+         * is also where the reason it can afford to be advisory is written.
+         */
+        $router->post('/auth/registration-check', [RegistrationCheckController::class, 'check']);
         $router->get('/admin/permissions', [AdminController::class, 'permissions'], ['admin.area']);
         $router->post('/admin/permissions', [AdminController::class, 'savePermissions'], ['admin.area']);
         $router->get('/admin/plugins', [AdminController::class, 'plugins'], ['admin.area']);

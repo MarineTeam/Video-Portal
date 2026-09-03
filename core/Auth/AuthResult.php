@@ -38,6 +38,21 @@ final class AuthResult
          * not verify, consent was declined.
          */
         public readonly bool $retryable = false,
+        /**
+         * The value of the one claim this site was configured to look for.
+         *
+         * One claim, not the whole set. Storing everything an identity provider
+         * says about somebody is a decision nobody made — a token can carry
+         * group memberships, a phone number, a photo — so the site names a
+         * claim and gets that claim's value.
+         *
+         * Null means the provider did not assert it at all, which is a
+         * different situation from asserting a value nobody accepts: one is
+         * usually a missing scope or a setting at the provider, the other is a
+         * person in the wrong organization. They need different fixes, so they
+         * are kept apart all the way to the message.
+         */
+        public readonly ?string $claim = null,
     ) {
     }
 
@@ -46,7 +61,8 @@ final class AuthResult
         ?string $subject = null,
         bool $emailVerified = false,
         ?string $name = null,
-        string $returnTo = '/'
+        string $returnTo = '/',
+        ?string $claim = null
     ): self {
         return new self(
             ok: true,
@@ -55,6 +71,7 @@ final class AuthResult
             emailVerified: $emailVerified,
             name: $name,
             returnTo: $returnTo,
+            claim: $claim,
         );
     }
 

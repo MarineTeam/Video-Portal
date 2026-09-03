@@ -113,6 +113,84 @@ class OidcProvider implements AuthProvider
         return false;
     }
 
+    /**
+     * An extra authorize parameter naming the organization, when that helps.
+     *
+     * Auth0 takes `organization` and renders that organization's login page
+     * directly instead of a generic one. Useful, and wrong in two cases, both
+     * learned the hard way in the application this is ported from:
+     *
+     *   - Several accepted organizations: there is no single one to send, and
+     *     sending any of them chooses for the person. Withholding it makes
+     *     Auth0 show its own picker, which is the correct behaviour.
+     *
+     *   - `either` mode: sending it makes Auth0 refuse a non-member at its own
+     *     door, before this site ever gets to check its allowlist — so the
+     *     personal-account route that mode exists to provide is unreachable.
+     *     For that to work the Auth0 application also needs Login Experience →
+     *     Type of Users set to "Both", which is what lets a personal account in
+     *     alongside organization members.
+     *
+     * Off unless a parameter name is configured, because it is not part of
+     * OIDC — a generic provider handed an unknown parameter may reject the
+     * whole request.
+     *
+     * @return array<string, string>
+     */
+    private function membershipParam(): array
+    {
+        try {
+            $param = trim((string) $this->config->setting('signin_authorize_param', ''));
+            if ($param === '') {
+                return [];
+            }
+
+            $value = ClaimGate::authorizeValue(
+                (string) $this->config->setting('signin_gate_mode', ClaimGate::ALL),
+                ClaimGate::parseValues((string) $this->config->setting('signin_claim_values', ''))
+            );
+
+            return $value === null ? [] : [$param => $value];
+        } catch (Throwable) {
+            // Unreadable settings must not stop somebody signing in. The gate
+            // that reads the same settings fails to its default, which is off.
+            return [];
+        }
+    }
+
+    /**
+     * The value of the membership claim this site asks for, if any.
+     *
+     * The claim NAME is a site setting rather than a provider credential,
+     * because it is a policy decision — which organization, domain or tenant
+     * counts — and it belongs on the same screen as the list of accepted
+     * values. The provider only knows how to read it out of a verified token.
+     *
+     * @param array<string, mixed> $claims
+     */
+    private function membershipClaim(array $claims): ?string
+    {
+        try {
+            $name = trim((string) $this->config->setting('signin_claim_name', ''));
+        } catch (Throwable) {
+            // Settings unreadable at sign-in. Recording nothing is right: the
+            // gate that reads this fails to its default, which is off.
+            return null;
+        }
+
+        if ($name === '' || !isset($claims[$name])) {
+            return null;
+        }
+
+        $value = $claims[$name];
+
+        // Scalars only. Some providers put an array here (a list of groups),
+        // and flattening one into a single value would invent a membership
+        // nobody asserted. Reported as absent, which is the honest answer for
+        // a claim this gate cannot evaluate.
+        return is_scalar($value) ? (string) $value : null;
+    }
+
     protected function issuer(): string
     {
         return rtrim(trim($this->credentials['issuer'] ?? ''), '/');
@@ -209,7 +287,7 @@ class OidcProvider implements AuthProvider
             'nonce'                 => $nonce,
             'code_challenge'        => $challenge,
             'code_challenge_method' => 'S256',
-        ]);
+        ] + $this->membershipParam());
 
         return $this->endpoint('authorization_endpoint') . '?' . $query;
     }
@@ -317,6 +395,14 @@ class OidcProvider implements AuthProvider
             emailVerified: ($claims['email_verified'] ?? false) === true,
             name: isset($claims['name']) ? (string) $claims['name'] : null,
             returnTo: $returnTo,
+            /*
+             * The one claim this site was configured to care about, taken from
+             * the VERIFIED token — never from anything the browser sent. Absent
+             * stays null rather than becoming an empty string, because "the
+             * provider did not say" and "the provider said nothing" lead to
+             * different fixes.
+             */
+            claim: $this->membershipClaim($claims),
         );
     }
 

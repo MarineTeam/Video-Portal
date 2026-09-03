@@ -59,15 +59,25 @@ final class UserRepository
         $existing = $this->findByEmail($email);
 
         if ($existing !== null) {
-            // Record the provider identity and refresh what the provider told
-            // us. Note that email_verified is only ever raised here, never
-            // lowered: an admin may have verified an address by hand, and a
-            // provider that omits the claim should not silently undo that.
+            /*
+             * Record the provider identity and refresh what the provider told
+             * us. email_verified is only ever raised here, never lowered: an
+             * admin may have verified an address by hand, and a provider that
+             * omits the claim should not silently undo that.
+             *
+             * auth_claim is the opposite — overwritten outright, not COALESCEd.
+             * A stale value there is worse than none: somebody removed from an
+             * organization would keep the membership that lets them in, and the
+             * gate would go on trusting a fact that stopped being true. The
+             * latest word from the provider replaces the previous one,
+             * including replacing it with nothing.
+             */
             $this->db->execute(
                 'UPDATE {users}
                     SET auth_provider = COALESCE(?, auth_provider),
                         auth_subject  = COALESCE(?, auth_subject),
                         name          = COALESCE(NULLIF(?, ""), name),
+                        auth_claim    = ?,
                         email_verified = GREATEST(email_verified, ?),
                         last_seen_at  = NOW(),
                         updated_at    = NOW()
@@ -76,6 +86,7 @@ final class UserRepository
                     $auth->subject !== null ? $this->providerFromSubject($auth) : null,
                     $auth->subject,
                     $auth->name ?? '',
+                    $auth->claim,
                     $auth->emailVerified ? 1 : 0,
                     $existing->id,
                 ]
@@ -92,6 +103,7 @@ final class UserRepository
             'role_id'        => $viewerRoleId,
             'auth_provider'  => $this->providerFromSubject($auth),
             'auth_subject'   => $auth->subject,
+            'auth_claim'     => $auth->claim,
             'email_verified' => $auth->emailVerified ? 1 : 0,
             'authorized'     => 0,
             'last_seen_at'   => date('Y-m-d H:i:s'),

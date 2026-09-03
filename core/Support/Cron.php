@@ -140,6 +140,24 @@ final class Cron
             );
         };
 
+        /*
+         * Refused sign-ins are kept ninety days.
+         *
+         * Long enough to notice a pattern — the same address every day, or a
+         * burst from one cohort nobody added — and short enough that this does
+         * not become a permanent register of everyone who ever mistyped an
+         * address at this site.
+         */
+        $this->handlers['access_attempts.prune'] = static function (App $app): string {
+            $removed = (new \Portal\Auth\AccessAttempts($app->container()->get(\Portal\Db::class)))->prune();
+
+            return $removed === 0
+                ? 'Nothing to remove.'
+                : sprintf('Removed %d refused sign-in(s) older than %d days.',
+                    $removed,
+                    \Portal\Auth\AccessAttempts::RETAIN_DAYS);
+        };
+
         $this->handlers['shares.cleanup'] = static function (App $app): string {
             /*
              * Through the repository, which is the one place that knows what
@@ -319,6 +337,7 @@ final class Cron
             'webhooks.deliver'   => 60,
             'webhooks.cleanup'   => 86400,
             'scripture.scan'     => 300,
+            'access_attempts.prune' => 86400,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

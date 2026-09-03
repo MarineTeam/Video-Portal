@@ -27,6 +27,9 @@ final class Guard
         private readonly UserRepository $users,
         private readonly Capabilities $capabilities,
         private readonly AuthProvider $auth,
+        private readonly \Portal\Config $config,
+        private readonly SignInAllowlist $allowlist,
+        private readonly AccessAttempts $attempts,
     ) {
     }
 
@@ -107,6 +110,33 @@ final class Guard
 
             if ($user === null) {
                 return $this->challenge($request);
+            }
+
+            /*
+             * The allowlist gate, in front of the approval flag.
+             *
+             * A different question from `authorized`, and asked separately: the
+             * list says which ADDRESSES may be here at all, the flag says which
+             * ACCOUNTS an administrator has approved. Both must pass, and
+             * neither is computed from the other — the application this is
+             * ported from kept one fact in both places, with the flag
+             * recomputed from the list every request, so granting access on the
+             * accounts screen was silently undone on the next page load.
+             *
+             * Checked on every request rather than only at sign-in, which is
+             * what makes removal take effect immediately instead of whenever a
+             * cookie happens to expire.
+             */
+            $refusal = $this->signInRefusal($user);
+
+            if ($refusal !== null) {
+                $this->attempts->record($user->email, $refusal, $user->authProvider, $request->ip());
+
+                if ($request->wantsJson()) {
+                    return Response::error($this->explainRefusal($refusal), 403);
+                }
+
+                return Response::html($this->refusedPage($user, $refusal), 403);
             }
 
             if ($user->isAdmin() || $user->authorized) {
@@ -244,6 +274,163 @@ final class Guard
      * from an identity provider which said, in so many words, that the address
      * was not confirmed.
      */
+    /**
+     * Does the sign-in allowlist refuse this person, and why?
+     *
+     * Null when the feature is off, when they are exempt, or when they are on
+     * the list — the overwhelmingly common answers, all reached without a
+     * query, because the setting is checked first.
+     *
+     * FAILS TO THE DEFAULT, NOT CLOSED, and that is a deliberate exception to
+     * this codebase's standing rule that access checks fail closed. The default
+     * is OFF: a site that has never enabled this has no list, and a missing
+     * table on a half-migrated install is indistinguishable from the feature
+     * not being installed. Failing closed there would refuse every visitor to
+     * the whole site — including the administrator, on a host with no shell,
+     * with no way to reach the screen that would switch it off.
+     *
+     * This is the same shape as the geo plugin's four independent fail-open
+     * paths and as unverifiedBlock() directly below: failing to a default is
+     * not failing past a boundary.
+     */
+    private function allowlistRefusal(User $user): ?string
+    {
+        try {
+            if (!$this->config->settingBool('signin_allowlist_enabled', false)) {
+                return null;
+            }
+
+            /*
+             * Exemptions resolved before the lookup, so an administrator is
+             * never one database hiccup away from being locked out of their own
+             * site — and so the query is not run for them at all.
+             */
+            if ($user->isAdmin() || $user->hasPassword) {
+                return null;
+            }
+
+            return SignInAllowlist::decide(
+                true,
+                false,
+                false,
+                $this->allowlist->statusOf($user->email)
+            );
+        } catch (\Throwable $e) {
+            error_log('Portal: could not read the sign-in allowlist: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Both sign-in gates, combined the way the site asked for.
+     *
+     *   all     the allowlist AND the membership claim
+     *   either  one of them is enough
+     *
+     * The exemptions are applied ONCE, here, to both gates together. Applying
+     * them per-gate would be the same rule written twice, and a local-password
+     * account carries no claim at all, so a claim gate without the exemption
+     * refuses every one of them — including the account that is the documented
+     * way back in when the identity provider is the thing that is broken.
+     *
+     * Fails to the DEFAULT rather than closed, for the reason written on
+     * allowlistRefusal(): both gates are off unless configured, and a
+     * half-migrated install must not become a site nobody can enter.
+     */
+    private function signInRefusal(User $user): ?string
+    {
+        if ($user->isAdmin() || $user->hasPassword) {
+            return null;
+        }
+
+        try {
+            $accepted = ClaimGate::parseValues(
+                (string) $this->config->setting('signin_claim_values', '')
+            );
+
+            $claimOn = trim((string) $this->config->setting('signin_claim_name', '')) !== ''
+                && $accepted !== [];
+            $listOn = $this->config->settingBool('signin_allowlist_enabled', false);
+
+            /*
+             * Which gates are configured is settled BEFORE either is asked, and
+             * that ordering is the whole correctness of `either` mode.
+             *
+             * An unconfigured gate returns null, which is indistinguishable
+             * from "this one let them through" — so combining a configured gate
+             * with an unconfigured one under OR waves everybody past the gate
+             * that is actually switched on. The mode only applies when there
+             * are genuinely two answers to combine.
+             */
+            if (!$claimOn && !$listOn) {
+                return null;
+            }
+
+            if (!$claimOn) {
+                return $this->allowlistRefusal($user);
+            }
+
+            $claimRefusal = ClaimGate::decide(true, $user->authClaim, $accepted);
+
+            if (!$listOn) {
+                return $claimRefusal;
+            }
+
+            return ClaimGate::combine(
+                (string) $this->config->setting('signin_gate_mode', ClaimGate::ALL),
+                $this->allowlistRefusal($user),
+                $claimRefusal
+            );
+        } catch (\Throwable $e) {
+            error_log('Portal: could not read the sign-in gates: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * The page somebody refused by the allowlist sees.
+     *
+     * Names the reason, which is three different situations needing three
+     * different actions — and says who to contact, because unlike the pending
+     * page there is nothing here they can do for themselves. An address that
+     * was never added and one that was suspended are deliberately worded
+     * differently: an administrator reading it over somebody's shoulder should
+     * know which screen to open.
+     */
+    /**
+     * The right words for a refusal, whichever gate produced it.
+     *
+     * Two vocabularies, kept apart because the reasons are about different
+     * things — a list this site maintains, and a claim somebody else's system
+     * asserts — and one enum holding both would blur exactly the distinction
+     * that makes the messages useful.
+     */
+    private function explainRefusal(string $reason): string
+    {
+        return in_array($reason, [ClaimGate::NOT_A_MEMBER, ClaimGate::NO_CLAIM, ClaimGate::NEITHER], true)
+            ? ClaimGate::explain($reason)
+            : SignInAllowlist::explain($reason);
+    }
+
+    private function refusedPage(User $user, string $reason): string
+    {
+        $email = e($user->email);
+        $why = e($this->explainRefusal($reason));
+
+        return $this->noticePage(
+            'You cannot sign in here',
+            <<<HTML
+            <p>{$why}</p>
+            <p class="muted">You signed in as <strong>{$email}</strong>.</p>
+            <p class="muted">If you think this is wrong, ask whoever runs this site to add that
+               address to the list of people who may sign in.</p>
+            <p><a href="/auth/logout">Sign out</a></p>
+            HTML
+        );
+    }
+
     private function unverifiedBlock(User $user): ?string
     {
         if ($user->emailVerified || $user->isAdmin() || $user->hasPassword) {

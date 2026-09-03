@@ -46,6 +46,7 @@ final class AdminView
             'speakers'      => $this->speakers($data),
             'tags'          => $this->tags($data),
             'users'       => $this->users($data),
+            'signin-access' => $this->signInAccess($data),
             'permissions' => $this->permissions($data),
             'plugins'    => $this->plugins($data),
             'themes'     => $this->themes($data),
@@ -514,6 +515,40 @@ final class AdminView
                     $video->id
                 );
 
+            /*
+             * Whether this video has a downloadable MP4, which until now was
+             * recorded and shown nowhere.
+             *
+             * Three states, and the third is the reason this exists. bunny.net
+             * only generates an MP4 when MP4 Fallback is on for the library and
+             * it does NOT backfill, so a library that has had the setting
+             * switched on holds two kinds of video that are indistinguishable
+             * from any screen: the ones uploaded since, which have a file, and
+             * the ones uploaded before, which never will unless somebody
+             * re-uploads them. An administrator wondering why one sermon can be
+             * downloaded and the next cannot has had no way to find out.
+             *
+             * "Not checked" is separate from "none" for the same reason it is
+             * separate in the database: before anything has asked, the column
+             * default is not an answer, and showing it as one would tell a site
+             * that has just upgraded that none of its videos has a file.
+             */
+            if (!$video->mp4IsKnown()) {
+                $mp4 = '<span class="pill" title="Nothing has asked the video service yet. '
+                    . 'The sync job fills this in.">Not checked</span>';
+            } elseif (!$video->hasMp4) {
+                $mp4 = '<span class="pill warn" title="The video service has no MP4 for this. '
+                    . 'MP4 Fallback is not retroactive, so a video uploaded before it was switched '
+                    . 'on has to be re-uploaded to get one.">No MP4</span>';
+            } elseif ($video->mp4Heights === []) {
+                $mp4 = '<span class="pill warn" title="MP4 Fallback is on for this video but nothing '
+                    . 'has finished encoding yet.">MP4 pending</span>';
+            } else {
+                $mp4 = '<span class="pill ok" title="Heights the video service actually has.">'
+                    . e(implode(', ', array_map(static fn (int $h): string => $h . 'p', $video->mp4Heights)))
+                    . '</span>';
+            }
+
             $published = $video->isPublished
                 ? '<span class="pill ok">Published</span>'
                 : '<span class="pill">Draft</span>';
@@ -534,6 +569,7 @@ final class AdminView
                    <td><a href="/admin/videos/%d"><strong>%s</strong></a><br><span class="muted">%s</span>%s</td>
                    <td>%s</td>
                    <td>%s</td>
+                   <td>%s</td>
                    <td class="right">
                      <a class="btn tiny secondary" href="/admin/videos/%d">Edit</a>
                      %s<button form="video-row-%d" name="action" value="%s" class="btn tiny">%s</button>
@@ -547,6 +583,7 @@ final class AdminView
                 e(Str::duration($video->duration) ?: '—'),
                 $tagsFor($video->id),
                 $status,
+                $mp4,
                 $published,
                 $video->id,
                 $recheck,
@@ -653,7 +690,7 @@ final class AdminView
           <input type="hidden" name="_token" value="{$token}">
           <table>
             <thead>
-              <tr><th></th><th>Title</th><th>Status</th><th>Visibility</th><th></th></tr>
+              <tr><th></th><th>Title</th><th>Status</th><th>Download</th><th>Visibility</th><th></th></tr>
             </thead>
             <tbody>{$rows}</tbody>
           </table>
@@ -1125,6 +1162,13 @@ final class AdminView
                    permission, so this decides <em>what</em> may be taken and the Permissions screen
                    decides <em>who</em> may take it. A downloaded file cannot be revoked or expired the
                    way a share link can.</p>
+                <p>
+                  <button class="btn small secondary" name="action" value="test-download">Test the download</button>
+                  <span class="muted small">Fetches one byte of the signed file and reports what the CDN
+                     said. It is the only check here that asks the CDN rather than the API — a rejected
+                     signature and a missing file both reach the viewer as a broken download, and they
+                     need opposite fixes.</span>
+                </p>
               </fieldset>
 
               <fieldset>
@@ -3444,6 +3488,320 @@ final class AdminView
     // ---------------------------------------------------------------- users
 
     /** @param array<string, mixed> $data */
+    /**
+     * Who can sign in: the address list, and everyone the door was shut on.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function signInAccess(array $data): string
+    {
+        $token = e((string) ($data['token'] ?? ''));
+        $enabled = (bool) ($data['enabled'] ?? false);
+        $activeCount = (int) ($data['activeCount'] ?? 0);
+        $search = e((string) ($data['search'] ?? ''));
+        $unreviewed = (int) ($data['unreviewed'] ?? 0);
+
+        /** @var array{items: list<array<string, mixed>>, total: int, pages: int} $list */
+        $list = $data['list'] ?? ['items' => [], 'total' => 0, 'pages' => 1];
+        /** @var array{items: list<array<string, mixed>>, total: int, pages: int} $attempts */
+        $attempts = $data['attempts'] ?? ['items' => [], 'total' => 0, 'pages' => 1];
+
+        $claimName = e((string) ($data['claimName'] ?? ''));
+        $claimValues = e((string) ($data['claimValues'] ?? ''));
+        $authParam = e((string) ($data['authParam'] ?? ''));
+        $mode = (string) ($data['gateMode'] ?? 'all');
+        $allSelected = $mode === 'either' ? '' : ' selected';
+        $eitherSelected = $mode === 'either' ? ' selected' : '';
+
+        $regSecret = (string) ($data['regSecret'] ?? '');
+        $regUrl = e((string) ($data['regUrl'] ?? ''));
+
+        $regState = $regSecret !== ''
+            ? '<span class="pill on">On</span>'
+            : '<span class="pill">Off</span>';
+
+        if ($regSecret === '') {
+            $regBody = <<<REG
+            <form method="post">
+              <input type="hidden" name="_token" value="{$token}">
+              <button class="btn" name="action" value="registration-secret">Generate a secret</button>
+              <span class="muted small">Nothing happens at the provider until you also install the
+                 Action below.</span>
+            </form>
+REG;
+        } else {
+            $secret = e($regSecret);
+
+            /*
+             * The Action itself, ready to paste.
+             *
+             * A secret and an endpoint with no instructions is a mechanism
+             * nobody can wire up, which this project has shipped before and had
+             * to go back for. The snippet is shown in full rather than linked,
+             * because the person configuring it is in the Auth0 dashboard in
+             * another tab and the one thing they cannot do is guess the shape
+             * of the request this endpoint expects.
+             *
+             * `api.access.deny` on refusal, and a bare `return` on anything
+             * else: a portal that is slow or down must not stop signups
+             * altogether. The endpoint is advisory, and an Action that failed
+             * closed would make an outage here into an outage at the provider.
+             */
+            $regBody = <<<REG
+            <p><strong>Endpoint</strong> <code>{$regUrl}</code></p>
+            <p><strong>Secret</strong> <code>{$secret}</code></p>
+            <p class="muted small">Add this as a Pre-User-Registration Action in Auth0, with the secret
+               stored as an Action secret named <code>PORTAL_SECRET</code>:</p>
+            <pre><code>exports.onExecutePreUserRegistration = async (event, api) =&gt; {
+  try {
+    const res = await fetch("{$regUrl}", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + event.secrets.PORTAL_SECRET,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ email: event.user.email })
+    });
+
+    if (!res.ok) return;            // portal unreachable: do not block signups
+    const body = await res.json();
+    if (body.allowed === false) {
+      api.access.deny("not_listed", "This address is not expected at this site.");
+    }
+  } catch (e) {
+    // Same reasoning: an outage here must not become an outage at Auth0.
+  }
+};</code></pre>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="_token" value="{$token}">
+              <button class="btn small secondary" name="action" value="registration-secret">Generate a new secret</button>
+            </form>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="_token" value="{$token}">
+              <button class="btn small danger" name="action" value="registration-off">Turn off</button>
+            </form>
+REG;
+        }
+
+        $state = $enabled
+            ? '<span class="pill on">On</span>'
+            : '<span class="pill">Off</span>';
+
+        $toggleAction = $enabled ? 'disable' : 'enable';
+        $toggleLabel = $enabled ? 'Turn off' : 'Turn on';
+
+        $rows = '';
+        foreach ($list['items'] as $row) {
+            $id = (int) $row['id'];
+            $suspended = ($row['status'] ?? '') === 'suspended';
+            $status = $suspended
+                ? '<span class="pill warn">Suspended</span>'
+                : '<span class="pill on">Active</span>';
+
+            $flip = $suspended ? 'reinstate' : 'suspend';
+            $flipLabel = $suspended ? 'Reinstate' : 'Suspend';
+
+            $rows .= sprintf(
+                '<tr><td>%s</td><td>%s</td><td class="muted small">%s</td><td class="muted small">%s</td>
+                 <td class="right">
+                   <form method="post" style="display:inline">
+                     <input type="hidden" name="_token" value="%s">
+                     <input type="hidden" name="id" value="%d">
+                     <button class="btn small secondary" name="action" value="%s">%s</button>
+                   </form>
+                   <form method="post" style="display:inline">
+                     <input type="hidden" name="_token" value="%s">
+                     <input type="hidden" name="id" value="%d">
+                     <button class="btn small danger" name="action" value="remove">Remove</button>
+                   </form>
+                 </td></tr>',
+                e((string) $row['email']),
+                $status,
+                e((string) ($row['note'] ?? '')),
+                e((string) ($row['added_by'] ?? '')),
+                $token,
+                $id,
+                $flip,
+                $flipLabel,
+                $token,
+                $id
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="5" class="muted">Nobody has been added yet.</td></tr>';
+        }
+
+        $refusals = '';
+        foreach ($attempts['items'] as $row) {
+            $refusals .= sprintf(
+                '<tr><td>%s</td><td class="muted small">%s</td><td class="muted small">%s</td><td class="muted small">%s</td></tr>',
+                e((string) $row['email']),
+                e(\Portal\Auth\SignInAllowlist::explain((string) $row['reason'])),
+                e((string) ($row['provider'] ?? '')),
+                e((string) $row['created_at'])
+            );
+        }
+
+        if ($refusals === '') {
+            $refusals = '<tr><td colspan="4" class="muted">Nobody has been refused.</td></tr>';
+        }
+
+        $reviewButton = $unreviewed > 0
+            ? sprintf(
+                '<form method="post" style="display:inline">
+                   <input type="hidden" name="_token" value="%s">
+                   <button class="btn small secondary" name="action" value="reviewed">Mark %d as dealt with</button>
+                 </form>',
+                $token,
+                $unreviewed
+            )
+            : '';
+
+        return <<<HTML
+        <h1>Who can sign in</h1>
+        <p class="muted">
+          The list of addresses allowed to sign in at all. Separate from
+          <a href="/admin/users">Accounts</a>, which is about people who already have one and what
+          they may do — this decides who is let through the door, that one decides what they find
+          on the other side. Both have to say yes.
+        </p>
+
+        <fieldset>
+          <legend>Enforcement {$state}</legend>
+          <p class="muted small">
+            While this is off the list is kept and nobody is refused by it, so you can build it up
+            before switching it on. While it is on, anyone whose address is not on it is refused on
+            their next request — not when a cookie expires.
+          </p>
+          <p class="muted small">
+            <strong>Administrators and accounts with a password here are never refused by it.</strong>
+            That is not a convenience: deployment is a pull on a host with no shell, and a list that
+            could lock out the last administrator would have closed the only screen that could undo
+            it. A local password is also the documented way back in when a sign-in provider is
+            misconfigured, which is the failure this is most likely to cause.
+          </p>
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <button class="btn" name="action" value="{$toggleAction}">{$toggleLabel}</button>
+            <span class="muted small">{$activeCount} address(es) currently active.</span>
+          </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>Refuse signups at the provider {$regState}</legend>
+          <p class="muted small">
+            Without this, an address nobody listed still gets an account here — unapproved, able to
+            watch nothing, but a row on the Accounts screen all the same. On a site whose sign-in page
+            is public that list fills with people who were never going to be let in, and the ones who
+            genuinely need approving are lost among them.
+          </p>
+          <p class="muted small">
+            <strong>It is advisory, not a boundary.</strong> Refusing here stops a row being created;
+            it is not what stops somebody watching. If this endpoint is unreachable, or the Action is
+            never installed, or somebody signs in through a provider with no such hook, nothing is
+            weakened — an unlisted account is refused on its first request exactly as it is now.
+          </p>
+          {$regBody}
+        </fieldset>
+
+        <fieldset>
+          <legend>Membership at the sign-in provider</legend>
+          <p class="muted small">
+            A second, independent check: require that whoever signs in carries a particular claim with
+            a particular value. An Auth0 organization (<code>org_id</code>), a Google Workspace domain
+            (<code>hd</code>), an Azure tenant (<code>tid</code>). Unlike the list below, this is a fact
+            asserted by the provider — all this site does is say which values it accepts.
+          </p>
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <label>Claim <input type="text" name="claim_name" value="{$claimName}" placeholder="org_id"></label>
+            <p class="muted small">Leave empty for no membership check.</p>
+
+            <label>Accepted values
+              <input type="text" name="claim_values" value="{$claimValues}" placeholder="org_abc123, org_def456">
+            </label>
+            <p class="muted small">
+              Comma-separated. Case is kept as you type it, because these are identifiers from somebody
+              else&rsquo;s system and two that differ only in case are two different organizations.
+            </p>
+
+            <label>When both this and the list are on
+              <select name="gate_mode">
+                <option value="all"{$allSelected}>Require both</option>
+                <option value="either"{$eitherSelected}>Either one is enough</option>
+              </select>
+            </label>
+            <p class="muted small">
+              <strong>Either</strong> is what a site wants when some people sign in through the
+              organization and others have personal accounts — the list is then how you let an
+              individual in without adding them to the organization. There is deliberately no setting
+              that switches both off; the way to have no gate is to configure no gate.
+            </p>
+
+            <label>Extra sign-in parameter <input type="text" name="auth_param" value="{$authParam}" placeholder="organization"></label>
+            <p class="muted small">
+              Optional, and Auth0-specific in practice. With <code>organization</code> here, Auth0
+              renders that organization&rsquo;s login page directly. It is only sent when exactly one
+              value is accepted and both checks are required — with several values Auth0 shows its own
+              picker instead, and under <strong>either</strong> sending it would make Auth0 refuse a
+              non-member before this site could check its own list, which is the whole point of that
+              mode. For that route to work the Auth0 application also needs
+              <em>Login Experience &rarr; Type of Users</em> set to <strong>Both</strong>, which is what
+              lets a personal account in alongside organization members.
+            </p>
+            <button class="btn" name="action" value="membership">Save membership check</button>
+          </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>Add addresses</legend>
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <label>Addresses
+              <textarea name="emails" rows="5" placeholder="one per line, or separated by commas"></textarea>
+            </label>
+            <p class="muted small">
+              Paste as many as you like. Commas, semicolons, new lines and "Name &lt;address&gt;"
+              all work, so a column out of a spreadsheet or a row of recipients out of a mail client
+              can go straight in. Anything that is not an address is named back to you rather than
+              silently dropped.
+            </p>
+            <label>Note <input type="text" name="note" maxlength="500" placeholder="which group, which course, who asked"></label>
+            <button class="btn" name="action" value="add">Add to the list</button>
+          </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>On the list ({$list['total']})</legend>
+          <form method="get" style="margin-bottom:.75rem">
+            <input type="search" name="q" value="{$search}" placeholder="Search addresses">
+            <button class="btn small secondary">Search</button>
+          </form>
+          <table>
+            <thead><tr><th>Address</th><th>Status</th><th>Note</th><th>Added by</th><th></th></tr></thead>
+            <tbody>{$rows}</tbody>
+          </table>
+        </fieldset>
+
+        <fieldset>
+          <legend>Refused ({$attempts['total']})</legend>
+          <p class="muted small">
+            Everyone the door was shut on. The activity log records what accounts did; somebody
+            refused at sign-in has no account, so without this there is no record anywhere that they
+            tried — and you would hear about it only if they could reach you some other way. Kept
+            for 90 days. No password is ever stored here, only the address that was offered.
+          </p>
+          {$reviewButton}
+          <table>
+            <thead><tr><th>Address</th><th>Why</th><th>Through</th><th>When</th></tr></thead>
+            <tbody>{$refusals}</tbody>
+          </table>
+        </fieldset>
+        HTML;
+    }
+
     private function users(array $data): string
     {
         $token = e((string) $data['token']);
