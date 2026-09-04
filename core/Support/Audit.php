@@ -61,6 +61,117 @@ final class Audit
     }
 
     /**
+     * A page of the log, filtered.
+     *
+     * `recent()` answers the dashboard's question — "what just happened" — and
+     * was, until this existed, the ONLY reader. Sixteen files write to this
+     * table, `view_audit_log` appears on the permissions screen describing
+     * itself as "Read the activity log", and holding it got you fifteen rows.
+     *
+     * The questions a real one has to answer are different: what did this
+     * person do, who touched this video, what happened on the day the thing
+     * went wrong. All three are filters, and none of them is "the last
+     * fifteen".
+     *
+     * @param array{actor?: string, action?: string, target?: string, from?: string, to?: string} $filters
+     * @return array{items: list<array<string, mixed>>, total: int, pages: int, actions: list<string>}
+     */
+    public static function page(Db $db, array $filters = [], int $page = 1, int $perPage = 100): array
+    {
+        $empty = ['items' => [], 'total' => 0, 'pages' => 1, 'actions' => []];
+
+        try {
+            $where = ['1=1'];
+            $args = [];
+
+            if (trim($filters['actor'] ?? '') !== '') {
+                $where[] = 'actor_email LIKE ?';
+                $args[] = '%' . $db->escapeLike(trim($filters['actor'])) . '%';
+            }
+
+            // Exact, because the action list is a closed vocabulary offered as
+            // a dropdown — a LIKE here would make "video.delete" also match
+            // nothing anybody meant.
+            if (trim($filters['action'] ?? '') !== '') {
+                $where[] = 'action = ?';
+                $args[] = trim($filters['action']);
+            }
+
+            if (trim($filters['target'] ?? '') !== '') {
+                $where[] = '(target_type LIKE ? OR target_id LIKE ? OR detail LIKE ?)';
+                $like = '%' . $db->escapeLike(trim($filters['target'])) . '%';
+                $args[] = $like;
+                $args[] = $like;
+                $args[] = $like;
+            }
+
+            /*
+             * Dates are half-open on the upper end: "to" means the END of that
+             * day, not midnight at its start. Somebody searching a single day
+             * types the same date twice, and a naive `<= '2026-09-03'` returns
+             * nothing at all — which reads as "nothing happened" rather than
+             * as an off-by-one.
+             */
+            if (trim($filters['from'] ?? '') !== '') {
+                $where[] = 'created_at >= ?';
+                $args[] = trim($filters['from']) . ' 00:00:00';
+            }
+
+            if (trim($filters['to'] ?? '') !== '') {
+                $where[] = 'created_at < DATE_ADD(?, INTERVAL 1 DAY)';
+                $args[] = trim($filters['to']) . ' 00:00:00';
+            }
+
+            $sql = implode(' AND ', $where);
+            $total = (int) $db->value("SELECT COUNT(*) FROM {audit_log} WHERE {$sql}", $args);
+
+            $perPage = max(10, min(500, $perPage));
+            $page = max(1, $page);
+            $offset = ($page - 1) * $perPage;
+
+            $items = $db->all(
+                "SELECT * FROM {audit_log} WHERE {$sql}
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT {$perPage} OFFSET {$offset}",
+                $args
+            );
+
+            return [
+                'items' => $items,
+                'total' => $total,
+                'pages' => (int) max(1, (int) ceil($total / $perPage)),
+                'actions' => self::actions($db),
+            ];
+        } catch (Throwable $e) {
+            error_log('Portal: could not read the activity log: ' . $e->getMessage());
+
+            return $empty;
+        }
+    }
+
+    /**
+     * Every action verb the log actually holds.
+     *
+     * Read from the data rather than kept as a list in code. A hardcoded
+     * vocabulary goes stale the first time somebody adds an audited action and
+     * forgets, and then the filter silently cannot find the very entries most
+     * likely to be searched for — the new ones.
+     *
+     * @return list<string>
+     */
+    public static function actions(Db $db): array
+    {
+        try {
+            return array_map(
+                static fn (array $row): string => (string) $row['action'],
+                $db->all('SELECT DISTINCT action FROM {audit_log} ORDER BY action')
+            );
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
      * Trim the log.
      *
      * Runs from cron. Without it the table grows without bound on a busy site,

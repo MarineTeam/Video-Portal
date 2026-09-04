@@ -265,6 +265,15 @@ final class Routes
         $router->get('/admin/playlists/{id}', [AdminController::class, 'editPlaylist'], ['admin.area']);
         $router->get('/admin/analytics', [AdminController::class, 'analytics'], ['admin.area']);
         $router->get('/admin/analytics.csv', [AdminController::class, 'exportAnalytics'], ['admin.area']);
+
+        /*
+         * The activity log. Sixteen files have written to it since Phase 1 and
+         * one dashboard tile read fifteen rows of it; view_audit_log has been
+         * grantable the whole time, describing itself as "Read the activity
+         * log". This is the screen it was always promising.
+         */
+        $router->get('/admin/activity', [AdminController::class, 'auditLog'], ['admin.area']);
+        $router->get('/admin/activity.csv', [AdminController::class, 'auditLogCsv'], ['admin.area']);
         $router->get('/admin/homepage', [AdminController::class, 'homeRows'], ['admin.area']);
         $router->post('/admin/homepage', [AdminController::class, 'saveHomeRow'], ['admin.area']);
         $router->get('/admin/announcements', [AdminController::class, 'announcementsScreen'], ['admin.area']);

@@ -46,6 +46,7 @@ final class AdminView
             'speakers'      => $this->speakers($data),
             'tags'          => $this->tags($data),
             'users'       => $this->users($data),
+            'audit'         => $this->audit($data),
             'signin-access' => $this->signInAccess($data),
             'permissions' => $this->permissions($data),
             'plugins'    => $this->plugins($data),
@@ -3488,6 +3489,117 @@ final class AdminView
     // ---------------------------------------------------------------- users
 
     /** @param array<string, mixed> $data */
+    /**
+     * The activity log.
+     *
+     * Written to by sixteen files since Phase 1 and, until this screen, read
+     * only fifteen rows at a time on the dashboard.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function audit(array $data): string
+    {
+        /** @var array{items: list<array<string, mixed>>, total: int, pages: int, actions: list<string>} $log */
+        $log = $data['log'] ?? ['items' => [], 'total' => 0, 'pages' => 1, 'actions' => []];
+        /** @var array<string, string> $filters */
+        $filters = $data['filters'] ?? [];
+        $page = (int) ($data['page'] ?? 1);
+
+        $actor = $this->attr($filters['actor'] ?? '');
+        $target = $this->attr($filters['target'] ?? '');
+        $from = $this->attr($filters['from'] ?? '');
+        $to = $this->attr($filters['to'] ?? '');
+
+        $options = '<option value="">Any action</option>';
+        foreach ($log['actions'] as $action) {
+            $options .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($action),
+                ($filters['action'] ?? '') === $action ? ' selected' : '',
+                e($action)
+            );
+        }
+
+        $rows = '';
+        foreach ($log['items'] as $row) {
+            $rows .= sprintf(
+                '<tr>
+                   <td class="muted small">%s</td>
+                   <td>%s</td>
+                   <td><code>%s</code></td>
+                   <td class="muted small">%s</td>
+                   <td class="muted small">%s</td>
+                   <td class="muted small">%s</td>
+                 </tr>',
+                e((string) $row['created_at']),
+                // An action with no actor is the system: cron, a webhook, a
+                // migration. Saying so beats an empty cell that reads as a
+                // missing record.
+                e((string) ($row['actor_email'] ?? '')) ?: '<span class="muted">system</span>',
+                e((string) $row['action']),
+                e(trim(((string) ($row['target_type'] ?? '')) . ' ' . ((string) ($row['target_id'] ?? '')))),
+                e((string) ($row['detail'] ?? '')),
+                e((string) ($row['ip'] ?? ''))
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="6" class="muted">Nothing matches those filters.</td></tr>';
+        }
+
+        // The filters travel with the paging links and the export, or page two
+        // silently drops them and shows a different search than page one.
+        $carry = http_build_query(array_filter([
+            'actor'  => $filters['actor'] ?? '',
+            'action' => $filters['action'] ?? '',
+            'target' => $filters['target'] ?? '',
+            'from'   => $filters['from'] ?? '',
+            'to'     => $filters['to'] ?? '',
+        ], static fn (string $v): bool => $v !== ''));
+
+        $prev = $page > 1
+            ? sprintf('<a class="btn small secondary" href="/admin/activity?%s">Newer</a>', $carry . '&page=' . ($page - 1))
+            : '';
+        $next = $page < $log['pages']
+            ? sprintf('<a class="btn small secondary" href="/admin/activity?%s">Older</a>', $carry . '&page=' . ($page + 1))
+            : '';
+
+        $exportUrl = '/admin/activity.csv' . ($carry !== '' ? '?' . $carry : '');
+
+        return <<<HTML
+        <h1>Activity log</h1>
+        <p class="muted">
+          What was done here, and by whom. Kept for 180 days, then trimmed — on shared hosting the
+          disk quota is real, so this is a record of the recent past rather than an archive.
+        </p>
+
+        <form method="get" class="filters">
+          <label>Who <input type="search" name="actor" value="{$actor}" placeholder="email"></label>
+          <label>Action <select name="action">{$options}</select></label>
+          <label>Target <input type="search" name="target" value="{$target}" placeholder="id, type, or detail"></label>
+          <label>From <input type="date" name="from" value="{$from}"></label>
+          <label>To <input type="date" name="to" value="{$to}"></label>
+          <button class="btn small">Search</button>
+          <a class="btn small secondary" href="/admin/activity">Clear</a>
+        </form>
+
+        <p class="muted small">
+          {$log['total']} entr(ies) match. <a href="{$exportUrl}">Download as CSV</a> — capped at 5,000
+          rows, because building more than that in memory on this kind of hosting is how a page
+          becomes an error.
+        </p>
+
+        <table>
+          <thead>
+            <tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th><th>IP</th></tr>
+          </thead>
+          <tbody>{$rows}</tbody>
+        </table>
+
+        <p>{$prev} {$next}</p>
+HTML;
+    }
+
     /**
      * Who can sign in: the address list, and everyone the door was shut on.
      *

@@ -545,7 +545,17 @@ abstract class Controller
             ],
             [
                 'label' => 'Analytics', 'path' => '/admin/analytics', 'key' => 'analytics', 'icon' => 'chart',
-                'cap' => Capability::VIEW_ANALYTICS, 'screens' => ['analytics'], 'children' => [],
+                'cap' => Capability::VIEW_ANALYTICS, 'screens' => ['analytics'],
+                'children' => [
+                    ['label' => 'Statistics', 'path' => '/admin/analytics', 'key' => 'analytics', 'cap' => Capability::VIEW_ANALYTICS, 'screens' => ['analytics'], 'siteWide' => true],
+                    /*
+                     * Filed under Analytics rather than given a section of its
+                     * own: it answers "what happened", which is the same shape
+                     * of question, and a section holding one link is a heading
+                     * pretending to be a category.
+                     */
+                    ['label' => 'Activity log', 'path' => '/admin/activity', 'key' => 'audit', 'cap' => Capability::VIEW_AUDIT_LOG, 'screens' => ['audit'], 'siteWide' => true],
+                ],
             ],
             [
                 'label' => 'People', 'path' => '/admin/users', 'key' => 'people', 'icon' => 'people',

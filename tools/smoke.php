@@ -1346,6 +1346,100 @@ check(
     'a settings export must not become a secrets leak'
 );
 
+/* ------------------------------------------------------- activity log
+ *
+ * Sixteen files write to this table. Until this screen existed the only reader
+ * was fifteen rows on the dashboard, while `view_audit_log` sat on the
+ * permissions screen describing itself as "Read the activity log".
+ *
+ * By this point in the run the log holds real entries from everything above,
+ * which is what makes the filters testable at all.
+ */
+echo "\nActivity log\n";
+
+$activity = getWithJar($baseUrl . '/admin/activity', $jar);
+check('The activity log screen renders', $activity['status'] === 200, "got {$activity['status']}");
+check(
+    'and it is reachable from the navigation',
+    str_contains($activity['body'], '/admin/activity'),
+    'a screen reachable only by typing its URL is the defect this project repeats'
+);
+/*
+ * The claim is that this screen is not capped at fifteen the way the dashboard
+ * is — so it stages twenty-five entries of its own rather than counting
+ * whatever happened to be in the log by now.
+ *
+ * The first version asserted a row count against the run's own history and
+ * failed, because this section runs early and only a handful of audited
+ * actions have happened. A check whose premise is "enough has happened by now"
+ * is a check that passes or fails on where it was pasted.
+ */
+for ($i = 1; $i <= 25; $i++) {
+    $db->execute(
+        'INSERT INTO {audit_log} (actor_email, action, target_type, target_id, detail, created_at)
+         VALUES (?, ?, NULL, ?, NULL, NOW())',
+        ['bulk@smoke.test', 'smoke.bulk', (string) $i]
+    );
+}
+
+$manyRows = getWithJar($baseUrl . '/admin/activity?action=smoke.bulk', $jar);
+check(
+    'and it shows more than the fifteen the dashboard is capped at',
+    substr_count($manyRows['body'], 'smoke.bulk') >= 25,
+    'showed ' . substr_count($manyRows['body'], 'smoke.bulk') . ' of 25 — a screen capped like the '
+        . 'dashboard is not a screen'
+);
+
+$db->execute('DELETE FROM {audit_log} WHERE action = ?', ['smoke.bulk']);
+
+/* A filter that must exclude things, not merely return rows. */
+$onlyLogins = getWithJar($baseUrl . '/admin/activity?action=user.signup', $jar);
+check(
+    'Filtering by action narrows the list',
+    $onlyLogins['status'] === 200
+        && substr_count($onlyLogins['body'], '<tr>') < substr_count($activity['body'], '<tr>'),
+    'a filter that returns everything is a filter that is not applied'
+);
+
+/*
+ * A date range that cannot match anything. Asserted because the upper bound is
+ * the easy thing to get wrong: `<= '2026-09-03'` means midnight at the START of
+ * that day, so searching a single day returns nothing and reads as "nothing
+ * happened" rather than as an off-by-one.
+ */
+$longAgo = getWithJar($baseUrl . '/admin/activity?from=2001-01-01&to=2001-01-02', $jar);
+check(
+    'A range with nothing in it says so rather than showing everything',
+    str_contains($longAgo['body'], 'Nothing matches those filters'),
+    'an ignored date filter shows the whole log and looks like a working search'
+);
+
+$today = date('Y-m-d');
+$todayOnly = getWithJar($baseUrl . '/admin/activity?from=' . $today . '&to=' . $today, $jar);
+check(
+    'and searching a single day finds that day',
+    !str_contains($todayOnly['body'], 'Nothing matches those filters'),
+    'the upper bound excluded the day it was asked for — the classic off-by-one here'
+);
+
+$activityCsv = getWithJar($baseUrl . '/admin/activity.csv', $jar);
+check(
+    'It exports as CSV',
+    $activityCsv['status'] === 200
+        && str_contains(strtolower($activityCsv['headers']['content-type'] ?? ''), 'text/csv'),
+    'got ' . ($activityCsv['headers']['content-type'] ?? 'no content-type')
+);
+check(
+    'and the export is sent as a file rather than rendered',
+    str_contains(strtolower($activityCsv['headers']['content-disposition'] ?? ''), 'attachment'),
+    'a CSV rendered in the browser is a wall of text somebody has to copy'
+);
+check(
+    'and taking a copy of the log is itself in the log',
+    (int) $db->value('SELECT COUNT(*) FROM {audit_log} WHERE action = ?', ['audit.export']) >= 1,
+    'the one action invisible to the log should not be reading the log'
+);
+
 echo "\nPermissions\n";
 
 $permsScreen = getWithJar($baseUrl . '/admin/permissions', $jar);

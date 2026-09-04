@@ -3312,6 +3312,122 @@ final class AdminController extends Controller
     }
 
     /**
+     * The activity log, with the filters that make it answerable.
+     *
+     * Sixteen files write to this table and, until now, one screen read fifteen
+     * rows of it. `view_audit_log` has been grantable since Phase 1 describing
+     * itself as "Read the activity log" — a capability that promised a screen
+     * nobody had built, which is this project's signature defect wearing a
+     * permission for a hat.
+     */
+    public function auditLog(Request $request): Response
+    {
+        $this->require(Capability::VIEW_AUDIT_LOG);
+
+        $filters = [
+            'actor'  => trim((string) ($request->query['actor'] ?? '')),
+            'action' => trim((string) ($request->query['action'] ?? '')),
+            'target' => trim((string) ($request->query['target'] ?? '')),
+            'from'   => $this->dateOnly((string) ($request->query['from'] ?? '')),
+            'to'     => $this->dateOnly((string) ($request->query['to'] ?? '')),
+        ];
+
+        $result = Audit::page($this->db(), $filters, max(1, (int) ($request->query['page'] ?? 1)));
+
+        return $this->admin('audit', [
+            'log'     => $result,
+            'filters' => $filters,
+            'page'    => max(1, (int) ($request->query['page'] ?? 1)),
+        ]);
+    }
+
+    /**
+     * The same query, as a file.
+     *
+     * An activity log is read when something has gone wrong, and what happens
+     * next usually happens somewhere else — a spreadsheet, an email to whoever
+     * needs to know, a record kept beyond the pruning window. A screen that can
+     * only be scrolled makes somebody retype it.
+     *
+     * Streamed, and bounded at 5000 rows: this runs on shared hosting where
+     * building a year of history in memory is how a page becomes a 500.
+     */
+    public function auditLogCsv(Request $request): Response
+    {
+        $this->require(Capability::VIEW_AUDIT_LOG);
+
+        $result = Audit::page($this->db(), [
+            'actor'  => trim((string) ($request->query['actor'] ?? '')),
+            'action' => trim((string) ($request->query['action'] ?? '')),
+            'target' => trim((string) ($request->query['target'] ?? '')),
+            'from'   => $this->dateOnly((string) ($request->query['from'] ?? '')),
+            'to'     => $this->dateOnly((string) ($request->query['to'] ?? '')),
+        ], 1, 5000);
+
+        $rows = [];
+        foreach ($result['items'] as $row) {
+            $rows[] = [
+                (string) $row['created_at'],
+                (string) ($row['actor_email'] ?? ''),
+                (string) $row['action'],
+                (string) ($row['target_type'] ?? ''),
+                (string) ($row['target_id'] ?? ''),
+                (string) ($row['detail'] ?? ''),
+                (string) ($row['ip'] ?? ''),
+            ];
+        }
+
+        /*
+         * Through Csv::document, which already knows the two things that make
+         * a spreadsheet export wrong: the byte order mark Excel needs to read
+         * UTF-8, and the leading characters it reads as a formula. An audit log
+         * carries free text somebody else wrote, so the formula guard is not
+         * theoretical here.
+         */
+        $body = \Portal\Support\Csv::document(
+            ['when', 'who', 'action', 'target type', 'target', 'detail', 'ip'],
+            $rows
+        );
+
+        /*
+         * Exporting the log is itself logged. Somebody taking a copy of who did
+         * what is exactly the kind of act the log exists to record, and leaving
+         * it out would make the export the one action invisible to it.
+         */
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'audit.export',
+            null,
+            null,
+            sprintf('%d row(s)', count($rows))
+        );
+
+        return Response::text($body)
+            ->header('Content-Type', 'text/csv; charset=utf-8')
+            ->header(
+                'Content-Disposition',
+                'attachment; filename="' . \Portal\Support\Csv::filename('activity-log') . '"'
+            )
+            ->header('Cache-Control', 'private, no-store');
+    }
+
+    /**
+     * A date, or nothing.
+     *
+     * The value goes straight into a comparison against a DATETIME column, so
+     * anything that is not a plain date is dropped rather than passed along to
+     * become either a confusing result or a bound parameter doing nothing
+     * useful.
+     */
+    private function dateOnly(string $value): string
+    {
+        $value = trim($value);
+
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) === 1 ? $value : '';
+    }
+
+    /**
      * Who can sign in — the address list, and everyone the door was shut on.
      *
      * Named for the question it answers, not for its table. The screen next to
