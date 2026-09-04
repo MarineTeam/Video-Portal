@@ -56,7 +56,52 @@ final class UserRepository
         }
 
         $email = Str::normalizeEmail($auth->email);
-        $existing = $this->findByEmail($email);
+
+        /*
+         * Which account this sign-in belongs to, decided by IdentityLink.
+         *
+         * The subject is asked FIRST and the address only afterwards, which is
+         * the whole of the fix. This used to match on email alone and rebind
+         * auth_subject to whoever signed in last — so signing in with a second
+         * provider took over the account holding that address, verified or not.
+         */
+        $identity = $auth->subject !== null ? $this->findIdentity($auth) : null;
+        $existing = $identity !== null
+            ? $this->find((int) $identity['user_id'])
+            : $this->findByEmail($email);
+
+        /*
+         * A LOCAL PASSWORD PROVES THE ACCOUNT, so the link rule does not apply
+         * to it.
+         *
+         * The rule exists because a remote provider ASSERTING an address is not
+         * evidence the person owns it. A password typed here is different in
+         * kind: LocalProvider has already checked it against that exact row,
+         * and its subject — `local:<id>` — names the account rather than
+         * describing somebody who might match one.
+         *
+         * Missing this refused every existing local account on the first
+         * sign-in after the upgrade: the address is "taken" by the very person
+         * typing the password, and a local account has no third party to mark
+         * it verified. That is the break-glass path on a host with no shell,
+         * so it would have been the worst possible thing to close — and the
+         * smoke run caught it on the administrator's own sign-in.
+         */
+        $selfProven = str_starts_with((string) $auth->subject, 'local:');
+
+        $decision = $selfProven
+            ? IdentityLink::KNOWN
+            : IdentityLink::decide($identity !== null, $existing !== null, $auth->emailVerified);
+
+        if ($decision === IdentityLink::REFUSE) {
+            /*
+             * Refused rather than given a second account on the same address.
+             * Two accounts sharing an address makes "who is this person"
+             * unanswerable, and the duplicate would be the one nobody has
+             * approved — so the refusal is also the honest answer.
+             */
+            throw new RuntimeException(IdentityLink::explain());
+        }
 
         if ($existing !== null) {
             /*
@@ -92,6 +137,8 @@ final class UserRepository
                 ]
             );
 
+            $this->rememberIdentity($existing->id, $auth, $email);
+
             return $this->find($existing->id) ?? $existing;
         }
 
@@ -116,7 +163,108 @@ final class UserRepository
             throw new RuntimeException('The account was created but could not be read back.');
         }
 
+        $this->rememberIdentity($id, $auth, $email);
+
         return $user;
+    }
+
+    /**
+     * The stored identity for this sign-in, if this person has been here before.
+     *
+     * Matched on (provider, subject) and never on the address: a subject is the
+     * provider's own stable identifier, while an address changes — people are
+     * renamed, and an organisation may reassign one that used to belong to
+     * somebody else.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function findIdentity(AuthResult $auth): ?array
+    {
+        try {
+            return $this->db->first(
+                'SELECT * FROM {user_identities} WHERE provider = ? AND subject = ?',
+                [$this->providerNameFor($auth), (string) $auth->subject]
+            );
+        } catch (Throwable $e) {
+            /*
+             * Before migration 0030 has run — on the one request that applies
+             * it — the table may not exist. Answering "not known" falls back to
+             * matching by address, which is the behaviour that shipped before
+             * and no worse than it; failing the sign-in outright would make an
+             * upgrade look like an outage.
+             */
+            error_log('Portal: could not read sign-in identities: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Record that this identity signed in, creating the link if it is new.
+     *
+     * verified_at is raised and never lowered, like email_verified above: a
+     * provider that omits the claim on one sign-in has not withdrawn a
+     * verification it made before, and reading silence as a retraction would
+     * quietly break the next attach for that person.
+     */
+    private function rememberIdentity(int $userId, AuthResult $auth, string $email): void
+    {
+        if ($auth->subject === null || $auth->subject === '') {
+            return;
+        }
+
+        $now = date('Y-m-d H:i:s');
+
+        try {
+            $this->db->execute(
+                'INSERT INTO {user_identities}
+                    (user_id, provider, subject, email, verified_at, created_at, last_seen_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                    email        = VALUES(email),
+                    verified_at  = COALESCE(verified_at, VALUES(verified_at)),
+                    last_seen_at = VALUES(last_seen_at)',
+                [
+                    $userId,
+                    $this->providerNameFor($auth),
+                    $auth->subject,
+                    mb_substr($email, 0, 191),
+                    $auth->emailVerified ? $now : null,
+                    $now,
+                    $now,
+                ]
+            );
+        } catch (Throwable $e) {
+            // Recording the link must not fail a sign-in that has already been
+            // decided. The person is in; what is lost is the audit trail.
+            error_log('Portal: could not record a sign-in identity: ' . $e->getMessage());
+        }
+    }
+
+    /** 'local' for a password here, otherwise the remote provider. */
+    private function providerNameFor(AuthResult $auth): string
+    {
+        return str_starts_with((string) $auth->subject, 'local:') ? 'local' : 'oidc';
+    }
+
+    /**
+     * Every way this person can sign in.
+     *
+     * For an administrator answering "how does this person get in", which until
+     * now had no answer beyond a single column that the last sign-in overwrote.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function identitiesFor(int $userId): array
+    {
+        try {
+            return $this->db->all(
+                'SELECT * FROM {user_identities} WHERE user_id = ? ORDER BY created_at',
+                [$userId]
+            );
+        } catch (Throwable) {
+            return [];
+        }
     }
 
     private function providerFromSubject(AuthResult $auth): ?string
