@@ -60,6 +60,22 @@ final class WatchController extends Controller
         }
 
         /*
+         * Restricted to named groups?
+         *
+         * The PHP half of the rule the listing query expresses in SQL. Both
+         * exist because this page resolves one video by slug and never runs
+         * that query — the arrangement scheduling has had since Phase 4 — and a
+         * test asserts the two agree, because a disagreement means either a
+         * video that is listed and 404s or one that is hidden and plays.
+         *
+         * The same 404, for the same reason: a person told "you are not in the
+         * right group" has been told the video exists.
+         */
+        if (!$canManage && !$videos->audienceAllows($video, $this->viewerGroupIds())) {
+            throw HttpException::notFound('There is no video at that address.');
+        }
+
+        /*
          * Locked because the episode before it has not been watched.
          *
          * Resolved BEFORE the embed URL is minted, and it suppresses it the

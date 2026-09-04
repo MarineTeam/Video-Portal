@@ -453,6 +453,65 @@ abstract class Controller
      * Derived from the session id rather than stored separately, so it cannot
      * drift out of sync with the session it protects and needs no cleanup.
      */
+    /**
+     * The permission groups the signed-in person belongs to.
+     *
+     * On the base controller because two different things need it — the listing
+     * query and the watch page — and a second copy is how the two come to
+     * disagree about who is in what.
+     *
+     * Resolved per request and cached, because the listing query asks once and
+     * the watch page asks once, and a group lookup on every card would be the
+     * shape the query monitor exists to catch.
+     *
+     * @return list<int>
+     */
+    protected function viewerGroupIds(): array
+    {
+        static $cache = [];
+
+        $email = $this->user()?->email;
+        if ($email === null) {
+            return [];
+        }
+
+        if (array_key_exists($email, $cache)) {
+            return $cache[$email];
+        }
+
+        /*
+         * Constructed directly rather than resolved from the container, which
+         * has nothing bound for it — and this container does not autowire, so
+         * get() throws.
+         *
+         * That mattered: the first version asked the container inside the
+         * try/catch below, which swallowed the exception and returned "no
+         * groups". Every restriction then refused everybody, including the
+         * people named in it, and the smoke run reported it as the group
+         * membership not working rather than as the lookup never running.
+         */
+        $permissions = new \Portal\Auth\PermissionRepository($this->db());
+
+        try {
+            return $cache[$email] = $permissions->groupIdsFor($email);
+        } catch (\Throwable $e) {
+            /*
+             * Fails to NO GROUPS, which is the restrictive answer here — a
+             * person whose groups cannot be read sees only unrestricted
+             * content, rather than everything. This is one of the few places in
+             * this codebase where the cautious direction also shows less, so
+             * there is no tension to resolve.
+             *
+             * Narrow on purpose: it now wraps only the query, so a missing
+             * table on a half-applied upgrade is tolerated while a wiring
+             * mistake is not.
+             */
+            error_log('Portal: could not read group membership: ' . $e->getMessage());
+
+            return $cache[$email] = [];
+        }
+    }
+
     protected function csrfToken(): string
     {
         return \Portal\Support\Csrf::token($this->container->get(\Portal\Auth\Session::class));

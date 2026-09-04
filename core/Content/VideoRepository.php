@@ -194,6 +194,65 @@ final class VideoRepository
             $conditions[] = 'v.member_only = 0';
         }
 
+        /*
+         * Content restricted to named groups.
+         *
+         * The SQL half of AudiencePolicy, and the two have to agree: the PHP
+         * one decides for a single video on the watch page, this one decides
+         * for a listing. A disagreement is a video that is listed and 404s, or
+         * one that is hidden from a listing and plays.
+         *
+         * The CASE is the precedence, written out: a restriction on the video
+         * decides; failing that, one on its series; failing both, the video was
+         * never restricted and is visible. Expressed as EXISTS rather than a
+         * join because a video may be named for several groups and a join would
+         * multiply its row.
+         *
+         * `bypassAudiences` is for somebody who manages videos. They already
+         * see unpublished and hidden content for the same reason — an editor
+         * who cannot see what they are editing cannot edit it.
+         */
+        if (empty($filters['bypassAudiences'])) {
+            $viewerGroups = array_values(array_unique(array_map(
+                'intval',
+                (array) ($filters['audienceGroupIds'] ?? [])
+            )));
+
+            /*
+             * With no groups at all there is nothing that could satisfy a
+             * restriction, so the "allowed" arm is a constant false rather than
+             * an `IN ()`, which is not valid SQL. Anonymous visitors take this
+             * branch on every request.
+             */
+            if ($viewerGroups === []) {
+                $allowedVideo = '0';
+                $allowedSeries = '0';
+                $groupParams = [];
+            } else {
+                $in = implode(',', array_fill(0, count($viewerGroups), '?'));
+                $allowedVideo = "EXISTS (SELECT 1 FROM {content_audiences} av
+                                          WHERE av.scope_type = 'video' AND av.scope_id = v.id
+                                            AND av.group_id IN ({$in}))";
+                $allowedSeries = "EXISTS (SELECT 1 FROM {content_audiences} asr
+                                           WHERE asr.scope_type = 'series' AND asr.scope_id = v.series_id
+                                             AND asr.group_id IN ({$in}))";
+                $groupParams = $viewerGroups;
+            }
+
+            $conditions[] = "CASE
+                WHEN EXISTS (SELECT 1 FROM {content_audiences} rv
+                              WHERE rv.scope_type = 'video' AND rv.scope_id = v.id)
+                     THEN {$allowedVideo}
+                WHEN v.series_id IS NOT NULL AND EXISTS (SELECT 1 FROM {content_audiences} rs
+                              WHERE rs.scope_type = 'series' AND rs.scope_id = v.series_id)
+                     THEN {$allowedSeries}
+                ELSE 1
+            END = 1";
+
+            // Once for each arm of the CASE, in the order they appear.
+            $params = [...$params, ...$groupParams, ...$groupParams];
+        }
+
         if (!empty($filters['categoryId'])) {
             // Include subcategories: "show me everything in Sermons" is what
             // people mean when they click a parent category.
@@ -650,6 +709,85 @@ final class VideoRepository
         }
 
         return null;
+    }
+
+    /**
+     * The groups named on one scope, if any.
+     *
+     * @return list<int>
+     */
+    public function audienceGroups(string $scopeType, int $scopeId): array
+    {
+        if ($scopeId <= 0 || !in_array($scopeType, ['series', 'video'], true)) {
+            return [];
+        }
+
+        return array_map(
+            static fn (array $row): int => (int) $row['group_id'],
+            $this->db->all(
+                'SELECT group_id FROM {content_audiences} WHERE scope_type = ? AND scope_id = ?',
+                [$scopeType, $scopeId]
+            )
+        );
+    }
+
+    /**
+     * Replace the groups named on one scope.
+     *
+     * An empty list clears the restriction entirely, which is the only way to
+     * un-restrict something — and it is why the caller has to be able to tell
+     * "no groups submitted" from "this form does not manage audiences at all".
+     * A partial save that cleared this would silently publish restricted
+     * content to everybody, which is the worst of the partial-save failures
+     * this codebase has already had once.
+     *
+     * @param list<int> $groupIds
+     */
+    public function setAudienceGroups(string $scopeType, int $scopeId, array $groupIds): void
+    {
+        if ($scopeId <= 0 || !in_array($scopeType, ['series', 'video'], true)) {
+            return;
+        }
+
+        $this->db->execute(
+            'DELETE FROM {content_audiences} WHERE scope_type = ? AND scope_id = ?',
+            [$scopeType, $scopeId]
+        );
+
+        $now = date('Y-m-d H:i:s');
+
+        foreach (array_unique(array_map('intval', $groupIds)) as $groupId) {
+            if ($groupId <= 0) {
+                continue;
+            }
+
+            // INSERT IGNORE against the unique key, so a group deleted between
+            // the form rendering and the save does not fail the whole write.
+            $this->db->execute(
+                'INSERT IGNORE INTO {content_audiences} (scope_type, scope_id, group_id, created_at)
+                 VALUES (?, ?, ?, ?)',
+                [$scopeType, $scopeId, $groupId, $now]
+            );
+        }
+    }
+
+    /**
+     * May this person see this one video?
+     *
+     * The PHP half of the rule the listing query expresses in SQL. Both exist
+     * because the watch page resolves a single video by slug and never runs the
+     * listing query — the same arrangement scheduling has had since Phase 4,
+     * and the tests check the two agree.
+     *
+     * @param list<int> $viewerGroups
+     */
+    public function audienceAllows(Video $video, array $viewerGroups): bool
+    {
+        return AudiencePolicy::allows(
+            $this->audienceGroups('video', $video->id),
+            $video->seriesId !== null ? $this->audienceGroups('series', $video->seriesId) : [],
+            $viewerGroups
+        );
     }
 
     /**

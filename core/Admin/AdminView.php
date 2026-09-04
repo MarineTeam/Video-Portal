@@ -902,6 +902,39 @@ final class AdminView
             $video->downloadMode
         );
 
+        /** @var list<array{id: int, name: string}> $groups */
+        $groups = (array) ($data['groups'] ?? []);
+        /** @var list<int> $chosen */
+        $chosen = array_map('intval', (array) ($data['audiences'] ?? []));
+        /** @var list<int> $fromSeries */
+        $fromSeries = array_map('intval', (array) ($data['seriesAudiences'] ?? []));
+
+        $audienceBoxes = '';
+        foreach ($groups as $group) {
+            $audienceBoxes .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="audiences[]" value="%d"%s> %s</label>',
+                $group['id'],
+                in_array($group['id'], $chosen, true) ? ' checked' : '',
+                e($group['name'])
+            );
+        }
+
+        if ($audienceBoxes === '') {
+            $audienceBoxes = '<p class="muted">There are no groups yet. '
+                . '<a href="/admin/permissions">Create one</a> to restrict this to particular people.</p>';
+        }
+
+        /*
+         * A restriction the video does not carry itself still applies to it.
+         * Saying so is the difference between an administrator understanding
+         * the screen and hunting for a setting that is not on it.
+         */
+        $audienceNote = '';
+        if ($chosen === [] && $fromSeries !== []) {
+            $audienceNote = '<br><strong>This video is already restricted by its series.</strong> '
+                . 'Ticking a group here replaces that for this one video rather than adding to it.';
+        }
+
         $memberOnly = $video->memberOnly ? ' checked' : '';
         $hidden = $video->hidden ? ' checked' : '';
         $premiere = $video->premiere ? ' checked' : '';
@@ -1153,6 +1186,21 @@ final class AdminView
                    /watch is not, so anyone can browse titles while only an approved account can play.
                    Choose "members only" to withhold the artwork too — the image URL is never sent to a
                    visitor who cannot watch, so it is not merely hidden.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Who can see this</legend>
+                {$audienceBoxes}
+                <p class="muted small">
+                  Tick nothing and anyone who may watch can see it, which is how every video starts.
+                  Tick a group and only its members can — the video disappears from listings for
+                  everybody else, and its address answers as though it does not exist.
+                </p>
+                <p class="muted small">
+                  These are permission groups, from <a href="/admin/permissions">Permissions</a>. A
+                  group with no capabilities is simply a named set of people, which is all an audience
+                  needs to be. {$audienceNote}
+                </p>
               </fieldset>
 
               <fieldset>
@@ -1973,6 +2021,25 @@ final class AdminView
             $series->downloadMode
         );
 
+        /** @var list<array{id: int, name: string}> $groups */
+        $groups = (array) ($data['groups'] ?? []);
+        $chosen = array_map('intval', (array) ($data['audiences'] ?? []));
+
+        $audienceBoxes = '';
+        foreach ($groups as $group) {
+            $audienceBoxes .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="audiences[]" value="%d"%s> %s</label>',
+                $group['id'],
+                in_array($group['id'], $chosen, true) ? ' checked' : '',
+                e($group['name'])
+            );
+        }
+
+        if ($audienceBoxes === '') {
+            $audienceBoxes = '<p class="muted">There are no groups yet. '
+                . '<a href="/admin/permissions">Create one</a> to restrict this to particular people.</p>';
+        }
+
         return <<<HTML
         <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
         <h1>{$title}</h1>
@@ -2010,6 +2077,21 @@ final class AdminView
                 <p class="muted small">Only the episode immediately before counts, so adding one in the
                    middle later locks exactly one thing rather than closing the whole course for
                    somebody who had finished it. Editors are never locked out, so you can still review.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Who can see this</legend>
+                {$audienceBoxes}
+                <p class="muted small">
+                  Tick nothing and anyone who may watch can see every episode. Tick a group and only
+                  its members can — the episodes disappear from listings for everybody else, and their
+                  addresses answer as though they do not exist. An episode with its own groups ticked
+                  overrides this for that one episode.
+                </p>
+                <p class="muted small">
+                  These are permission groups, from <a href="/admin/permissions">Permissions</a>. A
+                  group with no capabilities is simply a named set of people.
+                </p>
               </fieldset>
 
               <fieldset>

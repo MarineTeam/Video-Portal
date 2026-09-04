@@ -240,6 +240,17 @@ final class AdminController extends Controller
             'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
             'inheritedDownloadLabel' => $this->inheritedDownloadLabel($videos, $video),
+            'groups'         => $this->permissionGroups(),
+            'audiences'      => $videos->audienceGroups('video', $video->id),
+            /*
+             * What the series says, so the screen can explain a restriction the
+             * video does not carry itself. An administrator looking at a video
+             * hidden by its series would otherwise hunt for a setting here that
+             * is not here.
+             */
+            'seriesAudiences' => $video->seriesId !== null
+                ? $videos->audienceGroups('series', $video->seriesId)
+                : [],
             'transcript'     => $this->transcriptSummary($video->id),
             'chapters'       => $this->chapterText($video->id),
             'assets'         => $this->attachments($video->id),
@@ -834,6 +845,21 @@ final class AdminController extends Controller
                     // A tag whose last use has just gone stops existing, so the
                     // admin list never fills with labels linking to empty pages.
                     $tags->pruneUnused();
+
+                    /*
+                     * Group restrictions, inside the same guard and for a
+                     * sharper version of the same reason.
+                     *
+                     * An empty selection here means "not restricted", which
+                     * publishes the video to everybody. Writing that on a
+                     * partial POST that never mentioned audiences would be the
+                     * partial-save defect again, in the one place where it
+                     * reveals content rather than merely losing a setting.
+                     */
+                    $videos->setAudienceGroups('video', $id, array_map(
+                        'intval',
+                        (array) ($request->post['audiences'] ?? [])
+                    ));
                 }
 
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
@@ -1527,6 +1553,8 @@ final class AdminController extends Controller
             'episodes'   => $videos->forSeries($series->id, true),
             'available'  => $this->unassignedVideos($series->id),
             'inheritedDownloadLabel' => $this->inheritedSeriesDownloadLabel(),
+            'groups'     => $this->permissionGroups(),
+            'audiences'  => $videos->audienceGroups('series', $series->id),
         ]);
     }
 
@@ -1585,6 +1613,20 @@ final class AdminController extends Controller
                         'sequential'   => $request->input('sequential') !== null,
                         'download_mode' => $request->input('download_mode'),
                     ]);
+
+                    /*
+                     * Audiences live in their own table rather than a column,
+                     * so they are written after the update rather than through
+                     * it. The whole form is always posted from this screen, so
+                     * an empty selection genuinely means "not restricted" —
+                     * which is the permissive answer, and the reason the video
+                     * form guards the same write behind `_whole_form`.
+                     */
+                    $this->container->get(VideoRepository::class)->setAudienceGroups('series', $id, array_map(
+                        'intval',
+                        (array) ($request->post['audiences'] ?? [])
+                    ));
+
                     Audit::log($this->db(), $this->user()?->email, 'series.update', 'series', (string) $id);
                     return $this->back($request, 'Series saved.');
 
@@ -3309,6 +3351,33 @@ final class AdminController extends Controller
             'roles'        => $this->db()->all('SELECT * FROM {roles} ORDER BY position'),
             'requestNotes' => $notes,
         ]);
+    }
+
+    /**
+     * The named sets of people a piece of content can be restricted to.
+     *
+     * Permission groups, reused rather than a third kind of grouping invented
+     * beside them. A group with no capabilities is simply a named set of
+     * people, which is exactly what an audience is — and a third mechanism
+     * would be one more place to look when somebody asks why a person cannot
+     * see something.
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    private function permissionGroups(): array
+    {
+        try {
+            return array_map(
+                static fn (array $row): array => ['id' => (int) $row['id'], 'name' => (string) $row['name']],
+                $this->db()->all('SELECT id, name FROM {permission_groups} ORDER BY name')
+            );
+        } catch (Throwable $e) {
+            // Before migration 0027 on a half-applied upgrade. The edit screen
+            // matters more than the picker on it.
+            error_log('Could not read permission groups: ' . $e->getMessage());
+
+            return [];
+        }
     }
 
     /**

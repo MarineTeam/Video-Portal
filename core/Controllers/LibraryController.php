@@ -997,7 +997,24 @@ final class LibraryController extends Controller
         if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
             $filters['includeUnpublished'] = true;
             $filters['includeHidden'] = true;
+
+            /*
+             * And past group restrictions, for the same reason they see
+             * unpublished and hidden content: somebody who cannot see what they
+             * are editing cannot edit it. The bypass is theirs alone — it is
+             * not implied by being signed in, or approved, or an ordinary
+             * member of any group.
+             */
+            $filters['bypassAudiences'] = true;
         }
+
+        /*
+         * Which groups this person is in, resolved once per request and handed
+         * to the query rather than asked per row. Anonymous visitors get an
+         * empty list, which satisfies no restriction — correctly, since a
+         * restriction names people and nobody is not one of them.
+         */
+        $filters['audienceGroupIds'] = $this->viewerGroupIds();
 
         return $filters;
     }

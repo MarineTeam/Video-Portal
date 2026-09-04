@@ -9344,6 +9344,100 @@ $db->execute("UPDATE {settings} SET `value` = '0' WHERE `key` = 'signin_allowlis
 $db->execute('DELETE FROM {signin_allowlist}');
 $db->execute('DELETE FROM {access_attempts}');
 
+/* ------------------------------------------------ restricted to a group
+ *
+ * Viewing had two settings before this: published, and members-only. "Everyone
+ * approved" was the finest grain available, so a course for one group had
+ * nowhere to live except a share link per person.
+ *
+ * The rule is expressed twice — in SQL for a listing, in PHP for the single
+ * video the watch page resolves by slug — so both are driven here, over real
+ * HTTP, as a real member who is and then is not in the group.
+ */
+echo "\nRestricted to a group\n";
+
+$audGroup = (int) $db->value('SELECT id FROM {permission_groups} LIMIT 1');
+if ($audGroup === 0) {
+    $audGroup = (int) $db->insert('permission_groups', [
+        'slug'       => 'audience-smoke',
+        'name'       => 'Audience Smoke',
+        'created_at' => date('Y-m-d H:i:s'),
+    ]);
+}
+
+$audVideoEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check(
+    'The video edit screen offers the group picker',
+    str_contains($audVideoEdit['body'], 'name="audiences[]"'),
+    'a restriction nobody can set is a table nothing writes to'
+);
+check(
+    'and says what ticking nothing means',
+    str_contains($audVideoEdit['body'], 'anyone who may watch can see it'),
+    'an empty selection meaning UNRESTRICTED is the one thing somebody must not have to guess'
+);
+
+/* The scoped member is signed in on $shareJar and is not in the group. */
+$audBefore = getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar);
+check(
+    'An unrestricted video plays for an ordinary member',
+    $audBefore['status'] === 200,
+    "got {$audBefore['status']} — the checks below cannot mean anything otherwise"
+);
+
+$db->execute(
+    'INSERT INTO {content_audiences} (scope_type, scope_id, group_id, created_at) VALUES (?, ?, ?, NOW())',
+    ['video', $scopeVideos['inside'], $audGroup]
+);
+
+$audOut = getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar);
+check(
+    'Restricting it hides it from somebody not in the group',
+    $audOut['status'] === 404,
+    "got {$audOut['status']} — and a 404 rather than a 403, since naming the restriction confirms it exists"
+);
+
+$audList = getWithJar($baseUrl . '/?q=', $shareJar);
+check(
+    'and takes it out of their listing too',
+    !str_contains($audList['body'], '/watch/' . $insideSlug),
+    'THE TWO HALVES DISAGREED: hidden from the watch page but still listed'
+);
+
+/* Now put them in the group, over the real screen rather than the table. */
+$db->execute(
+    'INSERT INTO {group_members} (group_id, email, user_id, added_at)
+     VALUES (?, ?, (SELECT id FROM {users} WHERE email = ?), NOW())',
+    [$audGroup, 'scoped@smoke.test', 'scoped@smoke.test']
+);
+
+$audIn = getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar);
+check(
+    'Joining the group lets them in again',
+    $audIn['status'] === 200,
+    "got {$audIn['status']}"
+);
+check(
+    'and puts it back in their listing',
+    str_contains(getWithJar($baseUrl . '/?q=', $shareJar)['body'], '/watch/' . $insideSlug),
+    'the two halves disagreed in the other direction'
+);
+
+/* An administrator sees it either way, as they do unpublished and hidden. */
+$db->execute('DELETE FROM {group_members} WHERE group_id = ? AND email = ?', [$audGroup, 'scoped@smoke.test']);
+check(
+    'Somebody who manages videos is not shut out by a restriction',
+    getWithJar($baseUrl . '/watch/' . $insideSlug, $jar)['status'] === 200,
+    'an editor who cannot see what they are editing cannot edit it'
+);
+
+$db->execute('DELETE FROM {content_audiences} WHERE scope_type = ? AND scope_id = ?', ['video', $scopeVideos['inside']]);
+check(
+    'Clearing the restriction restores it for everybody',
+    getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar)['status'] === 200,
+    'an empty audience list must mean unrestricted, not nobody'
+);
+
 @unlink($shareJar);
 @unlink($scopeJar);
 
@@ -9921,6 +10015,7 @@ check(
     !str_contains($offline['body'], 'A Test Video'),
     'a precached page carrying a title is a title shown to whoever opens the app next'
 );
+
 
 /* ------------------------------------------------------- link previews
  *
