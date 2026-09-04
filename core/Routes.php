@@ -173,6 +173,16 @@ final class Routes
         $router->get('/account/downloads', [AccountController::class, 'downloads'], ['auth.user']);
 
         /*
+         * What this person has watched, and everything the site holds on them.
+         *
+         * No identifier in either URL, deliberately: the only thing that
+         * decides what comes back is who is signed in. An id here would make
+         * the export an endpoint worth guessing at.
+         */
+        $router->any(['GET', 'POST'], '/account/history', [AccountController::class, 'history'], ['auth.user']);
+        $router->get('/account/export.json', [AccountController::class, 'export'], ['auth.user']);
+
+        /*
          * Member sharing.
          *
          * `auth.user` here and the capability checked inside the handler

@@ -90,6 +90,82 @@ final class AccountController extends Controller
     }
 
     /**
+     * What this person has watched, and a way to forget it.
+     *
+     * The rows are the same ones "continue watching" reads, so clearing is not
+     * cosmetic: the video stops being offered to resume. That is what somebody
+     * clearing their history means, and the screen says so rather than letting
+     * them find out by noticing the row is gone from the front page.
+     */
+    public function history(Request $request): Response
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        $data = new \Portal\Account\PersonalData($this->db());
+
+        if ($request->method === 'POST') {
+            $this->verifyCsrf($request);
+
+            $videoId = (int) ($request->input('video_id') ?? 0);
+            $removed = $data->forget($user->id, $videoId > 0 ? $videoId : null);
+
+            return $this->back(
+                $request,
+                $videoId > 0
+                    ? 'Forgotten. It will not be offered to resume.'
+                    : sprintf('Cleared %d entr(ies). Nothing is offered to resume now.', $removed)
+            );
+        }
+
+        return $this->view(['account-history'], [
+            'title'   => 'What you have watched',
+            'history' => $data->history($user->id),
+            'token'   => $this->csrfToken(),
+            'flash'   => $this->flash(),
+        ]);
+    }
+
+    /**
+     * Everything this site holds about this person, as a file.
+     *
+     * Their own data, so no capability is involved — the only thing that
+     * decides what is in it is who is signed in, and every query is keyed to
+     * them. There is deliberately no way to ask for somebody else's: an
+     * identifier in the URL would make this an endpoint worth guessing at.
+     *
+     * Streamed as JSON rather than rendered, because it is a thing to keep
+     * rather than to read on screen.
+     */
+    public function export(Request $request): Response
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        $payload = (new \Portal\Account\PersonalData($this->db()))->export($user);
+
+        \Portal\Support\Audit::log(
+            $this->db(),
+            $user->email,
+            'account.export',
+            'user',
+            (string) $user->id
+        );
+
+        return Response::text((string) json_encode(
+            $payload,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        ))
+            ->header('Content-Type', 'application/json; charset=utf-8')
+            ->header('Content-Disposition', 'attachment; filename="my-data.json"')
+            ->header('Cache-Control', 'private, no-store');
+    }
+
+    /**
      * What is saved on this device.
      *
      * The one screen in this application the server cannot fill in. Everything

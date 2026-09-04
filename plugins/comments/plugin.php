@@ -489,3 +489,30 @@ $plugin->addAdminPage(
     static fn ($request, $params) => (new CommentPage($plugin))->show($request, $params),
     position: 30
 );
+
+/**
+ * This person's comments, for their data export.
+ *
+ * Core cannot read this table itself. It belongs to this plugin, and core
+ * reaching into it would break the moment the plugin is deactivated — and
+ * would quietly export nothing after an uninstall while still claiming to be
+ * complete. So the export asks, and whoever is installed answers.
+ *
+ * Keyed by author_email rather than user_id, matching how the table records
+ * authorship: a comment survives its author's account being deleted and
+ * recreated, and the address is what still identifies it.
+ */
+$plugin->addFilter('account_export', static function (array $data, $user) use ($plugin): array {
+    try {
+        $data['comments'] = $plugin->db()->all(
+            'SELECT video_id, body, status, created_at FROM {comments}
+              WHERE author_email = ? ORDER BY created_at DESC',
+            [$user->email]
+        );
+    } catch (Throwable $e) {
+        // An export missing one section is worth handing over; a 500 is not.
+        error_log('Comments: could not add comments to a data export: ' . $e->getMessage());
+    }
+
+    return $data;
+});

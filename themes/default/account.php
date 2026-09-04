@@ -94,6 +94,18 @@ echo $template->partial('header', get_defined_vars());
 
   <?php
   /*
+   * Watch history and the data export share a tile, because they answer one
+   * question — what does this site know about me — and separating them would
+   * put the export somewhere nobody looks for it.
+   */
+  ?>
+  <a class="card account-tile" href="/account/history">
+    <strong>Your data</strong>
+    <span class="muted small">What you have watched, and a copy of everything</span>
+  </a>
+
+  <?php
+  /*
    * Only for accounts that have a local password. Somebody who signs in
    * through an identity provider has no credential here, and the page itself
    * refuses them — linking to it would be offering a door that is locked.

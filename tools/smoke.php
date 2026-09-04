@@ -6962,6 +6962,91 @@ check(
     'a shell with nothing to fill it is a permanently empty page'
 );
 
+/*
+ * Watch history, and a copy of everything.
+ *
+ * The history rows ARE the continue-watching rows, so clearing is not
+ * cosmetic — and the page has to say so rather than let somebody discover it
+ * by noticing a row has vanished from the front page.
+ */
+$acctHistory = getWithJar($baseUrl . '/account/history', $jar);
+check('The watch history page renders', $acctHistory['status'] === 200, "got {$acctHistory['status']}");
+check(
+    'and it is linked from the account area',
+    str_contains($acctPage['body'], '/account/history'),
+    'a page reachable only by typing its URL is the defect this project repeats'
+);
+check(
+    'and it says clearing also stops videos resuming',
+    str_contains($acctHistory['body'], 'starts from the beginning'),
+    'somebody expecting a tidy-up and losing their resume positions has been surprised by their own site'
+);
+
+/* Something to have watched, so the list and the clearing are not vacuous. */
+$db->execute(
+    'INSERT INTO {watch_progress} (user_id, video_id, position_seconds, duration_seconds, updated_at)
+     VALUES ((SELECT id FROM {users} WHERE email = ?), ?, 120, 600, NOW())
+     /*
+      * EVERY field is set, including the ones this check does not read.
+      *
+      * Earlier sections of this run leave a progress row for the same person
+      * and video — one with duration 0, and one marked completed. A fixture
+      * that updated only what it cared about inherited both, so the page
+      * showed "Finished" and withheld a percentage it could not compute, and
+      * the check reported a broken screen twice while the screen was correct.
+      *
+      * A fixture has to state the whole state it wants, not the difference
+      * from a state it has not looked at.
+      */
+     ON DUPLICATE KEY UPDATE
+        position_seconds = 120, duration_seconds = 600, completed_at = NULL, updated_at = NOW()',
+    ['admin@smoke.test', $videoRow]
+);
+
+$withHistory = getWithJar($baseUrl . '/account/history', $jar);
+check(
+    'A watched video appears in the history',
+    str_contains($withHistory['body'], 'A Test Video'),
+    'the history read nothing back'
+);
+check(
+    'and says how far through it got',
+    str_contains($withHistory['body'], '20%'),
+    '120 of 600 seconds is 20% — a percentage nobody can check is worse than none'
+);
+
+$exported = getWithJar($baseUrl . '/account/export.json', $jar);
+$exportBody = json_decode($exported['body'], true);
+check(
+    'The data export downloads as JSON',
+    $exported['status'] === 200
+        && str_contains(strtolower($exported['headers']['content-type'] ?? ''), 'application/json')
+        && str_contains(strtolower($exported['headers']['content-disposition'] ?? ''), 'attachment'),
+    'got ' . ($exported['headers']['content-type'] ?? 'no content-type')
+);
+check(
+    'and it carries this account and what they watched',
+    is_array($exportBody)
+        && ($exportBody['account']['email'] ?? '') === 'admin@smoke.test'
+        && ($exportBody['watch_history'] ?? []) !== [],
+    'an export missing the person it is about is not an export'
+);
+check(
+    'and a plugin contributed its own section',
+    is_array($exportBody) && array_key_exists('comments', $exportBody),
+    'the account_export filter would otherwise be a promise rather than a mechanism'
+);
+
+postWithJar($baseUrl . '/account/history', ['_token' => csrfFrom($withHistory['body'])], $jar);
+check(
+    'Clearing the history removes it',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {watch_progress} WHERE user_id = (SELECT id FROM {users} WHERE email = ?)',
+        ['admin@smoke.test']
+    ) === 0,
+    'the rows survived a clear'
+);
+
 $inbox = getWithJar($baseUrl . '/account/notifications', $jar);
 check('The notifications page renders', $inbox['status'] === 200, "got {$inbox['status']}");
 check(
