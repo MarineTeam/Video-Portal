@@ -9200,6 +9200,68 @@ check(
     (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_mode'") === 'BOTH',
     'a typo must not loosen a boundary — it is stored, and later read, as the loose one'
 );
+/*
+ * Guests: the organisation check waived for one address, and nothing else.
+ *
+ * The route is the part only a real request can prove — it 404s while the
+ * feature is off, which is how an endpoint naming a way in should behave.
+ */
+$guestClosed = get($baseUrl . '/auth/guest');
+check(
+    'The guest sign-in route is absent while the feature is off',
+    $guestClosed['status'] === 404,
+    "got {$guestClosed['status']} — an endpoint that explains itself has confirmed it exists"
+);
+
+postWithJar($baseUrl . '/admin/access', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/access', $jar)['body']),
+    'action' => 'guests-on',
+], $jar);
+
+postWithJar($baseUrl . '/admin/access', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/access', $jar)['body']),
+    'action' => 'guest-add',
+    'email'  => 'Visiting.Speaker@Smoke.test',
+    'note'   => 'until the end of March',
+], $jar);
+
+check(
+    'A guest exemption is stored, normalised',
+    (int) $db->value('SELECT COUNT(*) FROM {guest_exemptions} WHERE email = ?', ['visiting.speaker@smoke.test']) === 1,
+    'two spellings of one address would become two rows, one of which nobody removes'
+);
+
+$guestScreen = getWithJar($baseUrl . '/admin/access', $jar);
+check(
+    'and the screen says it excuses the organization check and nothing else',
+    str_contains($guestScreen['body'], 'excuses the organization check and nothing else'),
+    'from this screen a narrow waiver and an admin backdoor look identical'
+);
+check(
+    'and hands over the link to send them',
+    str_contains($guestScreen['body'], '/auth/guest'),
+    'a waiver with no way to use it is half a feature'
+);
+
+/*
+ * With the feature on the route exists. It redirects into the provider — this
+ * install has none configured, so it falls back to the ordinary sign-in page,
+ * which is the documented behaviour rather than a dead end.
+ */
+$guestOpen = get($baseUrl . '/auth/guest');
+check(
+    'and the route exists once it is switched on',
+    $guestOpen['status'] === 302,
+    "got {$guestOpen['status']}"
+);
+
+/* Put it back so nothing downstream inherits an open door. */
+postWithJar($baseUrl . '/admin/access', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/access', $jar)['body']),
+    'action' => 'guests-off',
+], $jar);
+$db->execute('DELETE FROM {guest_exemptions}');
+
 check(
     'The screen offers all four modes by name',
     str_contains($accessScreen['body'], 'value="BOTH"')

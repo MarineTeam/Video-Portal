@@ -48,6 +48,54 @@ final class AuthController extends Controller
         return $this->renderLoginForm($request, $returnTo, null);
     }
 
+    /**
+     * Sign in as a guest — the same provider, without the organisation.
+     *
+     * A separate route rather than a checkbox on the ordinary one, because the
+     * difference is not something a visitor should be asked to understand.
+     * Somebody who belongs to the organisation uses the normal link; somebody
+     * excused it is sent this one by whoever invited them.
+     *
+     * WHY IT HAS TO BE A DIFFERENT ROUTE AT ALL: the organisation parameter
+     * makes the provider render that organisation's login and refuse anybody
+     * outside it — at ITS door, before this site sees the request. A guest
+     * exemption applied here would never be reached. So the flag suppresses the
+     * parameter for this sign-in only, and the check itself is still waived
+     * server-side by GuestExemptions, which is what actually decides.
+     *
+     * 404 when the feature is off, not a message: an endpoint that explains
+     * itself has confirmed it exists, and this one names a way in.
+     */
+    public function guest(Request $request): Response
+    {
+        if (!$this->config()->settingBool('signin_guests_enabled', false)) {
+            throw HttpException::notFound('There is nothing at that address.');
+        }
+
+        if ($this->guard()->isAuthenticated()) {
+            return $this->redirect($request->safeReturnTo('/'));
+        }
+
+        $provider = $this->authProvider();
+
+        if ($provider === null || $provider->isLocal()) {
+            // Nothing to waive: a local password has no organisation behind it,
+            // and sending somebody here would be a dead end that looks like a
+            // broken invitation.
+            return $this->redirect('/auth/login');
+        }
+
+        /*
+         * Set for this sign-in only and cleared when the callback lands, so a
+         * guest link cannot leave a browser permanently signing in without the
+         * organisation — which would silently weaken the ordinary route for
+         * anybody who ever followed one.
+         */
+        $this->container->get(\Portal\Auth\Session::class)->put('signin_guest', true);
+
+        return Response::redirect($provider->loginUrl($request->safeReturnTo('/')));
+    }
+
     public function authenticate(Request $request): Response
     {
         $returnTo = $request->safeReturnTo('/');

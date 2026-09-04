@@ -7,6 +7,7 @@ namespace Portal;
 use Portal\Auth\AccessAttempts;
 use Portal\Auth\AuthProvider;
 use Portal\Auth\Capabilities;
+use Portal\Auth\GuestExemptions;
 use Portal\Auth\SignInAllowlist;
 use Portal\Auth\Guard;
 use Portal\Auth\Session;
@@ -168,6 +169,7 @@ final class App
             $c->get(Config::class),
             new SignInAllowlist($c->get(Db::class)),
             new AccessAttempts($c->get(Db::class)),
+            new GuestExemptions($c->get(Db::class)),
         ));
 
         $c->singleton(CategoryRepository::class, static fn (Container $c): CategoryRepository

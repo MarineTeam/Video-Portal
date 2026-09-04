@@ -145,6 +145,19 @@ class OidcProvider implements AuthProvider
                 return [];
             }
 
+            /*
+             * A guest sign-in omits it entirely.
+             *
+             * Sending the organisation makes the provider refuse a non-member
+             * at its own door, before this site can apply the exemption that
+             * excuses them — so a guest link carrying it would be an invitation
+             * that cannot be accepted. The exemption itself is still enforced
+             * server-side; this only stops the provider answering first.
+             */
+            if ($this->session->get('signin_guest') === true) {
+                return [];
+            }
+
             $value = ClaimGate::authorizeValue(
                 (string) $this->config->setting('signin_mode', ''),
                 ClaimGate::parseValues((string) $this->config->setting('signin_claim_values', ''))
@@ -338,6 +351,15 @@ class OidcProvider implements AuthProvider
         // Consume it. A state is single-use: leaving it usable would let a
         // captured callback URL be replayed.
         $this->session->put(self::SESSION_PENDING, $pending);
+
+        /*
+         * The guest flag is consumed here too, for the same reason: it belongs
+         * to one sign-in. Left set, a browser that once followed a guest link
+         * would go on omitting the organisation for every later sign-in — so
+         * one invitation would quietly weaken the ordinary route on that
+         * machine, and nothing on any screen would say so.
+         */
+        $this->session->forget('signin_guest');
 
         if ($flow === null) {
             // Marked retryable, not failed. The overwhelmingly common cause is

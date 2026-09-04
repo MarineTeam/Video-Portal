@@ -3538,6 +3538,9 @@ final class AdminController extends Controller
                 (string) $this->config()->setting('signin_mode', '')
             ),
             'authParam'   => (string) $this->config()->setting('signin_authorize_param', ''),
+            'guestsOn'    => $this->config()->settingBool('signin_guests_enabled', false),
+            'guests'      => (new \Portal\Auth\GuestExemptions($this->db()))->all(),
+            'guestUrl'    => $this->config()->url('/auth/guest'),
             'regSecret'   => (string) $this->config()->setting('signin_registration_secret', ''),
             'regUrl'      => $this->config()->url('/auth/registration-check'),
         ]);
@@ -3606,6 +3609,39 @@ final class AdminController extends Controller
                 (new \Portal\Auth\AccessAttempts($this->db()))->markReviewed(date('Y-m-d H:i:s'));
 
                 return $this->back($request, 'Marked as dealt with.');
+
+            case 'guest-add':
+                $guests = new \Portal\Auth\GuestExemptions($this->db());
+                $email = (string) ($request->input('email') ?? '');
+
+                if (!$guests->add($email, $request->input('note'), $actor)) {
+                    if (!\Portal\Support\Str::isEmail(\Portal\Support\Str::normalizeEmail($email))) {
+                        return $this->back($request, 'That does not look like an address.', 'error');
+                    }
+                }
+
+                Audit::log($this->db(), $actor, 'signin.guest.add', null, null, $email);
+
+                return $this->back($request, 'Excused the organisation check for that address.');
+
+            case 'guest-remove':
+                (new \Portal\Auth\GuestExemptions($this->db()))->remove((int) ($request->input('id') ?? 0));
+                Audit::log($this->db(), $actor, 'signin.guest.remove', null, (string) $request->input('id'));
+
+                return $this->back($request, 'Removed. They are refused on their next request.');
+
+            case 'guests-on':
+            case 'guests-off':
+                $on = $action === 'guests-on';
+                $this->config()->setSettings(['signin_guests_enabled' => $on ? '1' : '0']);
+                Audit::log($this->db(), $actor, 'signin.guests.' . ($on ? 'enabled' : 'disabled'));
+
+                return $this->back(
+                    $request,
+                    $on
+                        ? 'On. Addresses on the list below skip the organisation check — and nothing else.'
+                        : 'Off. The list is kept, and nobody is excused by it.'
+                );
 
             case 'registration-secret':
                 /*

@@ -51,6 +51,7 @@ final class VerifiedEmailTest extends DatabaseTestCase
             new Config(),
             new \Portal\Auth\SignInAllowlist($this->db()),
             new \Portal\Auth\AccessAttempts($this->db()),
+            new \Portal\Auth\GuestExemptions($this->db()),
         );
 
         // Guard reads the setting through the container, because it is built in
@@ -191,6 +192,7 @@ final class VerifiedEmailTest extends DatabaseTestCase
             new Config(),
             new \Portal\Auth\SignInAllowlist($this->db()),
             new \Portal\Auth\AccessAttempts($this->db()),
+            new \Portal\Auth\GuestExemptions($this->db()),
         );
 
         $response = ($guard->requireAuthorized())(Request::capture());

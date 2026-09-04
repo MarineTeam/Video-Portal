@@ -190,6 +190,93 @@ final class SignInModeTest extends DatabaseTestCase
         self::assertTrue($this->letIn($local->id), 'the strictest mode closed the break-glass path');
     }
 
+    // ------------------------------------------------------------- guests
+
+    /**
+     * A guest exemption waives the organisation check.
+     *
+     * The case it exists for: somebody who legitimately has no account in the
+     * organisation, where the alternatives are adding them to somebody else's
+     * identity system or loosening the whole site to admit one person.
+     */
+    public function testAGuestExemptionWaivesTheOrganisationCheck(): void
+    {
+        $this->configure(ClaimGate::ORGANIZATION, claim: true, list: false);
+        $this->setting('signin_guests_enabled', '1');
+
+        $email = 'visiting-speaker@example.test';
+        $user = $this->person($email, 'org_z');   // in the wrong organisation
+
+        self::assertFalse($this->letIn($user->id), 'the fixture was not refused, so this proves nothing');
+
+        (new \Portal\Auth\GuestExemptions($this->db()))->add($email, 'Visiting speaker');
+
+        self::assertTrue($this->letIn($user->id), 'the exemption did not waive the organisation check');
+    }
+
+    /**
+     * AND NOTHING ELSE. This is the whole reason the waiver is applied by
+     * switching one check off rather than by short-circuiting the method.
+     *
+     * A guest under BOTH still has to be on the address list. An exemption that
+     * skipped that too would be an admin backdoor wearing the word "guest", and
+     * from the screen that grants one the two look identical.
+     */
+    public function testAGuestExemptionDoesNotWaiveTheAddressList(): void
+    {
+        $this->configure(ClaimGate::BOTH, claim: true, list: true);
+        $this->setting('signin_guests_enabled', '1');
+
+        $email = 'guest-not-listed@example.test';
+        $user = $this->person($email, 'org_z');
+        (new \Portal\Auth\GuestExemptions($this->db()))->add($email);
+
+        self::assertFalse(
+            $this->letIn($user->id),
+            'the exemption excused the address list as well as the organisation'
+        );
+
+        // And with the list satisfied too, they are in — so the refusal above
+        // was the list and not the exemption failing to work at all.
+        $this->allowlist->add($email);
+        self::assertTrue($this->letIn($user->id));
+    }
+
+    /** Nor the approval flag, which is a different decision again. */
+    public function testAGuestExemptionDoesNotWaiveApproval(): void
+    {
+        $this->configure(ClaimGate::ORGANIZATION, claim: true, list: false);
+        $this->setting('signin_guests_enabled', '1');
+
+        $email = 'guest-unapproved@example.test';
+        $user = $this->person($email, 'org_z', authorized: false);
+        (new \Portal\Auth\GuestExemptions($this->db()))->add($email);
+
+        self::assertFalse(
+            $this->letIn($user->id),
+            'the exemption let through somebody no administrator had approved'
+        );
+    }
+
+    /**
+     * Switched off is a complete answer, whatever rows exist.
+     *
+     * Otherwise turning the feature off would require also emptying the list to
+     * be sure — and "off but still has rows" is exactly the state a site is in
+     * while somebody is deciding whether to use it.
+     */
+    public function testExemptionsDoNothingWhileTheFeatureIsOff(): void
+    {
+        $this->configure(ClaimGate::ORGANIZATION, claim: true, list: false);
+        $this->setting('signin_guests_enabled', '0');
+
+        $email = 'guest-while-off@example.test';
+        $user = $this->person($email, 'org_z');
+        (new \Portal\Auth\GuestExemptions($this->db()))->add($email);
+
+        self::assertFalse($this->letIn($user->id), 'a row excused somebody while the feature was off');
+    }
+
     // ---------------------------------------------------------- recording
 
     /** A refusal is recorded, since the person has no other way to be seen. */
@@ -284,6 +371,7 @@ final class SignInModeTest extends DatabaseTestCase
             new Config(),
             new SignInAllowlist($this->db()),
             new AccessAttempts($this->db()),
+            new \Portal\Auth\GuestExemptions($this->db()),
         );
 
         return ($guard->requireAuthorized())(Request::capture()) === null;
@@ -315,14 +403,15 @@ final class SignInModeTest extends DatabaseTestCase
         string $email,
         ?string $claim,
         string $role = 'viewer',
-        ?string $password = null
+        ?string $password = null,
+        bool $authorized = true
     ): \Portal\Auth\User {
         $user = $this->users->create(
             email: $email,
             name: 'Test Person',
             roleSlug: $role,
             password: $password,
-            authorized: true,
+            authorized: $authorized,
         );
 
         $this->db()->update('users', ['auth_claim' => $claim], ['id' => $user->id]);

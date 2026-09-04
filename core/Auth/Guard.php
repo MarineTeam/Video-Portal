@@ -30,6 +30,7 @@ final class Guard
         private readonly \Portal\Config $config,
         private readonly SignInAllowlist $allowlist,
         private readonly AccessAttempts $attempts,
+        private readonly GuestExemptions $guests,
     ) {
     }
 
@@ -402,6 +403,26 @@ final class Guard
 
             $claimCounts = $claimOn && ClaimGate::countsOrganisation($mode);
             $listCounts = $listOn && ClaimGate::countsAllowlist($mode);
+
+            /*
+             * A guest exemption waives the ORGANISATION check and nothing else.
+             *
+             * Applied by turning that one check off for this person, rather
+             * than by short-circuiting the whole method — which is the shape
+             * that keeps it narrow. Short-circuiting would excuse the address
+             * list and the approval flag too, and from the screen that grants
+             * an exemption those three are indistinguishable.
+             *
+             * So a guest still has to be on the list under BOTH, and still has
+             * to be approved. What they are excused is the single check they
+             * cannot possibly satisfy.
+             */
+            if ($claimCounts && $this->guests->excuses(
+                $this->config->settingBool('signin_guests_enabled', false),
+                $user->email
+            )) {
+                $claimCounts = false;
+            }
 
             // Nothing to check. A site that has configured no gate refuses
             // nobody, whatever mode is stored — which is every fresh install.

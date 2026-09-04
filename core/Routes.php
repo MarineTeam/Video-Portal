@@ -133,6 +133,13 @@ final class Routes
         $router->get('/auth/callback', [AuthController::class, 'callback']);
 
         /*
+         * Sign in as a guest: the same provider, without the organisation
+         * parameter, for an address an administrator has excused that check.
+         * 404 unless the feature is switched on — see AuthController::guest().
+         */
+        $router->get('/auth/guest', [AuthController::class, 'guest']);
+
+        /*
          * Registration, which 404s unless the site has switched it on. One
          * handler for both methods so a failed submission re-renders the form
          * rather than 405-ing.

@@ -3715,6 +3715,58 @@ HTML;
             );
         }
 
+        $guestsOn = (bool) ($data['guestsOn'] ?? false);
+        $guestState = $guestsOn ? '<span class="pill on">On</span>' : '<span class="pill">Off</span>';
+        $guestToggle = $guestsOn ? 'guests-off' : 'guests-on';
+        $guestToggleLabel = $guestsOn ? 'Turn off' : 'Turn on';
+        $guestUrl = e((string) ($data['guestUrl'] ?? ''));
+
+        $guestRows = '';
+        foreach ((array) ($data['guests'] ?? []) as $guest) {
+            $guestRows .= sprintf(
+                '<tr><td>%s</td><td class="muted small">%s</td><td class="muted small">%s</td>
+                 <td class="right"><form method="post" style="display:inline">
+                   <input type="hidden" name="_token" value="%s">
+                   <input type="hidden" name="id" value="%d">
+                   <button class="btn small danger" name="action" value="guest-remove">Remove</button>
+                 </form></td></tr>',
+                e((string) $guest['email']),
+                e((string) ($guest['note'] ?? '')),
+                e((string) ($guest['added_by'] ?? '')),
+                $token,
+                (int) $guest['id']
+            );
+        }
+
+        if ($guestRows === '') {
+            $guestRows = '<tr><td colspan="4" class="muted">Nobody is excused.</td></tr>';
+        }
+
+        $guestBody = <<<GUEST
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+          <label>Address <input type="email" name="email" placeholder="visitor@example.com"></label>
+          <label>Who they are <input type="text" name="note" maxlength="500"
+                 placeholder="visiting speaker, until the end of March"></label>
+          <p class="muted small">Ask for a reason. An exemption nobody can account for later is one
+             nobody dares remove.</p>
+          <button class="btn" name="action" value="guest-add">Excuse this address</button>
+        </form>
+
+        <table>
+          <thead><tr><th>Address</th><th>Who</th><th>Added by</th><th></th></tr></thead>
+          <tbody>{$guestRows}</tbody>
+        </table>
+
+        <p class="muted small">
+          Send a guest this link rather than the ordinary sign-in page:
+          <code>{$guestUrl}</code> — it asks the provider without naming the organization, which it
+          would otherwise use to refuse them before this site could excuse them. It works for one
+          sign-in and then forgets, so following it once does not change how that browser signs in
+          afterwards.
+        </p>
+GUEST;
+
         $regSecret = (string) ($data['regSecret'] ?? '');
         $regUrl = e((string) ($data['regUrl'] ?? ''));
 
@@ -3889,6 +3941,25 @@ REG;
             <button class="btn" name="action" value="{$toggleAction}">{$toggleLabel}</button>
             <span class="muted small">{$activeCount} address(es) currently active.</span>
           </form>
+        </fieldset>
+
+        <fieldset>
+          <legend>Guests {$guestState}</legend>
+          <p class="muted small">
+            For somebody who legitimately has no account in the organization — a visiting speaker,
+            a spouse, a contractor. Without this the choices are adding them to somebody else's
+            identity system, or loosening the whole site to <em>either</em> to admit one person.
+          </p>
+          <p class="muted small">
+            <strong>It excuses the organization check and nothing else.</strong> A guest still has to
+            be on the address list where that is required, and still has to be approved like anybody
+            else. What they are excused is the one check they cannot possibly satisfy.
+          </p>
+          <form method="post" style="margin-bottom:.75rem">
+            <input type="hidden" name="_token" value="{$token}">
+            <button class="btn" name="action" value="{$guestToggle}">{$guestToggleLabel}</button>
+          </form>
+          {$guestBody}
         </fieldset>
 
         <fieldset>
