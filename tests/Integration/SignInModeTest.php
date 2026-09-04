@@ -209,7 +209,63 @@ final class SignInModeTest extends DatabaseTestCase
         );
     }
 
+    /**
+     * NO SESSION SURVIVES A REFUSAL.
+     *
+     * The refusal has to be a state change rather than a page. Left live, the
+     * cookie still names a valid row — so this gate refuses on every request
+     * while any route gated on `requireUser` alone would let the same person
+     * straight through.
+     *
+     * Asserted on the {sessions} table rather than on the response, because
+     * the row is the thing that grants access; the cleared cookie is how the
+     * browser finds out, and Session::commit() attaches that on the way out.
+     */
+    public function testARefusalEndsTheSession(): void
+    {
+        $this->configure(ClaimGate::BOTH, claim: true, list: true);
+
+        $user = $this->person('turned-away@example.test', 'org_z');
+
+        self::assertFalse($this->letIn($user->id), 'the fixture was not refused, so this proves nothing');
+
+        self::assertNull(
+            $this->lastSession?->userId(),
+            'the refused person kept a live session'
+        );
+    }
+
+    /** And somebody who passes keeps theirs, or the check above is vacuous. */
+    public function testSomebodyWhoPassesKeepsTheirSession(): void
+    {
+        $this->configure(ClaimGate::BOTH, claim: true, list: true);
+
+        $email = 'welcome@example.test';
+        $user = $this->person($email, 'org_a');
+        $this->allowlist->add($email);
+
+        self::assertTrue($this->letIn($user->id));
+
+        self::assertSame(
+            $user->id,
+            $this->lastSession?->userId(),
+            'ending every session would satisfy the refusal check and break the site'
+        );
+    }
+
     // ---------------------------------------------------------- fixture
+
+    /**
+     * The session the last letIn() ran against.
+     *
+     * Kept so a test can ask what the guard did to it. The {sessions} TABLE is
+     * no use for that here: a row is only written by Session::commit(), which
+     * the kernel calls at the end of a real request and nothing calls in a
+     * test — so counting rows was 0 whatever happened, and the first version of
+     * the refusal check passed without proving anything at all. The paired
+     * check on the other direction is what exposed it.
+     */
+    private ?Session $lastSession = null;
 
     /** Does the guard let this person past? */
     private function letIn(int $userId): bool
@@ -218,6 +274,7 @@ final class SignInModeTest extends DatabaseTestCase
 
         $session = new Session($this->db());
         $session->login($userId);
+        $this->lastSession = $session;
 
         $guard = new Guard(
             $session,

@@ -132,6 +132,30 @@ final class Guard
             if ($refusal !== null) {
                 $this->attempts->record($user->email, $refusal, $user->authProvider, $request->ip());
 
+                /*
+                 * NO SESSION SURVIVES A REFUSAL.
+                 *
+                 * Until now this returned a 403 page with the session still
+                 * live — so the refusal was something the person was TOLD
+                 * rather than something that happened to them. Every later
+                 * request re-ran the gate and was refused again, which is why
+                 * it looked correct; but the cookie stayed valid, and any route
+                 * that ever gates on `requireUser` rather than this one would
+                 * have let them through.
+                 *
+                 * Ending it here makes the refusal a state change. commit()
+                 * clears the cookie on the way out because the session is
+                 * destroyed, so the browser is not left holding a token that
+                 * still names a row.
+                 *
+                 * The record above is written FIRST: the attempt is the thing
+                 * an administrator needs, and losing it because the logout
+                 * threw would be losing the only trace of somebody who cannot
+                 * reach any page here to ask.
+                 */
+                $this->session->logout();
+                $this->user = null;
+
                 if ($request->wantsJson()) {
                     return Response::error($this->explainRefusal($refusal), 403);
                 }
@@ -442,10 +466,11 @@ final class Guard
             'You cannot sign in here',
             <<<HTML
             <p>{$why}</p>
-            <p class="muted">You signed in as <strong>{$email}</strong>.</p>
+            <p class="muted">You were signed in as <strong>{$email}</strong>, and have been signed
+               out again — the refusal is not something you can wait out or reload past.</p>
             <p class="muted">If you think this is wrong, ask whoever runs this site to add that
                address to the list of people who may sign in.</p>
-            <p><a href="/auth/logout">Sign out</a></p>
+            <p><a href="/">Back to the site</a></p>
             HTML
         );
     }
