@@ -3703,9 +3703,17 @@ HTML;
         $claimName = e((string) ($data['claimName'] ?? ''));
         $claimValues = e((string) ($data['claimValues'] ?? ''));
         $authParam = e((string) ($data['authParam'] ?? ''));
-        $mode = (string) ($data['gateMode'] ?? 'all');
-        $allSelected = $mode === 'either' ? '' : ' selected';
-        $eitherSelected = $mode === 'either' ? ' selected' : '';
+        $mode = \Portal\Auth\ClaimGate::normalizeMode((string) ($data['gateMode'] ?? ''));
+
+        $modeOptions = '';
+        foreach (\Portal\Auth\ClaimGate::choices() as $value => $label) {
+            $modeOptions .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($value),
+                $value === $mode ? ' selected' : '',
+                e($label)
+            );
+        }
 
         $regSecret = (string) ($data['regSecret'] ?? '');
         $regUrl = e((string) ($data['regUrl'] ?? ''));
@@ -3922,16 +3930,19 @@ REG;
             </p>
 
             <label>When both this and the list are on
-              <select name="gate_mode">
-                <option value="all"{$allSelected}>Require both</option>
-                <option value="either"{$eitherSelected}>Either one is enough</option>
-              </select>
+              <select name="gate_mode">{$modeOptions}</select>
             </label>
             <p class="muted small">
-              <strong>Either</strong> is what a site wants when some people sign in through the
-              organization and others have personal accounts — the list is then how you let an
-              individual in without adding them to the organization. There is deliberately no setting
-              that switches both off; the way to have no gate is to configure no gate.
+              <strong>Either one is enough</strong> is what a site wants when some people sign in
+              through the organization and others have personal accounts — the list is then how you
+              let an individual in without adding them to the organization.
+            </p>
+            <p class="muted small">
+              There is deliberately no setting that switches both checks off, and an unrecognised
+              value resolves to <strong>Require both</strong>: a typo must never be the thing that
+              opens a door. A check you have not configured is skipped rather than failed, so
+              choosing <strong>Require both</strong> does not shut out a site with no organization
+              set up.
             </p>
 
             <label>Extra sign-in parameter <input type="text" name="auth_param" value="{$authParam}" placeholder="organization"></label>

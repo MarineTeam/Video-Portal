@@ -349,39 +349,58 @@ final class Guard
                 (string) $this->config->setting('signin_claim_values', '')
             );
 
+            $mode = ClaimGate::normalizeMode((string) $this->config->setting('signin_mode', ''));
+
+            /*
+             * CONFIGURED and COUNTS are two different facts, settled before
+             * either gate is asked, and keeping them apart is the whole
+             * correctness of this method.
+             *
+             * Configured: is there anything to check against — a claim name and
+             * accepted values, or the allowlist switched on.
+             *
+             * Counts: does the chosen mode consult that check at all.
+             *
+             * A check that counts but is not configured cannot refuse anybody,
+             * so it is skipped rather than failed. Conflating the two would
+             * mean selecting BOTH on a site with no organisation configured
+             * refused every visitor — which, on a product installed by
+             * strangers on hosting with no shell, is a site nobody can recover.
+             *
+             * And an unconfigured gate returning "no refusal" is
+             * indistinguishable from one that let somebody through, so under
+             * EITHER it would wave everybody past the gate that IS switched on.
+             * The mode is only applied when there are genuinely two answers.
+             */
             $claimOn = trim((string) $this->config->setting('signin_claim_name', '')) !== ''
                 && $accepted !== [];
             $listOn = $this->config->settingBool('signin_allowlist_enabled', false);
 
-            /*
-             * Which gates are configured is settled BEFORE either is asked, and
-             * that ordering is the whole correctness of `either` mode.
-             *
-             * An unconfigured gate returns null, which is indistinguishable
-             * from "this one let them through" — so combining a configured gate
-             * with an unconfigured one under OR waves everybody past the gate
-             * that is actually switched on. The mode only applies when there
-             * are genuinely two answers to combine.
-             */
-            if (!$claimOn && !$listOn) {
+            $claimCounts = $claimOn && ClaimGate::countsOrganisation($mode);
+            $listCounts = $listOn && ClaimGate::countsAllowlist($mode);
+
+            // Nothing to check. A site that has configured no gate refuses
+            // nobody, whatever mode is stored — which is every fresh install.
+            if (!$claimCounts && !$listCounts) {
                 return null;
             }
 
-            if (!$claimOn) {
-                return $this->allowlistRefusal($user);
+            $claimRefusal = $claimCounts
+                ? ClaimGate::decide(true, $user->authClaim, $accepted)
+                : null;
+
+            $listRefusal = $listCounts ? $this->allowlistRefusal($user) : null;
+
+            /*
+             * EITHER only means "either" when both are actually being
+             * consulted. With one of them out of the picture there is one
+             * answer, and it is the answer.
+             */
+            if ($mode === ClaimGate::EITHER && $claimCounts && $listCounts) {
+                return ClaimGate::combine($mode, $listRefusal, $claimRefusal);
             }
 
-            $claimRefusal = ClaimGate::decide(true, $user->authClaim, $accepted);
-
-            if (!$listOn) {
-                return $claimRefusal;
-            }
-
-            return ClaimGate::combine(
-                (string) $this->config->setting('signin_gate_mode', ClaimGate::ALL),
-                $this->allowlistRefusal($user),
-                $claimRefusal
-            );
+            return $listRefusal ?? $claimRefusal;
         } catch (\Throwable $e) {
             error_log('Portal: could not read the sign-in gates: ' . $e->getMessage());
 

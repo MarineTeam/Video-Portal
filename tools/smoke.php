@@ -9179,15 +9179,15 @@ postWithJar($baseUrl . '/admin/access', [
     'action'       => 'membership',
     'claim_name'   => 'org_id',
     'claim_values' => 'org_a, org_b',
-    'gate_mode'    => 'either',
+    'gate_mode'    => 'EITHER',
     'auth_param'   => 'organization',
 ], $jar);
 
 check(
     'The membership check saves',
     (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_claim_name'") === 'org_id'
-        && (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_gate_mode'") === 'either',
-    'got ' . $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_gate_mode'")
+        && (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_mode'") === 'EITHER',
+    'got ' . $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_mode'")
 );
 
 postWithJar($baseUrl . '/admin/access', [
@@ -9197,8 +9197,21 @@ postWithJar($baseUrl . '/admin/access', [
 ], $jar);
 check(
     'and an unrecognised mode is stored as the strict one',
-    (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_gate_mode'") === 'all',
+    (string) $db->value("SELECT `value` FROM {settings} WHERE `key` = 'signin_mode'") === 'BOTH',
     'a typo must not loosen a boundary — it is stored, and later read, as the loose one'
+);
+check(
+    'The screen offers all four modes by name',
+    str_contains($accessScreen['body'], 'value="BOTH"')
+        && str_contains($accessScreen['body'], 'value="ORGANIZATION"')
+        && str_contains($accessScreen['body'], 'value="ALLOWLIST"')
+        && str_contains($accessScreen['body'], 'value="EITHER"'),
+    'a matrix nobody can select is a matrix that is not there'
+);
+check(
+    'and says a check you have not configured is skipped rather than failed',
+    str_contains($accessScreen['body'], 'does not shut out a site with no organization'),
+    'somebody choosing "require both" needs to know it will not brick their site'
 );
 
 /* Cleared again so it plays no part in the allowlist checks below. */

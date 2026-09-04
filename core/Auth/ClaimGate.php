@@ -15,27 +15,53 @@ namespace Portal\Auth;
  *
  * HOW IT COMBINES WITH THE ALLOWLIST
  *
- *   all     both must pass. The strict reading: a member of the organization
- *           AND someone we listed.
+ *   BOTH          both must pass — a member of the organization AND somebody
+ *                 we listed. The default, and what anything unrecognised
+ *                 resolves to.
+ *   ORGANIZATION  membership only; the list is ignored.
+ *   ALLOWLIST     the list only; membership is ignored.
+ *   EITHER        one is enough. What a site wants when some people sign in
+ *                 through the organization and others have personal accounts —
+ *                 the list is then how an individual gets in without being
+ *                 added to the organization.
  *
- *   either  one is enough. The reading a site wants when some people sign in
- *           through the organization and others have personal accounts — the
- *           list is how you let an individual in without adding them to the
- *           organization.
+ * There is deliberately no value that switches both off. That is not caution
+ * for its own sake: a mode meaning "let everybody in" is one typo away from
+ * being selected, and the way to have no gate is to configure no gate. A test
+ * asserts that every reachable value — legal or mistyped — consults at least
+ * one check.
  *
- * There is deliberately no value that switches both off. That is not an
- * oversight and it is not caution for its own sake: a mode meaning "let
- * everybody in" is one typo away from being selected, and the way to have no
- * gate is to configure no gate.
+ * WHICH CHECKS A MODE COUNTS IS NOT WHETHER THEY ARE CONFIGURED. That second
+ * fact belongs to the caller, and keeping them apart is what stops "require
+ * both" refusing every visitor to a site that has no organization set up —
+ * which, on a product installed by strangers on hosting with no shell, is a
+ * site nobody can recover.
  *
- * Unrecognised values fall back to `all`, which is the strict one. A typo must
- * not loosen a security boundary — the failure should be somebody being refused
- * and asking why, not somebody getting in and nobody asking anything.
+ * A typo must not loosen a boundary: the failure should be somebody being
+ * refused and asking why, not somebody getting in and nobody asking anything.
  */
 final class ClaimGate
 {
-    public const ALL = 'all';
-    public const EITHER = 'either';
+    /**
+     * The four modes, named.
+     *
+     *   BOTH          organisation AND allowlist
+     *   ORGANIZATION  membership only; the list is ignored
+     *   ALLOWLIST     the list only; membership is ignored
+     *   EITHER        one of them is enough
+     *
+     * There is deliberately no fifth value meaning "neither", and a test
+     * asserts that every mode counts at least one check. A mode that switched
+     * both off would be one typo away from being selected, and the way to have
+     * no gate is to configure no gate.
+     */
+    public const BOTH = 'BOTH';
+    public const ORGANIZATION = 'ORGANIZATION';
+    public const ALLOWLIST = 'ALLOWLIST';
+    public const EITHER = 'EITHER';
+
+    /** @var list<string> */
+    private const MODES = [self::BOTH, self::ORGANIZATION, self::ALLOWLIST, self::EITHER];
 
     /** The provider asserted the claim, but not a value this site accepts. */
     public const NOT_A_MEMBER = 'not_a_member';
@@ -111,10 +137,63 @@ final class ClaimGate
         return $allowlist ?? $claim;
     }
 
-    /** Anything unrecognised is the strict mode. A typo must not open a gate. */
+    /**
+     * Anything unrecognised is the strictest mode. A typo must not open a gate.
+     *
+     * Compared case-insensitively after trimming, because these are values
+     * somebody types: "both" and " BOTH " are plainly the same intention, and
+     * treating them as a typo would resolve them to BOTH anyway — but by
+     * accident rather than on purpose, which is the kind of luck that stops
+     * holding the day somebody adds a looser default.
+     */
     public static function normalizeMode(string $mode): string
     {
-        return $mode === self::EITHER ? self::EITHER : self::ALL;
+        $mode = strtoupper(trim($mode));
+
+        return in_array($mode, self::MODES, true) ? $mode : self::BOTH;
+    }
+
+    /**
+     * Does this mode count the organisation check?
+     *
+     * Separate from whether the check is CONFIGURED, which is a different fact
+     * and is the caller's to establish. A check that counts but has nothing to
+     * check against cannot refuse anybody, and conflating the two is how
+     * selecting BOTH on a site with no organisation configured would refuse
+     * every visitor.
+     */
+    public static function countsOrganisation(string $mode): bool
+    {
+        return in_array(
+            self::normalizeMode($mode),
+            [self::BOTH, self::ORGANIZATION, self::EITHER],
+            true
+        );
+    }
+
+    /** Does this mode count the address list? */
+    public static function countsAllowlist(string $mode): bool
+    {
+        return in_array(
+            self::normalizeMode($mode),
+            [self::BOTH, self::ALLOWLIST, self::EITHER],
+            true
+        );
+    }
+
+    /**
+     * The modes an administrator picks from, with what each one does.
+     *
+     * @return array<string, string>
+     */
+    public static function choices(): array
+    {
+        return [
+            self::BOTH         => 'Require both — membership and the address list',
+            self::ORGANIZATION => 'Membership only — ignore the address list',
+            self::ALLOWLIST    => 'The address list only — ignore membership',
+            self::EITHER       => 'Either one is enough',
+        ];
     }
 
     /**
@@ -137,7 +216,16 @@ final class ClaimGate
      */
     public static function authorizeValue(string $mode, array $accepted): ?string
     {
-        if (self::normalizeMode($mode) === self::EITHER) {
+        $mode = self::normalizeMode($mode);
+
+        /*
+         * Withheld under EITHER, and under ALLOWLIST for a sharper version of
+         * the same reason. Under EITHER the provider would refuse a non-member
+         * before this site could offer them the personal-account route; under
+         * ALLOWLIST membership is not being checked at all, so asking the
+         * provider to enforce it refuses people this site would admit.
+         */
+        if ($mode === self::EITHER || $mode === self::ALLOWLIST) {
             return null;
         }
 

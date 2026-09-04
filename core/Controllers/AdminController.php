@@ -3535,7 +3535,7 @@ final class AdminController extends Controller
             'claimName'   => (string) $this->config()->setting('signin_claim_name', ''),
             'claimValues' => (string) $this->config()->setting('signin_claim_values', ''),
             'gateMode'    => \Portal\Auth\ClaimGate::normalizeMode(
-                (string) $this->config()->setting('signin_gate_mode', \Portal\Auth\ClaimGate::ALL)
+                (string) $this->config()->setting('signin_mode', '')
             ),
             'authParam'   => (string) $this->config()->setting('signin_authorize_param', ''),
             'regSecret'   => (string) $this->config()->setting('signin_registration_secret', ''),
@@ -3649,7 +3649,7 @@ final class AdminController extends Controller
                      * form can still arrive by other means, and it must not be
                      * the loose one.
                      */
-                    'signin_gate_mode'    => \Portal\Auth\ClaimGate::normalizeMode(
+                    'signin_mode'         => \Portal\Auth\ClaimGate::normalizeMode(
                         (string) ($request->input('gate_mode') ?? '')
                     ),
                     'signin_authorize_param' => trim((string) ($request->input('auth_param') ?? '')),

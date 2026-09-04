@@ -95,9 +95,9 @@ final class ClaimGateTest extends TestCase
 
     public function testUnderAllBothMustPass(): void
     {
-        self::assertNull(ClaimGate::combine(ClaimGate::ALL, null, null));
-        self::assertSame('x', ClaimGate::combine(ClaimGate::ALL, 'x', null));
-        self::assertSame('y', ClaimGate::combine(ClaimGate::ALL, null, 'y'));
+        self::assertNull(ClaimGate::combine(ClaimGate::BOTH, null, null));
+        self::assertSame('x', ClaimGate::combine(ClaimGate::BOTH, 'x', null));
+        self::assertSame('y', ClaimGate::combine(ClaimGate::BOTH, null, 'y'));
     }
 
     public function testUnderEitherOnePassIsEnough(): void
@@ -129,21 +129,75 @@ final class ClaimGateTest extends TestCase
      */
     public function testAnUnrecognisedModeIsTheStrictOne(): void
     {
-        self::assertSame(ClaimGate::ALL, ClaimGate::normalizeMode('EITHER'));
-        self::assertSame(ClaimGate::ALL, ClaimGate::normalizeMode('any'));
-        self::assertSame(ClaimGate::ALL, ClaimGate::normalizeMode(''));
+        self::assertSame(ClaimGate::BOTH, ClaimGate::normalizeMode('any'));
+        self::assertSame(ClaimGate::BOTH, ClaimGate::normalizeMode(''));
         self::assertSame('x', ClaimGate::combine('nonsense', 'x', 'y'));
     }
 
-    /** And there is no mode that switches both checks off. */
-    public function testNoModeDisablesBothChecks(): void
+    /**
+     * No mode switches both checks off.
+     *
+     * Asserted over the four legal values AND over things somebody might type
+     * instead, because the point is that there is no reachable value — legal or
+     * not — which consults nothing. The way to have no gate is to configure no
+     * gate.
+     */
+    public function testEveryModeCountsAtLeastOneCheck(): void
     {
-        foreach ([ClaimGate::ALL, ClaimGate::EITHER, 'off', 'none', ''] as $mode) {
-            self::assertNotNull(
-                ClaimGate::combine($mode, 'x', 'y'),
-                "mode '{$mode}' let somebody through who failed both checks"
+        $candidates = [
+            ClaimGate::BOTH, ClaimGate::ORGANIZATION, ClaimGate::ALLOWLIST, ClaimGate::EITHER,
+            'off', 'none', 'neither', 'disabled', '', '   ', 'BOTH ', 'nonsense',
+        ];
+
+        foreach ($candidates as $mode) {
+            self::assertTrue(
+                ClaimGate::countsOrganisation($mode) || ClaimGate::countsAllowlist($mode),
+                "mode '{$mode}' consults neither check"
             );
         }
+    }
+
+    /**
+     * Which checks each mode consults. This is the matrix the spec names, and
+     * it is separate from whether a check is CONFIGURED — a mode that counts a
+     * check the site has not set up skips it rather than failing it.
+     */
+    public function testTheModeMatrix(): void
+    {
+        $expected = [
+            //                          organisation, allowlist
+            ClaimGate::BOTH         => [true,  true],
+            ClaimGate::ORGANIZATION => [true,  false],
+            ClaimGate::ALLOWLIST    => [false, true],
+            ClaimGate::EITHER       => [true,  true],
+        ];
+
+        foreach ($expected as $mode => [$org, $list]) {
+            self::assertSame($org, ClaimGate::countsOrganisation($mode), "{$mode}: organisation");
+            self::assertSame($list, ClaimGate::countsAllowlist($mode), "{$mode}: allowlist");
+        }
+    }
+
+    /** Case and stray space are the same intention, not a typo. */
+    public function testModesAreReadForgivingly(): void
+    {
+        self::assertSame(ClaimGate::EITHER, ClaimGate::normalizeMode('either'));
+        self::assertSame(ClaimGate::EITHER, ClaimGate::normalizeMode('  EITHER '));
+        self::assertSame(ClaimGate::ALLOWLIST, ClaimGate::normalizeMode('allowlist'));
+        self::assertSame(ClaimGate::ORGANIZATION, ClaimGate::normalizeMode('Organization'));
+    }
+
+    /**
+     * The organisation parameter is withheld under ALLOWLIST too.
+     *
+     * Membership is not being checked at all in that mode, so asking the
+     * provider to enforce it at its own door refuses people this site would
+     * have admitted — the same shape as the EITHER case, one step further on.
+     */
+    public function testTheParameterIsWithheldWhenMembershipIsNotBeingChecked(): void
+    {
+        self::assertNull(ClaimGate::authorizeValue(ClaimGate::ALLOWLIST, ['org_a']));
+        self::assertSame('org_a', ClaimGate::authorizeValue(ClaimGate::ORGANIZATION, ['org_a']));
     }
 
     // ------------------------------------------------------ authorize parameter
@@ -151,7 +205,7 @@ final class ClaimGateTest extends TestCase
     /** One organization: send it, and the provider renders that login directly. */
     public function testTheParameterIsSentForExactlyOneOrganization(): void
     {
-        self::assertSame('org_a', ClaimGate::authorizeValue(ClaimGate::ALL, ['org_a']));
+        self::assertSame('org_a', ClaimGate::authorizeValue(ClaimGate::BOTH, ['org_a']));
     }
 
     /**
@@ -160,7 +214,7 @@ final class ClaimGateTest extends TestCase
      */
     public function testTheParameterIsWithheldWhenSeveralAreAccepted(): void
     {
-        self::assertNull(ClaimGate::authorizeValue(ClaimGate::ALL, ['org_a', 'org_b']));
+        self::assertNull(ClaimGate::authorizeValue(ClaimGate::BOTH, ['org_a', 'org_b']));
     }
 
     /**
@@ -177,6 +231,6 @@ final class ClaimGateTest extends TestCase
 
     public function testNothingIsSentWhenNothingIsAccepted(): void
     {
-        self::assertNull(ClaimGate::authorizeValue(ClaimGate::ALL, []));
+        self::assertNull(ClaimGate::authorizeValue(ClaimGate::BOTH, []));
     }
 }

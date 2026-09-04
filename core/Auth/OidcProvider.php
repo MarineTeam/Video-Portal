@@ -146,7 +146,7 @@ class OidcProvider implements AuthProvider
             }
 
             $value = ClaimGate::authorizeValue(
-                (string) $this->config->setting('signin_gate_mode', ClaimGate::ALL),
+                (string) $this->config->setting('signin_mode', ''),
                 ClaimGate::parseValues((string) $this->config->setting('signin_claim_values', ''))
             );
 
