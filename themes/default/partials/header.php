@@ -40,6 +40,70 @@ $allowIndexing ??= false;
 ?>
 <meta name="robots" content="<?= $allowIndexing ? 'index, follow' : 'noindex, nofollow' ?>">
 
+<?php
+/*
+ * What this link looks like when somebody pastes it somewhere.
+ *
+ * Deliberately NOT gated on $allowIndexing. That setting decides whether a
+ * crawler may index the site; this decides what a preview card looks like when
+ * a person chooses to share a page. A private site still wants a legible card
+ * in a group chat, and a card is only ever built for a page the fetcher could
+ * already reach — an unfurler carries no session, so a guarded page hands it a
+ * sign-in redirect and there is nothing to preview.
+ *
+ * $pageMeta is null on any screen that has not built one, and this block then
+ * renders nothing rather than guessing. A card assembled from whatever happens
+ * to be in scope is how a members-only thumbnail ends up on somebody's server.
+ */
+$pageMeta ??= null;
+
+if ($pageMeta !== null):
+    $ogTitle = $pageMeta->title !== '' ? $pageMeta->title : $siteName;
+?>
+<meta property="og:site_name" content="<?= e($siteName) ?>">
+<meta property="og:type" content="<?= e($pageMeta->type) ?>">
+<meta property="og:title" content="<?= e($ogTitle) ?>">
+<meta name="twitter:card" content="<?= e($pageMeta->twitterCard()) ?>">
+<meta name="twitter:title" content="<?= e($ogTitle) ?>">
+<?php if ($pageMeta->description !== ''): ?>
+<meta name="description" content="<?= e($pageMeta->description) ?>">
+<meta property="og:description" content="<?= e($pageMeta->description) ?>">
+<meta name="twitter:description" content="<?= e($pageMeta->description) ?>">
+<?php endif ?>
+<?php if ($pageMeta->canonical !== null): ?>
+<link rel="canonical" href="<?= e($pageMeta->canonical) ?>">
+<meta property="og:url" content="<?= e($pageMeta->canonical) ?>">
+<?php endif ?>
+<?php
+    /*
+     * Absent for anything whose artwork is members-only, and absent means
+     * ABSENT — there is no fallback to a site logo here. og:image is fetched
+     * by a stranger's server with no session and cached there afterwards, so a
+     * withheld thumbnail put here is handed to exactly the people the setting
+     * exists to keep it from.
+     */
+    if ($pageMeta->imageUrl !== null):
+?>
+<meta property="og:image" content="<?= e($pageMeta->imageUrl) ?>">
+<meta name="twitter:image" content="<?= e($pageMeta->imageUrl) ?>">
+<?php endif ?>
+<?php
+    $breadcrumbList = $pageMeta->breadcrumbList();
+
+    foreach (array_filter([$pageMeta->structured, $breadcrumbList]) as $block):
+        /*
+         * JSON_UNESCAPED_SLASHES keeps URLs readable; JSON_HEX_TAG is the one
+         * that matters — it turns `<` into < so a title containing
+         * "</script>" cannot close this block and start running.
+         */
+?>
+<script type="application/ld+json"><?= json_encode(
+    $block,
+    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+) ?></script>
+<?php endforeach ?>
+<?php endif ?>
+
 <link rel="stylesheet" href="<?= e(isset($themeAsset) ? $themeAsset('theme.css') : $assetsUrl . '/theme.css') ?>">
 
 <?php

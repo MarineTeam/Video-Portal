@@ -9922,6 +9922,85 @@ check(
     'a precached page carrying a title is a title shown to whoever opens the app next'
 );
 
+/* ------------------------------------------------------- link previews
+ *
+ * Every link this site produced used to preview with one site-wide title and
+ * no image. For a product whose distribution is people sending each other
+ * links, that is the first thing anybody sees of it.
+ *
+ * The check that matters is the LAST one: a members-only thumbnail must never
+ * reach a card, because og:image is fetched by a stranger's server with no
+ * session and cached there afterwards.
+ */
+echo "\nLink previews\n";
+
+$catPreview = get($baseUrl . '/category/sermons');
+check('A category page carries a preview card', str_contains($catPreview['body'], 'og:title'), 'no og:title');
+check(
+    'and it names the category rather than the site',
+    preg_match('/property="og:title" content="([^"]*)"/', $catPreview['body'], $m) === 1
+        && $m[1] !== '' && stripos($m[1], 'Smoke Test Portal') === false,
+    'got ' . ($m[1] ?? 'nothing') . ' — a card that says the site name is the card we already had'
+);
+check(
+    'and a canonical URL built from the configured base',
+    str_contains($catPreview['body'], '<link rel="canonical"')
+        && str_contains($catPreview['body'], 'og:url'),
+    'a preview with no URL cannot be followed back'
+);
+check(
+    'and a breadcrumb trail a machine can read',
+    str_contains($catPreview['body'], 'BreadcrumbList')
+        && str_contains($catPreview['body'], '"position":1'),
+    'breadcrumbs were listed as a gap for a reason'
+);
+
+$videoPreview = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'A video page carries VideoObject structured data',
+    str_contains($videoPreview['body'], '"@type":"VideoObject"'),
+    'this is what turns a search result into a card with a thumbnail'
+);
+
+/*
+ * The leak check, on the right lever.
+ *
+ * `member_only` and `thumbnail_mode` are different settings here, deliberately:
+ * one decides who may WATCH, the other who may see the FRAME. The whole design
+ * is that a library can be browsable while playback is gated — so a
+ * members-only video whose artwork is public SHOULD have a card image, and the
+ * first version of this check, which set member_only, was testing something
+ * the application is right to allow.
+ *
+ * `thumbnail_mode = members` is the setting that means withhold the artwork.
+ *
+ * Fetched as somebody who CAN watch, because the person on the page is not the
+ * thing that fetches og:image — that is a stranger's server with no session,
+ * and whatever it fetches it caches.
+ */
+$db->execute("UPDATE {videos} SET thumbnail_mode = 'members' WHERE id = ?", [$videoRow]);
+$lockedPreview = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+$db->execute("UPDATE {videos} SET thumbnail_mode = 'default' WHERE id = ?", [$videoRow]);
+
+/* And the other direction, so the check above cannot pass by never emitting one. */
+$openPreview = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'A video whose artwork is public does get a card image',
+    str_contains($openPreview['body'], 'og:image'),
+    'no image on any card would make the withholding check below vacuous'
+);
+
+check(
+    'A members-only video puts no image in its preview card',
+    !str_contains($lockedPreview['body'], 'og:image'),
+    'AN OG:IMAGE IS FETCHED AND CACHED BY A STRANGER\'S SERVER — a withheld frame there is a leak'
+);
+check(
+    'and the page still rendered for somebody who may watch it',
+    $lockedPreview['status'] === 200,
+    "got {$lockedPreview['status']} — withholding the card must not withhold the page"
+);
+
 $home = get($baseUrl . '/');
 check(
     'The site links to the manifest',
