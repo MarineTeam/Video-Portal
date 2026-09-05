@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Portal\Http;
 
+use Portal\Support\SecretGuard;
+
 /**
  * A response, built up and sent once at the end of the request.
  *
@@ -49,6 +51,22 @@ final class Response
     /** @param mixed $data */
     public static function json(mixed $data, int $status = 200): self
     {
+        /*
+         * The choke point for machine-readable data leaving this app.
+         *
+         * Put here rather than at each endpoint so that no endpoint has to
+         * remember — including the ones not written yet, which is most of them:
+         * the read API, the calendar feeds, whatever comes after. An endpoint
+         * that forgets a guard is indistinguishable from one that does not need
+         * it, and the difference only shows up in the leak.
+         *
+         * It THROWS on a forbidden key rather than removing it. See SecretGuard
+         * for why — briefly: a key arriving here means a query is selecting
+         * something it should not, and stripping fixes the symptom while hiding
+         * the cause until a column lands that is not on the list.
+         */
+        SecretGuard::assertClean($data, 'json response');
+
         $encoded = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         if ($encoded === false) {
             $encoded = '{"error":"Could not encode the response."}';

@@ -7037,6 +7037,51 @@ check(
     'the account_export filter would otherwise be a promise rather than a mechanism'
 );
 
+/*
+ * The secret guard, driven rather than asserted.
+ *
+ * SecretGuardTest proves the class refuses a forbidden key. It cannot prove the
+ * guard is WIRED to anything — a guard installed on a path nothing reaches is
+ * this project's signature defect, and it would look identical from the unit
+ * tests.
+ *
+ * So: no forbidden key is anywhere in the real export, at any depth.
+ */
+$forbiddenSeen = [];
+$findForbidden = static function ($node, string $path) use (&$findForbidden, &$forbiddenSeen): void {
+    if (!is_array($node)) {
+        return;
+    }
+    foreach ($node as $key => $value) {
+        if (is_string($key) && in_array(strtolower($key), [
+            'password_hash', 'credentials', 'auth_secret', 'p256dh', 'endpoint',
+            'token', 'token_hash', 'added_by', 'actor_email', 'secret',
+        ], true)) {
+            $forbiddenSeen[] = $path . '.' . $key;
+        }
+        $findForbidden($value, $path . '.' . (is_string($key) ? $key : '[]'));
+    }
+};
+$findForbidden($exportBody, 'export');
+
+check(
+    'and it carries nothing from the forbidden list',
+    $forbiddenSeen === [],
+    'found: ' . implode(', ', array_slice($forbiddenSeen, 0, 5))
+        . ' — an export is emailed to a laptop and forwarded onwards'
+);
+
+/*
+ * That the guard is WIRED — as opposed to merely existing — is proved in
+ * ResponseSecretGuardTest, which calls Response::json() directly with a
+ * forbidden key and requires it to throw.
+ *
+ * Deliberately not proved here with a probe route. A debug endpoint that exists
+ * only to be refused is a route somebody has to remember to keep out of a
+ * release, and the guard is not worth a permanent hole in the routing table to
+ * demonstrate.
+ */
+
 postWithJar($baseUrl . '/account/history', ['_token' => csrfFrom($withHistory['body'])], $jar);
 check(
     'Clearing the history removes it',

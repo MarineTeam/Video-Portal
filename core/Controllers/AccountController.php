@@ -13,6 +13,7 @@ use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Support\Audit;
 use Portal\Support\RateLimit;
+use Portal\Support\SecretGuard;
 use Throwable;
 
 /**
@@ -155,6 +156,18 @@ final class AccountController extends Controller
             'user',
             (string) $user->id
         );
+
+        /*
+         * Asserted here as well as at Response::json, because this exit does
+         * not go through it — the file is pretty-printed and sent as a
+         * download, so it builds its own body.
+         *
+         * That is exactly the kind of endpoint the guard exists for: it walks
+         * eight tables, several of which have columns nobody would put in an
+         * export on purpose, and it is the one payload guaranteed to be
+         * emailed onwards.
+         */
+        SecretGuard::assertClean($payload, 'member data export');
 
         return Response::text((string) json_encode(
             $payload,
