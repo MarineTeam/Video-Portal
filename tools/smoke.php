@@ -3577,6 +3577,114 @@ check(
     'finishing a video reported a second viewer'
 );
 
+/* ------------------------------------------------ marking by hand
+ *
+ * The repository rules are covered by WatchProgressTest. These drive the
+ * buttons, because a repository nobody calls and one that works look the same
+ * from there — and because the case this feature exists for is precisely the
+ * one where the player never reported.
+ */
+$adminId = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['admin@smoke.test']);
+$completedAt = static fn (): ?string => $db->value(
+    'SELECT completed_at FROM {watch_progress} WHERE user_id = ? AND video_id = ?',
+    [$adminId, $videoRow]
+);
+
+$watchPage = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'A finished video says so on its page',
+    str_contains($watchPage['body'], 'action="/watch/mark"')
+        && str_contains($watchPage['body'], 'value="unwatched"'),
+    'there is no way to see or change whether something counts as watched'
+);
+
+postWithJar($baseUrl . '/watch/mark', [
+    '_token'   => csrfFrom($watchPage['body']),
+    'video_id' => (string) $videoRow,
+    'action'   => 'unwatched',
+], $jar);
+
+check(
+    'Marking it not watched takes the mark off',
+    $completedAt() === null,
+    'the button did nothing'
+);
+
+check(
+    'and keeps the history entry rather than forgetting it',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {watch_progress} WHERE user_id = ? AND video_id = ?',
+        [$adminId, $videoRow]
+    ) === 1,
+    'undoing a mis-click deleted the entry, which is a different request'
+);
+
+$unwatchedPage = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'and the button now offers to mark it watched',
+    str_contains($unwatchedPage['body'], 'value="watched"'),
+    'the control does not reflect the state, so pressing it is a guess'
+);
+
+postWithJar($baseUrl . '/watch/mark', [
+    '_token'   => csrfFrom($unwatchedPage['body']),
+    'video_id' => (string) $videoRow,
+    'action'   => 'watched',
+], $jar);
+
+check(
+    'Marking it watched sets the completion',
+    $completedAt() !== null,
+    'the mark cannot be put back on'
+);
+
+/*
+ * THE RULE, over HTTP: the player may finish a video and may never unfinish
+ * one. This is the rewatch — twenty seconds in, a week later.
+ */
+postJsonWithJar($baseUrl . '/api/progress', [
+    'videoId'  => $videoRow,
+    'position' => 20,
+    'duration' => 125,
+], $jar);
+
+check(
+    'Rewatching the opening does not un-finish it',
+    $completedAt() !== null,
+    'A HEARTBEAT UNFINISHED A WATCHED VIDEO — sequential unlock would re-lock itself'
+);
+
+check(
+    'though the position does move, which is the half that should',
+    (int) $db->value(
+        'SELECT position_seconds FROM {watch_progress} WHERE user_id = ? AND video_id = ?',
+        [$adminId, $videoRow]
+    ) === 20,
+    'nothing was written at all, so the check above proves nothing'
+);
+
+/*
+ * The id in the form is an id anybody can change, so it is looked up rather
+ * than written against.
+ */
+postWithJar($baseUrl . '/watch/mark', [
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body']),
+    'video_id' => '999999',
+    'action'   => 'watched',
+], $jar);
+
+check(
+    'Marking a video that does not exist writes nothing',
+    (int) $db->value('SELECT COUNT(*) FROM {watch_progress} WHERE video_id = ?', [999999]) === 0,
+    'the id in the form is trusted, so rows can be written against anything'
+);
+
+/* Put it back the way the later checks expect. */
+$db->execute(
+    'UPDATE {watch_progress} SET position_seconds = 125 WHERE user_id = ? AND video_id = ?',
+    [$adminId, $videoRow]
+);
+
 /*
  * The export.
  *
@@ -5722,6 +5830,30 @@ check(
     'a locked episode is a dead end again'
 );
 
+/*
+ * And it cannot be marked watched from a form.
+ *
+ * "Mark as watched" is a second way to write a completion, and a completion is
+ * what opens the next episode. Left unchecked, the button would be a way to
+ * skip a course by posting an id — which is the one thing sequential unlock
+ * exists to prevent, so this is the place its usual fail-open habit does not
+ * apply.
+ */
+postWithJar($baseUrl . '/watch/mark', [
+    '_token'   => csrfFrom($firstEpisode['body']),
+    'video_id' => (string) $episodeIds['two'],
+    'action'   => 'watched',
+], $viewerJar);
+
+check(
+    'A locked episode cannot be marked watched',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {watch_progress} WHERE user_id = ? AND video_id = ?',
+        [$viewerId, $episodeIds['two']]
+    ) === 0,
+    'THE LOCK CAN BE SKIPPED BY POSTING A FORM'
+);
+
 /* Finishing the first opens the second. */
 $db->execute(
     'INSERT INTO {watch_progress}
@@ -5729,6 +5861,32 @@ $db->execute(
      VALUES (?, ?, 100, 100, NOW(), NOW())',
     [$viewerId, $episodeIds['one']]
 );
+
+/* The other direction: an episode they CAN reach is markable, which is what
+ * proves the refusal above was the lock rather than a broken button. */
+$db->execute('DELETE FROM {watch_progress} WHERE user_id = ? AND video_id = ?', [
+    $viewerId, $episodeIds['two'],
+]);
+
+$secondUnlocked = getWithJar($baseUrl . '/watch/course-episode-two', $viewerJar);
+postWithJar($baseUrl . '/watch/mark', [
+    '_token'   => csrfFrom($secondUnlocked['body']),
+    'video_id' => (string) $episodeIds['two'],
+    'action'   => 'watched',
+], $viewerJar);
+
+check(
+    'and an unlocked one can be',
+    $db->value(
+        'SELECT completed_at FROM {watch_progress} WHERE user_id = ? AND video_id = ?',
+        [$viewerId, $episodeIds['two']]
+    ) !== null,
+    'the button refuses everything, so the check above says nothing about the lock'
+);
+
+$db->execute('DELETE FROM {watch_progress} WHERE user_id = ? AND video_id = ?', [
+    $viewerId, $episodeIds['two'],
+]);
 
 $secondAfter = getWithJar($baseUrl . '/watch/course-episode-two', $viewerJar);
 check(

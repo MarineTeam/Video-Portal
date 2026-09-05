@@ -252,6 +252,15 @@ final class Routes
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
 
+        /*
+         * Marking by hand. A plain form post rather than an API route, because
+         * the case for it is precisely the one where the player did not
+         * report: listened to in the car, watched on somebody else's
+         * television, or a recording whose last two minutes are credits so the
+         * heartbeat never reached the end.
+         */
+        $router->post('/watch/mark', [WatchController::class, 'mark'], ['auth.authorized']);
+
         // Saved videos. Approved-only for the same reason /watch is: the pages
         // list content, and an unapproved account cannot see the library either.
         $router->get('/notes', [LibraryController::class, 'notes'], ['auth.authorized']);

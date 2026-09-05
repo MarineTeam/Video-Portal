@@ -150,6 +150,29 @@ $csrfField ??= '';
         </button>
       </form>
     <?php endforeach ?>
+
+    <?php
+    /*
+     * Marking by hand, beside the other two because it answers the same shape
+     * of question about the same video. The label states what the video IS and
+     * pressing it changes that, matching the pair above.
+     *
+     * Offered whatever the player reported, since the whole case for it is the
+     * watching this site never saw — in the car, on somebody's television, or a
+     * recording that ends in two minutes of credits so the heartbeat never
+     * reached the end.
+     */
+    $watched = !empty($video['watched']);
+    ?>
+    <form method="post" action="/watch/mark" class="inline">
+      <?= $csrfField ?>
+      <input type="hidden" name="video_id" value="<?= (int) $video['id'] ?>">
+      <input type="hidden" name="action" value="<?= $watched ? 'unwatched' : 'watched' ?>">
+      <button type="submit" class="btn secondary tiny<?= $watched ? ' on' : '' ?>"
+              aria-pressed="<?= $watched ? 'true' : 'false' ?>">
+        <?= $watched ? 'Watched' : 'Mark as watched' ?>
+      </button>
+    </form>
   </p>
 <?php endif ?>
 

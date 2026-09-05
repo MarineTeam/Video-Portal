@@ -8,6 +8,7 @@ use Portal\Auth\Capability;
 use Portal\Content\DownloadPolicy;
 use Portal\Content\Video;
 use Portal\Content\VideoRepository;
+use Portal\Content\WatchProgressRepository;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
@@ -119,6 +120,13 @@ final class WatchController extends Controller
                     'series'      => $this->seriesLink($video),
                     'recordedAt'  => $this->formatDate($video->recordedAt),
                     'resumeAt'    => $this->resumePosition($video->id),
+                    /*
+                     * Whether this person has finished it, so the theme can
+                     * offer the mark or the unmark rather than a button whose
+                     * effect nobody can predict.
+                     */
+                    'watched'     => $this->user() !== null
+                        && $this->watchProgress()->isCompleted($this->user()->id, $video->id),
                     /*
                      * An explicit moment from a link, which beats resume.
                      *
@@ -709,24 +717,15 @@ final class WatchController extends Controller
 
         // Under ten seconds is not "watched" — it is someone clicking away.
         // Storing it would fill the continue-watching row with noise.
-        if ($position < 10) {
+        if ($position < WatchProgressRepository::MIN_SECONDS) {
             return $this->json(['saved' => false]);
         }
 
-        $completed = $position >= $duration * 0.95;
-
         try {
-            $this->db()->execute(
-                'INSERT INTO {watch_progress}
-                    (user_id, video_id, position_seconds, duration_seconds, completed_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, NOW())
-                 ON DUPLICATE KEY UPDATE
-                    position_seconds = VALUES(position_seconds),
-                    duration_seconds = VALUES(duration_seconds),
-                    completed_at = COALESCE({watch_progress}.completed_at, VALUES(completed_at)),
-                    updated_at = NOW()',
-                [$user->id, $videoId, $position, $duration, $completed ? date('Y-m-d H:i:s') : null]
-            );
+            // The rule that a heartbeat may finish a video and never unfinish
+            // one lives in the repository, so the manual mark cannot be
+            // written against a different one. See WatchProgressRepository.
+            $completed = $this->watchProgress()->record($user->id, $videoId, $position, $duration);
         } catch (Throwable $e) {
             error_log('Portal: could not save watch progress: ' . $e->getMessage());
             return $this->json(['saved' => false], 200);
@@ -735,6 +734,79 @@ final class WatchController extends Controller
         $this->countView($videoId, $completed);
 
         return $this->json(['saved' => true, 'completed' => $completed]);
+    }
+
+    /**
+     * Mark a video watched, or take the mark off.
+     *
+     * An ordinary form post, not an API call. The whole point is that this
+     * works when the player did not — the sermon listened to in the car, the
+     * one watched on somebody else's television, the one whose last two minutes
+     * are credits so the heartbeat never reached 95%. A control that itself
+     * needed JavaScript to run would be the same kind of promise.
+     *
+     * Behind auth.authorized, like every other watching route: the question
+     * "have I watched this" only exists for somebody allowed to watch it.
+     */
+    public function mark(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+
+        $user = $this->user();
+        if ($user === null) {
+            throw HttpException::unauthorized();
+        }
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        $videoId = (int) ($request->input('video_id') ?? 0);
+        $video = $videoId > 0 ? $videos->find($videoId) : null;
+
+        if ($video === null) {
+            return $this->back($request, 'That video does not exist.', 'error');
+        }
+
+        /*
+         * The same three questions show() asks, calling the same three
+         * predicates rather than restating any of them. An id in a form is an
+         * id anybody can change, and without this the button is a way to mark
+         * a video somebody was never allowed to open — which on a site with
+         * sequential unlock is a way to unlock the next one.
+         *
+         * The lock is included deliberately, against its usual fail-open
+         * habit: failing open here would mean marking episode one from a form
+         * in order to reach episode two, which is the single thing the lock
+         * exists to prevent.
+         */
+        $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+
+        if (!$canManage) {
+            $refused = !$video->isVisible()
+                || !$videos->audienceAllows($video, $this->viewerGroupIds())
+                || $this->lockState($video) !== null;
+
+            if ($refused) {
+                // A 404, matching show(): telling somebody a video exists but
+                // is out of reach is the leak the 404 there exists to avoid.
+                throw HttpException::notFound('There is no video at that address.');
+            }
+        }
+
+        if (($request->input('action') ?? '') === 'unwatched') {
+            $this->watchProgress()->markUnwatched($user->id, $video->id);
+
+            return $this->back($request, 'Marked as not watched.');
+        }
+
+        $this->watchProgress()->markWatched($user->id, $video->id, $video->duration);
+
+        return $this->back($request, 'Marked as watched.');
+    }
+
+    private function watchProgress(): WatchProgressRepository
+    {
+        return new WatchProgressRepository($this->db());
     }
 
     /**
