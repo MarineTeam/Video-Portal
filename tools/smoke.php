@@ -2725,6 +2725,69 @@ check('The saved page renders', $savedPage['status'] === 200, "got {$savedPage['
 check('It lists the saved video', str_contains($savedPage['body'], 'A Test Video'));
 check('It links from the site navigation', str_contains($savedPage['body'], 'href="/saved"'));
 
+/* ------------------------------------------------- the bottom tab bar
+ *
+ * On a narrow screen the top navigation wraps under the brand, which puts the
+ * places people go most at the top of a tall page and out of thumb reach.
+ *
+ * Whether it is VISIBLE at a phone width is a CSS question and no markup check
+ * can answer it — this project has that lesson on record from the admin flyout,
+ * which passed nine unit tests and twelve smoke checks while being clipped out
+ * of view. So these assert what the markup can settle: that the bar exists on
+ * every page, that it is built from the same navigation rather than a second
+ * hardcoded copy, and that a link appearing in both is marked so one of them
+ * can be hidden.
+ */
+check(
+    'Every page carries a bottom tab bar',
+    str_contains($savedPage['body'], 'class="tab-bar"')
+        && str_contains(get($baseUrl . '/')['body'], 'class="tab-bar"'),
+    'the top navigation is the only navigation on a phone'
+);
+
+check(
+    'It is built from the site navigation, not a second list',
+    str_contains($savedPage['body'], 'href="/saved"')
+        && substr_count($savedPage['body'], 'href="/saved"') >= 2,
+    'a destination in one bar and not the other means two ideas of what this site is'
+);
+
+check(
+    'and a duplicated link is marked so one copy can be hidden',
+    str_contains($savedPage['body'], 'data-tab'),
+    'the same word twice on one screen reads as two different things'
+);
+
+/*
+ * The last tab follows the session: it is the account for somebody signed in
+ * and the way in for everybody else. Both directions, because a bar that
+ * always says one of them is not following anything.
+ */
+check(
+    'The last tab is the account when somebody is signed in',
+    str_contains($savedPage['body'], '>Account</span>'),
+    'no way to reach the account area from a phone'
+);
+
+$strangerHome = get($baseUrl . '/');
+check(
+    'and the way in when nobody is',
+    str_contains($strangerHome['body'], '>Sign in</span>')
+        && !str_contains($strangerHome['body'], '>Account</span>'),
+    'a signed-out visitor is offered an account area they do not have'
+);
+
+/*
+ * Five at most. Six labels across the narrowest phone truncate, and a tab bar
+ * whose labels are cut in half is a row of guesses.
+ */
+check(
+    'and there are never more than five tabs',
+    preg_match_all('/<nav class="tab-bar".*?<\/nav>/s', $savedPage['body'], $bars) === 1
+        && substr_count($bars[0][0], '<a href=') <= 5,
+    'the bar has grown past what fits'
+);
+
 $watchAfterSaving = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
 check(
     'The button shows it is already saved',

@@ -22,6 +22,54 @@ $currentPath ??= '/';
 $assetsUrl ??= '/theme-asset/default';
 
 $documentTitle = $title !== '' ? "{$title} — {$siteName}" : $siteName;
+
+/*
+ * The bottom tab bar's destinations, worked out here because the top nav has
+ * to know which of its own links are duplicated below.
+ *
+ * Four from $nav at most, then the account. Five is what fits across the
+ * narrowest phone this product supports without the labels truncating, and a
+ * tab bar whose labels are cut in half is a row of guesses.
+ *
+ * $nav is already filtered by `site_nav`, so a plugin's destination reaches
+ * both bars or neither.
+ */
+$tabs = array_slice($nav, 0, 4);
+$tabs[] = $currentUser !== null
+    ? ['label' => 'Account', 'href' => '/account']
+    : ['label' => 'Sign in', 'href' => '/auth/login'];
+
+$tabHrefs = array_map(static fn (array $t): string => $t['href'], $tabs);
+
+/**
+ * A 20px line icon for a tab, chosen by its address.
+ *
+ * Inline SVG rather than an icon font or a sprite, for the reason the admin
+ * sidebar gives: one more request that has to succeed before the navigation is
+ * legible, on hosts where a mis-set MIME type is an ordinary kind of failure.
+ *
+ * An address nothing matches gets a dot rather than nothing, so a plugin's
+ * destination looks deliberate instead of broken.
+ */
+$tabIcon = static function (string $href): string {
+    $paths = [
+        '/'                 => '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/>',
+        '/search'           => '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+        '/live'             => '<circle cx="12" cy="12" r="3"/><path d="M6.5 6.5a8 8 0 0 0 0 11"/>'
+                             . '<path d="M17.5 6.5a8 8 0 0 1 0 11"/>',
+        '/saved'            => '<path d="M6 3h12v18l-6-4.5L6 21z"/>',
+        '/account'          => '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/>',
+        '/auth/login'       => '<path d="M14 3h5v18h-5"/><path d="M3 12h11"/><path d="m10 8 4 4-4 4"/>',
+        '/account/password' => '<rect x="4" y="10" width="16" height="10" rx="2"/>'
+                             . '<path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+    ];
+
+    $d = $paths[$href] ?? '<circle cx="12" cy="12" r="3"/>';
+
+    return '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"'
+        . ' stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        . $d . '</svg>';
+};
 ?>
 <!doctype html>
 <html lang="en">
@@ -186,6 +234,7 @@ do_action('head');
     <nav class="site-nav">
       <?php foreach ($nav as $item): ?>
         <a href="<?= e($item['href']) ?>"
+           <?= in_array($item['href'], $tabHrefs, true) ? 'data-tab' : '' ?>
            <?= $item['href'] === $currentPath ? 'aria-current="page"' : '' ?>><?= e($item['label']) ?></a>
       <?php endforeach ?>
 
@@ -217,18 +266,51 @@ do_action('head');
          * notification record nobody can find is the same as not keeping one.
          */
         ?>
-        <a href="/account" <?= '/account' === $currentPath ? 'aria-current="page"' : '' ?>>
+        <a href="/account" data-tab <?= '/account' === $currentPath ? 'aria-current="page"' : '' ?>>
           Account<?php if (!empty($currentUser['unreadNotifications'])): ?>
             <span class="pill"><?= (int) $currentUser['unreadNotifications'] ?></span>
           <?php endif ?>
         </a>
         <a href="/auth/logout">Sign out</a>
       <?php else: ?>
-        <a href="/auth/login">Sign in</a>
+        <a href="/auth/login" data-tab>Sign in</a>
       <?php endif ?>
     </nav>
   </div>
 </header>
+
+<?php
+/*
+ * The bottom tab bar, on phones only.
+ *
+ * The top navigation wraps under the brand on a narrow screen, which puts the
+ * places people go most at the top of a tall page and out of thumb reach. This
+ * is the same set of destinations, drawn where a thumb already is.
+ *
+ * Built from $nav rather than a second hardcoded list, so a plugin adding a
+ * destination gets it here too — and so the two can never disagree about what
+ * this site's navigation is. A link that appears here is marked `data-tab`
+ * above and hidden from the top nav at the same width, because the same word
+ * twice on one screen reads as two different things.
+ *
+ * It is fixed, so it is drawn here rather than in the footer only to keep the
+ * tab list and the marking in one file; its position in the document does not
+ * decide where it lands.
+ *
+ * No JavaScript, deliberately, like every other navigation in this product:
+ * these are links, and a tab bar that needs a script to change page is one that
+ * fails on exactly the connections phones have.
+ */
+?>
+<nav class="tab-bar" aria-label="Primary">
+  <?php foreach ($tabs as $tab): ?>
+    <a href="<?= e($tab['href']) ?>"
+       <?= $tab['href'] === $currentPath ? 'aria-current="page"' : '' ?>>
+      <?= $tabIcon($tab['href']) ?>
+      <span><?= e($tab['label']) ?></span>
+    </a>
+  <?php endforeach ?>
+</nav>
 
 <?php
 /*
