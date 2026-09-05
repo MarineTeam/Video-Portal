@@ -30,6 +30,14 @@ final class Category
         public readonly string $thumbnailMode = 'default',
         /** Tri-state download rule for this category and everything beneath it. */
         public readonly string $downloadMode = DownloadPolicy::INHERIT,
+        /**
+         * Set while this category is in the trash.
+         *
+         * Its own flag only. Trashing never writes one on a child — the
+         * children keep their parent id and their place, which is what makes
+         * restoring put the tree back exactly as it was.
+         */
+        public readonly ?string $deletedAt = null,
     ) {
     }
 
@@ -54,7 +62,15 @@ final class Category
             hidden:      (bool) ($row['hidden'] ?? false),
             thumbnailMode: (string) ($row['thumbnail_mode'] ?? 'default'),
             downloadMode:  (string) ($row['download_mode'] ?? DownloadPolicy::INHERIT),
+            deletedAt:     isset($row['deleted_at']) && $row['deleted_at'] !== null
+                ? (string) $row['deleted_at']
+                : null,
         );
+    }
+
+    public function isTrashed(): bool
+    {
+        return $this->deletedAt !== null;
     }
 
     public function isRoot(): bool
@@ -89,6 +105,10 @@ final class Category
     /** Visible to someone who is not signed in? */
     public function isPublic(): bool
     {
-        return $this->isPublished && !$this->memberOnly && !$this->hidden;
+        // Trashed is asked first. The repository already keeps these out of
+        // every listing, so this is the same question answered twice on
+        // purpose: a caller holding a Category it fetched some other way gets
+        // the same answer as one that went through a listing.
+        return !$this->isTrashed() && $this->isPublished && !$this->memberOnly && !$this->hidden;
     }
 }

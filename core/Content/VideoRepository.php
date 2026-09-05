@@ -341,10 +341,14 @@ final class VideoRepository
                        . ' LEFT JOIN {series} se ON se.id = v.series_id'
                        . ' LEFT JOIN {transcripts} tr ON tr.video_id = v.id';
 
+                // A trashed category does not lend its name to the score. The
+                // video stays findable by its own words; what it loses is a
+                // boost from a heading nobody can see any more.
                 $categoryExists =
                     'EXISTS (SELECT 1 FROM {video_categories} vcs
                                JOIN {categories} cs ON cs.id = vcs.category_id
-                              WHERE vcs.video_id = v.id AND LOWER(cs.name) LIKE ?)';
+                              WHERE vcs.video_id = v.id AND cs.deleted_at IS NULL
+                                AND LOWER(cs.name) LIKE ?)';
 
                 $parts = [];
 

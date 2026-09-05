@@ -61,7 +61,7 @@ final class AdminController extends Controller
                 'processing' => (int) $this->db()->value(
                     'SELECT COUNT(*) FROM {videos} WHERE deleted_at IS NULL AND status = "processing"'
                 ),
-                'categories' => (int) $this->db()->value('SELECT COUNT(*) FROM {categories}'),
+                'categories' => (int) $this->db()->value('SELECT COUNT(*) FROM {categories} WHERE deleted_at IS NULL'),
                 'users'      => (int) $this->db()->value('SELECT COUNT(*) FROM {users}'),
                 'pending'    => (int) $this->db()->value('SELECT COUNT(*) FROM {users} WHERE authorized = 0'),
             ];
@@ -3010,6 +3010,17 @@ final class AdminController extends Controller
         return $this->admin('categories', [
             'tree' => $categories->tree(true),
             'flat' => $categories->all(true),
+            /*
+             * The trash lives on this screen rather than on one of its own.
+             *
+             * Videos have a separate trash because it is a rare destination
+             * with a permanent-delete button on it. A deleted category is the
+             * opposite: you find out you wanted it back while you are looking
+             * at the tree it is missing from, and a bin you have to go and
+             * find is the same as no bin — which is how the video trash was
+             * unreachable for two phases.
+             */
+            'trashed' => $categories->trashed(),
         ]);
     }
 
@@ -3058,7 +3069,7 @@ final class AdminController extends Controller
          * parent to ask about and stays site-wide, and so does `import`, which
          * makes top-level categories in bulk.
          */
-        $named = ['delete', 'restore-revision', 'up', 'down', 'update'];
+        $named = ['delete', 'restore', 'purge', 'restore-revision', 'up', 'down', 'update'];
 
         if (in_array($action, $named, true) && $id > 0) {
             $this->require(Capability::MANAGE_CATEGORIES, 'category', $id);
@@ -3071,9 +3082,56 @@ final class AdminController extends Controller
         try {
             switch ($action) {
                 case 'delete':
-                    $categories->delete($id);
+                    /*
+                     * The count is read BEFORE the trashing and reported back,
+                     * because the old confirmation is what made this a bug
+                     * worth fixing rather than a limitation: "Videos in it are
+                     * kept" was true, said nothing about the subcategories,
+                     * and the subcategories were the thing being destroyed.
+                     *
+                     * Saying how many were left alone is the opposite habit —
+                     * name what you did not touch, so nobody has to trust that
+                     * the sentence covers everything.
+                     */
+                    $children = $categories->childCount($id);
+                    $categories->softDelete($id);
                     Audit::log($this->db(), $this->user()?->email, 'category.delete', 'category', (string) $id);
-                    return $this->back($request, 'Category deleted. Its videos were not removed.');
+
+                    return $this->back($request, $children === 0
+                        ? 'Moved to the trash. Its videos were not removed.'
+                        : sprintf(
+                            'Moved to the trash. Its videos and its %d subcategor%s were not removed — '
+                            . 'restoring it puts them back where they were.',
+                            $children,
+                            $children === 1 ? 'y' : 'ies'
+                        ));
+
+                case 'restore':
+                    if ($categories->findTrashed($id) === null) {
+                        return $this->back($request, 'That category is not in the trash.', 'error');
+                    }
+
+                    $categories->restore($id);
+                    Audit::log($this->db(), $this->user()?->email, 'category.restore', 'category', (string) $id);
+                    return $this->back($request, 'Category restored.');
+
+                case 'purge':
+                    /*
+                     * Only from the trash. Reaching this straight from the tree
+                     * would put an irreversible button beside the everyday
+                     * ones, which is the arrangement that lost people their
+                     * subcategories in the first place.
+                     *
+                     * forceDelete() refuses while children exist; the cascade
+                     * on fk_category_parent is still live and would take them.
+                     */
+                    if ($categories->findTrashed($id) === null) {
+                        return $this->back($request, 'That category is not in the trash.', 'error');
+                    }
+
+                    $categories->forceDelete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'category.purge', 'category', (string) $id);
+                    return $this->back($request, 'Category deleted for good. Its videos were not removed.');
 
                 case 'restore-revision':
                     return $this->restoreRevision($request, RevisionRepository::CATEGORY, $id);

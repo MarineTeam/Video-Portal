@@ -8012,6 +8012,133 @@ foreach ($orderKids as $id) {
 }
 $db->execute('DELETE FROM {categories} WHERE id = ?', [$orderParent]);
 
+/* ------------------------------------------------- the category trash
+ *
+ * Deleting a category used to remove the row, and fk_category_parent is
+ * ON DELETE CASCADE — so pressing Delete on "Sermons" destroyed every
+ * subcategory under it, permanently, on a host with no shell. The
+ * confirmation said "Videos in it are kept", which was true and was the
+ * half that survived.
+ *
+ * CategoryTrashTest covers the repository against the real cascade. These
+ * drive the actual buttons, because a repository that refuses correctly and
+ * a screen that never calls it are indistinguishable from the tests — which
+ * is this project's signature defect and has been found sixteen times.
+ */
+echo "\nCategory trash\n";
+
+$trashParent = $db->insert('categories', [
+    'slug' => 'trash-parent', 'name' => 'Trash Parent', 'path' => '/', 'depth' => 0,
+    'position' => 910, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->execute('UPDATE {categories} SET path = ? WHERE id = ?', ['/' . $trashParent . '/', $trashParent]);
+
+$trashChild = $db->insert('categories', [
+    'slug' => 'trash-child', 'name' => 'Trash Child', 'parent_id' => $trashParent,
+    'path' => '/' . $trashParent . '/', 'depth' => 1, 'position' => 10,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->execute(
+    'UPDATE {categories} SET path = ? WHERE id = ?',
+    ['/' . $trashParent . '/' . $trashChild . '/', $trashChild]
+);
+
+$catScreen = getWithJar($baseUrl . '/admin/categories', $jar);
+$catToken = csrfFrom($catScreen['body']);
+
+check(
+    'The delete confirmation no longer promises only the videos',
+    str_contains($catScreen['body'], 'Its videos and subcategories are kept'),
+    'the reassuring half of the old sentence is still the whole sentence'
+);
+
+postWithJar($baseUrl . '/admin/categories', [
+    '_token' => $catToken,
+    'id'     => (string) $trashParent,
+    'action' => 'delete',
+], $jar);
+
+/* THE RULE, driven through the button: the subtree is untouched. */
+check(
+    'Deleting a category leaves its subcategory alive',
+    (int) $db->value('SELECT COUNT(*) FROM {categories} WHERE id = ?', [$trashChild]) === 1,
+    'the cascade destroyed the subcategory — this is the bug this fixes'
+);
+
+check(
+    'and the subcategory still points at its parent',
+    (int) $db->value('SELECT parent_id FROM {categories} WHERE id = ?', [$trashChild]) === $trashParent,
+    'the child was orphaned, so restoring the parent cannot put the tree back'
+);
+
+check(
+    'and the parent itself is in the trash rather than gone',
+    $db->value('SELECT deleted_at FROM {categories} WHERE id = ?', [$trashParent]) !== null,
+    'the row was deleted outright'
+);
+
+/* Both directions: it leaves the public site, and comes back. */
+check(
+    'A trashed category 404s on the public site',
+    getWithJar($baseUrl . '/category/trash-parent', $jar)['status'] === 404,
+    'a deleted category still renders its page'
+);
+
+$afterDelete = getWithJar($baseUrl . '/admin/categories', $jar);
+check(
+    'and appears in the trash on the categories screen',
+    str_contains($afterDelete['body'], 'name="action" value="restore"')
+        && str_contains($afterDelete['body'], 'Trash Parent'),
+    'nothing on any screen can reach it, which is the same as no trash at all'
+);
+
+/*
+ * Deleting for good is refused while the subtree is there. This is the check
+ * that stands in for the cascade still being on the foreign key: without the
+ * guard the request succeeds and takes the child with it.
+ */
+postWithJar($baseUrl . '/admin/categories', [
+    '_token' => csrfFrom($afterDelete['body']),
+    'id'     => (string) $trashParent,
+    'action' => 'purge',
+], $jar);
+
+check(
+    'Deleting for good is refused while a subcategory exists',
+    (int) $db->value('SELECT COUNT(*) FROM {categories} WHERE id = ?', [$trashParent]) === 1
+        && (int) $db->value('SELECT COUNT(*) FROM {categories} WHERE id = ?', [$trashChild]) === 1,
+    'the permanent delete went through and the cascade took the subcategory'
+);
+
+$refused = getWithJar($baseUrl . '/admin/categories', $jar);
+check(
+    'and says why rather than appearing to do nothing',
+    str_contains($refused['body'], 'still has subcategories'),
+    'a button that silently refuses is one somebody presses again'
+);
+
+postWithJar($baseUrl . '/admin/categories', [
+    '_token' => csrfFrom($refused['body']),
+    'id'     => (string) $trashParent,
+    'action' => 'restore',
+], $jar);
+
+check(
+    'Restoring puts the category back on the public site',
+    getWithJar($baseUrl . '/category/trash-parent', $jar)['status'] === 200,
+    'restore is where the trash stops being a delete with extra steps'
+);
+
+check(
+    'and the tree is exactly as it was',
+    (int) $db->value('SELECT parent_id FROM {categories} WHERE id = ?', [$trashChild]) === $trashParent
+        && $db->value('SELECT deleted_at FROM {categories} WHERE id = ?', [$trashParent]) === null,
+    'the subtree did not come back with it'
+);
+
+$db->execute('DELETE FROM {categories} WHERE id = ?', [$trashChild]);
+$db->execute('DELETE FROM {categories} WHERE id = ?', [$trashParent]);
+
 /* ------------------------------------------------------------- on air
  *
  * liveNow() has existed since Phase 5 with no caller and /live has never been

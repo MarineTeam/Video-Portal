@@ -1661,7 +1661,7 @@ final class AdminView
                        <button name="action" value="down" class="btn tiny secondary"
                                title="Move down among its siblings">&darr;</button>
                        <button name="action" value="delete" class="btn tiny danger"
-                               onclick="return confirm(\'Delete this category? Videos in it are kept.\')">Delete</button>
+                               onclick="return confirm(\'Move this category to the trash? Its videos and subcategories are kept.\')">Delete</button>
                      </form>
                    </td>
                  </tr>',
@@ -1680,6 +1680,8 @@ final class AdminView
         if ($rows === '') {
             $rows = '<tr><td colspan="2" class="muted">No categories yet.</td></tr>';
         }
+
+        $trash = $this->categoryTrash((array) ($data['trashed'] ?? []), $token);
 
         return <<<HTML
         <h1>Categories</h1>
@@ -1714,6 +1716,63 @@ final class AdminView
             </form>
           </div>
         </div>
+        {$trash}
+        HTML;
+    }
+
+    /**
+     * Categories in the trash, on the same screen as the tree.
+     *
+     * Hidden entirely when the trash is empty, for the reason the Failed tab
+     * on the video library is: a permanent "Trash (0)" is a spot people learn
+     * to skip, and this has to be noticed on the day the number changes.
+     *
+     * @param list<Category> $trashed
+     */
+    private function categoryTrash(array $trashed, string $token): string
+    {
+        if ($trashed === []) {
+            return '';
+        }
+
+        $rows = '';
+        foreach ($trashed as $category) {
+            $rows .= sprintf(
+                '<tr>
+                   <td><strong>%s</strong><br><span class="muted">/category/%s</span></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="restore" class="btn tiny">Restore</button>
+                       <button name="action" value="purge" class="btn tiny danger"
+                               onclick="return confirm(\'%s\')">Delete for good</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($category->name),
+                e($category->slug),
+                $token,
+                $category->id,
+                e(sprintf(
+                    'Permanently delete "%s"? Its videos are kept and become uncategorised. '
+                    . 'This cannot be undone.',
+                    $category->name
+                ))
+            );
+        }
+
+        return <<<HTML
+        <h2>Trash</h2>
+        <p class="muted small">A deleted category is kept here, and so is everything that was in it:
+           its videos keep their other categories, and its subcategories keep their place and come
+           back with it. Nothing on the site lists a category while it is in the trash.</p>
+        <p class="muted small">Deleting one for good is refused while it still has subcategories,
+           because the database would take them with it. Empty it first.</p>
+        <table>
+          <thead><tr><th>Name</th><th></th></tr></thead>
+          <tbody>{$rows}</tbody>
+        </table>
         HTML;
     }
 

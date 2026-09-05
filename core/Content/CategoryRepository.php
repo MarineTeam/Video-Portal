@@ -35,15 +35,37 @@ final class CategoryRepository
 
     // ------------------------------------------------------------------ reads
 
+    /**
+     * Both lookups hide the trash, as VideoRepository's do.
+     *
+     * Everything downstream inherits it for free and nothing has to remember:
+     * /category/{slug} 404s, an alias pointing at a trashed category 404s
+     * rather than redirecting to one, a trashed parent is not a parent you can
+     * create under, and update() refuses a row that is in the bin.
+     */
     public function find(int $id): ?Category
     {
-        $row = $this->db->first('SELECT * FROM {categories} WHERE id = ?', [$id]);
+        $row = $this->db->first('SELECT * FROM {categories} WHERE id = ? AND deleted_at IS NULL', [$id]);
         return $row === null ? null : Category::fromRow($row);
     }
 
     public function findBySlug(string $slug): ?Category
     {
-        $row = $this->db->first('SELECT * FROM {categories} WHERE slug = ?', [$slug]);
+        $row = $this->db->first('SELECT * FROM {categories} WHERE slug = ? AND deleted_at IS NULL', [$slug]);
+        return $row === null ? null : Category::fromRow($row);
+    }
+
+    /**
+     * The one lookup that CAN see the trash, and the only one.
+     *
+     * Named so it cannot be reached by accident. The alternative — an
+     * includeTrashed flag on find() — puts a "show me the deleted ones" switch
+     * on the method every other caller in the application already uses, and
+     * one wrong caller then publishes something somebody deleted.
+     */
+    public function findTrashed(int $id): ?Category
+    {
+        $row = $this->db->first('SELECT * FROM {categories} WHERE id = ? AND deleted_at IS NOT NULL', [$id]);
         return $row === null ? null : Category::fromRow($row);
     }
 
@@ -54,7 +76,11 @@ final class CategoryRepository
      */
     public function all(bool $includeUnpublished = false): array
     {
-        $where = $includeUnpublished ? '' : ' WHERE is_published = 1';
+        // Trashed categories leave the browse tree whatever else is asked for.
+        // findTrashed() is how the trash screen gets at them.
+        $where = $includeUnpublished
+            ? ' WHERE deleted_at IS NULL'
+            : ' WHERE deleted_at IS NULL AND is_published = 1';
 
         $rows = $this->db->all(
             "SELECT * FROM {categories}{$where} ORDER BY path, position, name"
@@ -70,7 +96,9 @@ final class CategoryRepository
      */
     public function roots(bool $includeUnpublished = false): array
     {
-        $where = $includeUnpublished ? '' : ' AND is_published = 1';
+        $where = $includeUnpublished
+            ? ' AND deleted_at IS NULL'
+            : ' AND deleted_at IS NULL AND is_published = 1';
 
         $rows = $this->db->all(
             "SELECT * FROM {categories} WHERE parent_id IS NULL{$where} ORDER BY position, name"
@@ -86,7 +114,9 @@ final class CategoryRepository
      */
     public function children(int $parentId, bool $includeUnpublished = false): array
     {
-        $where = $includeUnpublished ? '' : ' AND is_published = 1';
+        $where = $includeUnpublished
+            ? ' AND deleted_at IS NULL'
+            : ' AND deleted_at IS NULL AND is_published = 1';
 
         $rows = $this->db->all(
             "SELECT * FROM {categories} WHERE parent_id = ?{$where} ORDER BY position, name",
@@ -113,10 +143,18 @@ final class CategoryRepository
             return [];
         }
 
-        // path is "/1/7/22/", so descendants all start with that exact prefix.
-        // The trailing slash prevents /1/2/ matching /1/20/.
+        /*
+         * path is "/1/7/22/", so descendants all start with that exact prefix.
+         * The trailing slash prevents /1/2/ matching /1/20/.
+         *
+         * Trashed descendants are excluded, which matters because this is what
+         * decides "show me everything in Sermons": without it, trashing a
+         * subcategory would take it out of the menu while its videos went on
+         * appearing under the parent, and the person who trashed it would
+         * reasonably conclude the trash had not worked.
+         */
         $ids = $this->db->column(
-            'SELECT id FROM {categories} WHERE path LIKE ?',
+            'SELECT id FROM {categories} WHERE path LIKE ? AND deleted_at IS NULL',
             [$this->db->escapeLike($category->path) . '%']
         );
 
@@ -429,21 +467,112 @@ final class CategoryRepository
     }
 
     /**
-     * Delete a category.
+     * Move a category to the trash.
      *
-     * The schema cascades to descendants. Videos are not deleted — they lose
-     * the association and become uncategorised, because destroying content as
-     * a side effect of tidying the menu is never what anyone meant.
+     * ITS OWN ROW ONLY. Not the subcategories, not the videos, not the tags —
+     * one UPDATE, one row, and the statement is written so that it cannot
+     * touch a second one even by accident.
+     *
+     * That is the whole fix. Categories used to be deleted outright, and
+     * fk_category_parent is ON DELETE CASCADE, so deleting "Sermons"
+     * permanently destroyed every subcategory under it on a host with no shell
+     * and no database access. The confirmation said "Videos in it are kept",
+     * which was true, and was the half that survived.
+     *
+     * The children stay live and keep their parent id. They leave the browse
+     * tree with their parent, because the tree is built by descending from the
+     * roots and the trashed one is no longer on that walk — so nothing has to
+     * remember to hide them. Restoring the parent puts the subtree back
+     * exactly as it was, because nothing about it was written down differently.
      */
-    public function delete(int $id): void
+    public function softDelete(int $id): void
     {
+        $this->db->execute(
+            'UPDATE {categories} SET deleted_at = NOW(), updated_at = NOW() WHERE id = ? AND deleted_at IS NULL',
+            [$id]
+        );
+    }
+
+    public function restore(int $id): void
+    {
+        $this->db->execute(
+            'UPDATE {categories} SET deleted_at = NULL, updated_at = NOW() WHERE id = ?',
+            [$id]
+        );
+    }
+
+    /**
+     * Destroy a category for good.
+     *
+     * REFUSED WHILE IT STILL HAS CHILDREN, and that refusal is the only thing
+     * standing between this method and the original bug: the cascade on
+     * fk_category_parent is still on the table, so a DELETE that got this far
+     * with a subtree beneath it would take the subtree with it, permanently.
+     *
+     * The constraint is deliberately left in place rather than dropped. A
+     * cascade that cannot be reached destructively is better than no
+     * constraint at all — without it, the first delete that slipped past this
+     * check would leave rows pointing at a parent that no longer exists, and
+     * a materialized path repairs from nothing.
+     *
+     * Empty the subtree first, one category at a time, each of which is a
+     * decision somebody made rather than a side effect of one.
+     */
+    public function forceDelete(int $id): void
+    {
+        if ($this->childCount($id) > 0) {
+            throw HttpException::badRequest(
+                'That category still has subcategories. Delete those first — deleting this one '
+                . 'would take them with it, and that cannot be undone.'
+            );
+        }
+
         // {taggables} is polymorphic, so it carries no foreign key and no
         // cascade. See VideoRepository::forceDelete().
         $this->db->execute(
             'DELETE FROM {taggables} WHERE taggable_type = ? AND taggable_id = ?',
             ['category', $id]
         );
+
+        // Videos are not deleted — {video_categories} cascades, so they lose
+        // the association and become uncategorised. Destroying content as a
+        // side effect of tidying the menu is never what anyone meant.
         $this->db->execute('DELETE FROM {categories} WHERE id = ?', [$id]);
+    }
+
+    /**
+     * Direct children, trashed ones included.
+     *
+     * Counting the trashed ones too is what makes this safe to use as the
+     * forceDelete() guard: a child sitting in the trash is still a row with
+     * this id in its parent_id, so the cascade would still reach it.
+     */
+    public function childCount(int $id): int
+    {
+        return (int) $this->db->value('SELECT COUNT(*) FROM {categories} WHERE parent_id = ?', [$id]);
+    }
+
+    /**
+     * Everything in the trash, newest first.
+     *
+     * Not routed through all(), which filters trashed rows out by design —
+     * same reasoning as VideoRepository::trashed().
+     *
+     * @return list<Category>
+     */
+    public function trashed(int $limit = 100): array
+    {
+        $rows = $this->db->all(
+            'SELECT * FROM {categories} WHERE deleted_at IS NOT NULL
+              ORDER BY deleted_at DESC LIMIT ' . max(1, min(500, $limit))
+        );
+
+        return array_map(static fn (array $row): Category => Category::fromRow($row), $rows);
+    }
+
+    public function trashedCount(): int
+    {
+        return (int) $this->db->value('SELECT COUNT(*) FROM {categories} WHERE deleted_at IS NOT NULL');
     }
 
     /**
