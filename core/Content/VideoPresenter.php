@@ -76,6 +76,23 @@ final class VideoPresenter
      */
     private function thumbnail(Video $video): ?string
     {
+        /*
+         * An imported video's artwork is already an address, so it is returned
+         * as it is rather than signed. Asked BEFORE the provider, because an
+         * imported video must not need one: a site with no video service
+         * configured can still import a YouTube link, and reaching for a
+         * provider here would give it a card with no picture.
+         *
+         * This is still only reached for an unlocked card — the members-only
+         * rule is decided in cards() above and applies to imported videos like
+         * any other. What it cannot do is make the picture secret: it is public
+         * at YouTube either way, and withholding it here only means this site
+         * does not hand it out.
+         */
+        if ($video->externalThumbnailUrl !== null && $video->externalThumbnailUrl !== '') {
+            return $video->externalThumbnailUrl;
+        }
+
         if ($this->provider === null) {
             return null;
         }

@@ -630,7 +630,7 @@ final class AdminView
             );
 
         $total = (int) ($data['total'] ?? 0);
-        $upload = $this->uploader($data);
+        $upload = $this->uploader($data) . $this->linkImporter($data);
 
         $trashed = (int) ($data['trashed'] ?? 0);
         $trashLink = $trashed === 0
@@ -826,6 +826,56 @@ final class AdminView
         </fieldset>
 
         <script src="{$uploadScript}" defer></script>
+        HTML;
+    }
+
+    /**
+     * Bringing in a video that lives somewhere else.
+     *
+     * Beside the upload box rather than on a screen of its own: both answer
+     * "how does a video get into this library", and a second screen for the
+     * second answer is one nobody finds.
+     *
+     * Unlike the uploader, this is drawn whether or not a video service is
+     * configured — an imported link needs none, and a site that has not set one
+     * up yet is exactly the site most likely to want this.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function linkImporter(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        return <<<HTML
+        <fieldset>
+          <legend>Import a link</legend>
+
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <label>YouTube or Vimeo address
+              <input type="url" name="external_url" placeholder="https://www.youtube.com/watch?v=…"
+                     required>
+            </label>
+            <label>Title <span class="muted small">— optional; leave empty to use theirs</span>
+              <input type="text" name="external_title" maxlength="190">
+            </label>
+            <button class="btn secondary" name="action" value="import-link">Import</button>
+          </form>
+
+          <p class="muted small">The video stays where it is and plays here in its own player, with
+             your categories, series and playlists around it. Nothing is copied.</p>
+
+          <!-- The one thing somebody will otherwise get wrong, said next to the
+               field rather than in documentation nobody opens. -->
+          <p class="muted small"><strong>It is still their video.</strong> Marking an imported video
+             members-only hides it <em>here</em> — it does not make it private on YouTube or Vimeo,
+             where anybody with the original link can still watch it. If a recording must be
+             restricted, upload it to your own video service instead.</p>
+
+          <p class="muted small">Titles and artwork are fetched from the public page, which needs no
+             account or key. Vimeo reports a runtime; YouTube does not, so an imported YouTube video
+             shows no length until you type one.</p>
+        </fieldset>
         HTML;
     }
 

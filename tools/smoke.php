@@ -1708,6 +1708,126 @@ check(
     str_contains($videosScreen['body'], 'not pass through this site')
 );
 
+/* ------------------------------------------------ importing a link
+ *
+ * ExternalVideoTest covers the parsing, including every address either service
+ * hands out and every host that must be refused. These drive the form, because
+ * a parser with no form and a form with no parser look the same from there.
+ */
+check(
+    'The videos screen offers a link importer',
+    str_contains($videosScreen['body'], 'name="external_url"')
+        && str_contains($videosScreen['body'], 'value="import-link"'),
+    'a library that can only be filled by uploading is half a library'
+);
+
+check(
+    'and says plainly that importing does not make a video private',
+    str_contains($videosScreen['body'], 'It is still their video.'),
+    'somebody will file a members-only sermon under a public YouTube id and believe it is restricted'
+);
+
+$importToken = csrfFrom($videosScreen['body']);
+
+$badImport = postWithJar($baseUrl . '/admin/videos', [
+    '_token'       => $importToken,
+    'action'       => 'import-link',
+    'external_url' => 'https://example.com/watch?v=dQw4w9WgXcQ',
+], $jar);
+
+check(
+    'An address at another host is refused',
+    (int) $db->value('SELECT COUNT(*) FROM {videos} WHERE provider IN (?, ?)', ['youtube', 'vimeo']) === 0,
+    'A FOREIGN URL BECAME A VIDEO — this string goes into an iframe src'
+);
+
+check(
+    'and says what to paste instead',
+    str_contains(getWithJar($baseUrl . '/admin/videos', $jar)['body'], 'does not look like a YouTube'),
+    'a form that refuses without saying why is a form nobody can use'
+);
+
+$goodImport = postWithJar($baseUrl . '/admin/videos', [
+    '_token'         => $importToken,
+    'action'         => 'import-link',
+    'external_url'   => 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    'external_title' => 'An imported sermon',
+], $jar);
+
+$importedId = (int) $db->value(
+    'SELECT id FROM {videos} WHERE provider = ? AND provider_id = ?',
+    ['youtube', 'dQw4w9WgXcQ']
+);
+
+check(
+    'A YouTube address becomes a video',
+    $importedId > 0,
+    'the importer did nothing'
+);
+
+check(
+    'and it arrives unpublished, because publishing is an editorial decision',
+    (int) $db->value('SELECT is_published FROM {videos} WHERE id = ?', [$importedId]) === 0,
+    'importing ten links announced ten videos'
+);
+
+check(
+    'and ready rather than processing, because there is nothing to encode',
+    $db->value('SELECT status FROM {videos} WHERE id = ?', [$importedId]) === 'ready',
+    'it would sit in a state nothing will ever advance'
+);
+
+check(
+    'and the typed title wins over whatever the service says',
+    $db->value('SELECT title FROM {videos} WHERE id = ?', [$importedId]) === 'An imported sermon',
+    'the only way to name a video whose lookup failed'
+);
+
+check(
+    'and it lands on the edit screen, which is where the work is',
+    str_contains($goodImport['headers']['location'] ?? '', '/admin/videos/' . $importedId),
+    'went to ' . ($goodImport['headers']['location'] ?? 'nowhere')
+);
+
+/* The same link twice is one video, not two that then diverge. */
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'       => $importToken,
+    'action'       => 'import-link',
+    'external_url' => 'https://youtu.be/dQw4w9WgXcQ',
+], $jar);
+
+check(
+    'Importing the same video again is refused rather than duplicated',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {videos} WHERE provider = ? AND provider_id = ?',
+        ['youtube', 'dQw4w9WgXcQ']
+    ) === 1,
+    'two rows for one sermon, and they diverge from there'
+);
+
+/*
+ * THE PLAYER. The point of the whole feature: an imported video plays from
+ * YouTube rather than being handed to bunny.net to sign, which would produce a
+ * valid signature for a video that does not exist.
+ */
+$db->execute('UPDATE {videos} SET is_published = 1, published_at = NOW() WHERE id = ?', [$importedId]);
+$importedSlug = (string) $db->value('SELECT slug FROM {videos} WHERE id = ?', [$importedId]);
+
+$importedWatch = getWithJar($baseUrl . '/watch/' . $importedSlug, $jar);
+check(
+    'An imported video plays from its own service',
+    str_contains($importedWatch['body'], 'youtube-nocookie.com/embed/dQw4w9WgXcQ'),
+    'got a player from somewhere else, or none at all'
+);
+
+check(
+    'and was not sent to the video service to be signed',
+    !str_contains($importedWatch['body'], 'mediadelivery.net'),
+    'bunny.net was asked to sign a YouTube id'
+);
+
+$db->execute('DELETE FROM {videos} WHERE id = ?', [$importedId]);
+
 /*
  * Every TUS request must carry the provider's authorisation.
  *

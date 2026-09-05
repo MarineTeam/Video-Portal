@@ -93,10 +93,20 @@ final class WatchController extends Controller
         $embedUrl = '';
 
         if ($canManage || (!$premiering && $locked === null)) {
-            $provider = $this->container->get(VideoProvider::class);
-
             try {
-                $embedUrl = $provider->embedUrl($video->providerId, self::EMBED_TTL);
+                /*
+                 * Through the resolver, which asks where THIS video lives
+                 * before asking the provider anything. An imported YouTube
+                 * video has no id bunny.net would recognise — signing one
+                 * produces a valid signature for a video that does not exist,
+                 * and the failure arrives as a player that will not load.
+                 *
+                 * The provider is resolved lazily inside, so a site with no
+                 * video service configured can still play an imported video.
+                 */
+                $embedUrl = (new \Portal\Video\EmbedResolver(
+                    fn (): VideoProvider => $this->container->get(VideoProvider::class)
+                ))->embedUrl($video, self::EMBED_TTL);
             } catch (Throwable $e) {
                 throw HttpException::upstream('The video service is not responding: ' . $e->getMessage());
             }

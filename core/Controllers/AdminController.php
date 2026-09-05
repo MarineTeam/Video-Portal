@@ -399,6 +399,16 @@ final class AdminController extends Controller
             return $this->bulkVideos($request, $videos);
         }
 
+        /*
+         * An import, before the id lookup, because it CREATES a video and so
+         * carries no id — falling through would 404 on a missing video rather
+         * than doing what the button says. Same reason the bulk branch is
+         * above.
+         */
+        if (($request->input('action') ?? '') === 'import-link') {
+            return $this->importExternalVideo($request, $videos);
+        }
+
         $id = (int) ($request->input('id') ?? 0);
         $video = $videos->find($id);
 
@@ -613,6 +623,106 @@ final class AdminController extends Controller
         }
 
         return $this->back($request, $message, $failures === [] ? 'success' : 'error');
+    }
+
+    /**
+     * Bring in a video that lives on YouTube or Vimeo.
+     *
+     * MANAGE_VIDEOS site-wide, not scoped. A scoped grant says which videos
+     * somebody may EDIT, and this creates one that is in no category yet — so
+     * there is no scope for it to be inside, and asking a scoped question about
+     * a thing that does not exist would either refuse everybody or refuse
+     * nobody. The same reasoning as creating a top-level category.
+     *
+     * The lookup is best-effort and its failure is not the import's. A network
+     * error means a video with a typed title rather than no video: the id came
+     * from the address that was pasted, which is the only part that has to be
+     * right for it to play.
+     */
+    private function importExternalVideo(Request $request, VideoRepository $videos): Response
+    {
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        $raw = trim((string) ($request->input('external_url') ?? ''));
+        $external = \Portal\Video\ExternalVideo::parse($raw);
+
+        if ($external === null) {
+            return $this->back(
+                $request,
+                'That does not look like a YouTube or Vimeo address. Paste the link from the address '
+                . 'bar or the Share button.',
+                'error'
+            );
+        }
+
+        $details = \Portal\Video\ExternalVideoDetails::fetch($external);
+        $typed = trim((string) ($request->input('external_title') ?? ''));
+
+        /*
+         * A typed title wins. Somebody who filled the box in meant it — and it
+         * is the only way to name a video whose lookup failed or whose title on
+         * the other site is "Sunday Service (1)".
+         */
+        $title = $typed !== '' ? $typed : $details->title;
+
+        if ($title === '') {
+            return $this->back(
+                $request,
+                'That video could not be described by ' . $external->source . ', so it needs a '
+                . 'title. Paste the link again with one filled in.',
+                'error'
+            );
+        }
+
+        try {
+            $video = $videos->importExternal(
+                $external->source,
+                $external->id,
+                $title,
+                $details->thumbnailUrl,
+                $details->duration
+            );
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'video.import',
+            'video',
+            (string) $video->id,
+            $video->title . ' (' . $external->source . ')'
+        );
+
+        /*
+         * Sent straight to the edit screen rather than back to the list.
+         *
+         * An imported video is unpublished, uncategorised, and — on YouTube —
+         * has no duration, so the next thing that has to happen is always the
+         * same. Returning to the list would leave it at the bottom of a page of
+         * videos with nothing saying which one is new.
+         */
+        $message = $details->answered
+            ? 'Imported. It is not published yet.'
+            : ucfirst($external->source) . ' did not answer, so only the title was set. '
+                . 'It is not published yet.';
+
+        if ($external->source === \Portal\Video\ExternalVideo::YOUTUBE && $video->duration === 0) {
+            // Said here rather than left to be noticed as a blank on a card.
+            $message .= ' YouTube does not report a runtime, so add one below if you want it shown.';
+        }
+
+        /*
+         * Put on the session directly, the way back() does. flash() is a
+         * GETTER that takes no arguments — handing it one would be silently
+         * ignored by PHP and the message would vanish, which is a bug this
+         * project has already paid for once.
+         */
+        $this->container->get(\Portal\Auth\Session::class)
+            ->put('flash', ['type' => 'success', 'message' => $message]);
+
+        return $this->redirect('/admin/videos/' . $video->id);
     }
 
     private function saveVideo(
