@@ -431,6 +431,22 @@ abstract class Controller
         $user = $this->user();
         if ($user !== null && ($user->isAdmin() || $user->authorized)) {
             $items[] = ['label' => 'Saved', 'href' => '/saved'];
+
+            /*
+             * Offered only when there is something on it, the same rule Live
+             * follows just above — and for a stronger reason. On a site that
+             * does not use the rota at all this link would be permanent and
+             * always empty; on one that does, somebody with nothing to answer
+             * does not need reminding of that every time they visit.
+             *
+             * Counted rather than guessed. This is one indexed query on a page
+             * that is already doing several, and the alternative is either a
+             * link nobody wants or a feature nobody finds — which is how the
+             * trash stayed unreachable for two phases.
+             */
+            if ($this->rotaAwaiting($user->id) > 0) {
+                $items[] = ['label' => 'Your rota', 'href' => '/rota'];
+            }
         }
 
         /*
@@ -556,6 +572,38 @@ abstract class Controller
      *     children: list<array{label: string, path: string, key: string, screens: list<string>}>
      * }>
      */
+    /**
+     * How much of the rota is this person's problem right now.
+     *
+     * Unanswered asks and slots going spare, on published services still ahead.
+     * Both, because either is a reason to open the page — and a link that
+     * appeared only for unanswered asks would hide the cover list from exactly
+     * the people who could clear it.
+     *
+     * Fails to zero. This runs on every page in the product, and the migration
+     * that creates these tables has one request during which they do not exist
+     * — the same reason the unread-notification count swallows its errors.
+     */
+    private function rotaAwaiting(int $userId): int
+    {
+        try {
+            return (int) $this->db()->value(
+                'SELECT
+                    (SELECT COUNT(*) FROM {rota_assignments} a
+                       INNER JOIN {rota_services} s ON s.id = a.service_id
+                      WHERE a.user_id = ? AND a.state = "invited"
+                        AND s.is_published = 1 AND s.starts_at >= NOW())
+                  + (SELECT COUNT(*) FROM {rota_assignments} c
+                       INNER JOIN {rota_services} cs ON cs.id = c.service_id
+                      WHERE c.cover_requested_at IS NOT NULL AND c.user_id <> ?
+                        AND cs.is_published = 1 AND cs.starts_at >= NOW())',
+                [$userId, $userId]
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
     protected function adminNav(): array
     {
         $sections = [

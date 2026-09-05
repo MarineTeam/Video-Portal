@@ -59,6 +59,18 @@ final class Capability
     // Community (phase 4, declared now so grants made today keep meaning)
     public const MODERATE_COMMENTS = 'moderate_comments';
 
+    /**
+     * Building the rota: teams, services, and who is asked to serve.
+     *
+     * Site-wide only. `grants.scope_type` is a category, a series or a video,
+     * and a service is none of those — offering it in the scope picker would
+     * imply a containment that does not exist. Answering an ask, marking
+     * yourself away, and taking a slot going spare need no capability at all:
+     * they are things a person does about themselves, and every one of those
+     * writes is keyed to the person in its WHERE clause.
+     */
+    public const MANAGE_ROTA = 'manage_rota';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -107,6 +119,7 @@ final class Capability
             self::DOWNLOAD_CONTENT    => 'Download a video they can watch, for offline viewing',
             self::MANAGE_VIEWERS      => 'Approve viewers and manage viewer groups',
             self::MODERATE_COMMENTS   => 'Review and remove comments',
+            self::MANAGE_ROTA         => 'Build the rota: teams, services, and who is asked to serve',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -138,6 +151,7 @@ final class Capability
             self::MANAGE_PROVIDERS,
             self::MANAGE_SETTINGS,
             self::VIEW_AUDIT_LOG,
+            self::MANAGE_ROTA,
         ];
     }
 

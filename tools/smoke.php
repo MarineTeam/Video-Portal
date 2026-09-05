@@ -11191,6 +11191,244 @@ check(
     'a worker nothing registers does nothing'
 );
 
+/* ------------------------------------------------------------- the rota
+ *
+ * RotaTest and RotaCoverTest cover the rules against a real database, including
+ * the conditional write raced by six processes. These exist because a
+ * repository nothing calls and a repository that works are indistinguishable
+ * from there — this project's most-repeated defect, found seventeen times — so
+ * every check below drives the page a person actually sees.
+ */
+echo "\nThe rota\n";
+
+$rotaTeam = (int) $db->insert('rota_teams', [
+    'slug' => 'welcome', 'name' => 'Welcome team', 'position' => 10,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$rotaService = (int) $db->insert('rota_services', [
+    'title' => 'Sunday Morning', 'starts_at' => date('Y-m-d H:i:s', time() + 604800),
+    'is_published' => 1,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$rotaMe = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['admin@smoke.test']);
+
+$rotaAsk = (int) $db->insert('rota_assignments', [
+    'service_id' => $rotaService, 'team_id' => $rotaTeam, 'user_id' => $rotaMe,
+    'state' => 'invited',
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$rotaPage = getWithJar($baseUrl . '/rota', $jar);
+
+check('The rota page renders', $rotaPage['status'] === 200, "got {$rotaPage['status']}");
+
+check(
+    'An unanswered ask leads the page',
+    str_contains($rotaPage['body'], 'Waiting for your answer')
+        && str_contains($rotaPage['body'], 'Sunday Morning'),
+    'the one thing this page exists to get is not the first thing on it'
+);
+
+check(
+    'and Yes and No are both offered',
+    str_contains($rotaPage['body'], 'value="accept"')
+        && str_contains($rotaPage['body'], 'value="decline"'),
+    'an ask nobody can answer'
+);
+
+/* A link, or the page is reachable only by typing its address. */
+check(
+    'and the navigation offers it while something is waiting',
+    str_contains($rotaPage['body'], 'href="/rota"'),
+    'the trash spent two phases unreachable for exactly this reason'
+);
+
+$rotaToken = csrfFrom($rotaPage['body']);
+
+postWithJar($baseUrl . '/rota', [
+    '_token' => $rotaToken,
+    'id'     => (string) $rotaAsk,
+    'action' => 'accept',
+    'reason' => 'Glad to help',
+], $jar);
+
+check(
+    'Answering yes is recorded with the words',
+    $db->value('SELECT state FROM {rota_assignments} WHERE id = ?', [$rotaAsk]) === 'accepted'
+        && $db->value('SELECT reason FROM {rota_assignments} WHERE id = ?', [$rotaAsk]) === 'Glad to help',
+    'the button did nothing'
+);
+
+/*
+ * THE OWNERSHIP RULE over HTTP. Ids are sequential, so an endpoint taking only
+ * an id would let anybody answer for anybody by counting.
+ */
+$rotaOther = (int) $db->insert('users', [
+    'email' => 'rota-other@smoke.test', 'name' => 'Other Person', 'authorized' => 1,
+    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash('rota-other-password-1234', PASSWORD_DEFAULT),
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$rotaOtherAsk = (int) $db->insert('rota_assignments', [
+    'service_id' => $rotaService, 'team_id' => $rotaTeam, 'user_id' => $rotaOther,
+    'state' => 'invited',
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+postWithJar($baseUrl . '/rota', [
+    '_token' => $rotaToken,
+    'id'     => (string) $rotaOtherAsk,
+    'action' => 'accept',
+], $jar);
+
+check(
+    'Nobody can answer somebody else\'s ask',
+    $db->value('SELECT state FROM {rota_assignments} WHERE id = ?', [$rotaOtherAsk]) === 'invited',
+    'ONE PERSON ANSWERED FOR ANOTHER — ids are sequential'
+);
+
+check(
+    'and is told so rather than left guessing',
+    str_contains(getWithJar($baseUrl . '/rota', $jar)['body'], 'not yours to answer'),
+    'a button that silently does nothing is one somebody presses again'
+);
+
+/* Cover, end to end through the buttons. */
+$rotaAfterYes = getWithJar($baseUrl . '/rota', $jar);
+check(
+    'An accepted slot offers to be covered',
+    str_contains($rotaAfterYes['body'], 'value="request-cover"'),
+    'somebody who cannot make it has no way to say so'
+);
+
+postWithJar($baseUrl . '/rota', [
+    '_token' => csrfFrom($rotaAfterYes['body']),
+    'id'     => (string) $rotaAsk,
+    'action' => 'request-cover',
+    'reason' => 'Away that weekend',
+], $jar);
+
+check(
+    'Asking for cover advertises the slot',
+    $db->value('SELECT cover_requested_at FROM {rota_assignments} WHERE id = ?', [$rotaAsk]) !== null,
+    'nothing was written'
+);
+
+/*
+ * Taken by somebody else, in their own session — which is also what proves the
+ * cover list is offered to people who are not on that team.
+ */
+$rotaOtherJar = sys_get_temp_dir() . '/portal-smoke-rota-' . getmypid() . '.txt';
+@unlink($rotaOtherJar);
+
+$rotaLogin = getWithJar($baseUrl . '/auth/login', $rotaOtherJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom($rotaLogin['body']),
+    'email'    => 'rota-other@smoke.test',
+    'password' => 'rota-other-password-1234',
+], $rotaOtherJar);
+
+$rotaOtherPage = getWithJar($baseUrl . '/rota', $rotaOtherJar);
+check(
+    'Somebody else is offered the slot',
+    str_contains($rotaOtherPage['body'], 'Can anybody cover?')
+        && str_contains($rotaOtherPage['body'], 'value="take-cover"'),
+    'a slot going spare that nobody is shown'
+);
+
+check(
+    'and the reason the first person gave is shown while it is theirs',
+    str_contains($rotaOtherPage['body'], 'Away that weekend'),
+    'the team is asked to cover with no idea why'
+);
+
+/*
+ * Somebody already on the service cannot cover it as well — a person is on a
+ * service once. This viewer still holds the ask created for the ownership
+ * check above, so they are exactly that case.
+ *
+ * Found by writing the fixture wrong: the successful take below failed three
+ * checks, and the application was right. The rule was worth a check of its own
+ * at this level rather than only in the repository tests.
+ */
+postWithJar($baseUrl . '/rota', [
+    '_token' => csrfFrom($rotaOtherPage['body']),
+    'id'     => (string) $rotaAsk,
+    'action' => 'take-cover',
+], $rotaOtherJar);
+
+check(
+    'Somebody already on the service is refused, in words',
+    (int) $db->value('SELECT user_id FROM {rota_assignments} WHERE id = ?', [$rotaAsk]) === $rotaMe
+        && str_contains(
+            getWithJar($baseUrl . '/rota', $rotaOtherJar)['body'],
+            'already down for that service'
+        ),
+    'one person was put on one service twice'
+);
+
+// Their own ask has served its purpose; without it they may cover.
+$db->execute('DELETE FROM {rota_assignments} WHERE id = ?', [$rotaOtherAsk]);
+
+$rotaOtherAgain = getWithJar($baseUrl . '/rota', $rotaOtherJar);
+
+postWithJar($baseUrl . '/rota', [
+    '_token' => csrfFrom($rotaOtherAgain['body']),
+    'id'     => (string) $rotaAsk,
+    'action' => 'take-cover',
+], $rotaOtherJar);
+
+check(
+    'Taking it moves the slot',
+    (int) $db->value('SELECT user_id FROM {rota_assignments} WHERE id = ?', [$rotaAsk]) === $rotaOther
+        && (int) $db->value('SELECT covering_for_user_id FROM {rota_assignments} WHERE id = ?', [$rotaAsk]) === $rotaMe,
+    'the handover did not happen'
+);
+
+/* THE RULE, over HTTP: the previous person's aside does not follow the slot. */
+check(
+    'and the previous person\'s note does not follow it',
+    $db->value('SELECT cover_note FROM {rota_assignments} WHERE id = ?', [$rotaAsk]) === null,
+    'ONE PERSON\'S PRIVATE REASON IS NOW ON ANOTHER PERSON\'S ROW'
+);
+
+check(
+    'and the slot stops being advertised',
+    !str_contains(getWithJar($baseUrl . '/rota', $rotaOtherJar)['body'], 'Can anybody cover?'),
+    'a taken slot is still being offered'
+);
+
+/* Days away: warned, never enforced, and the page says so. */
+postWithJar($baseUrl . '/rota', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/rota', $jar)['body']),
+    'id'     => '0',
+    'action' => 'add-blockout',
+    'from'   => date('Y-m-d', time() + 1209600),
+    'to'     => date('Y-m-d', time() + 1296000),
+    'reason' => 'At a wedding',
+], $jar);
+
+check(
+    'A day away is recorded',
+    (int) $db->value('SELECT COUNT(*) FROM {rota_blockouts} WHERE user_id = ?', [$rotaMe]) === 1,
+    'nothing was written'
+);
+
+check(
+    'and the page says it does not stop anybody asking',
+    str_contains(getWithJar($baseUrl . '/rota', $jar)['body'], 'does not stop them asking'),
+    'somebody who believes it is a rule will ignore the ask that arrives anyway'
+);
+
+@unlink($rotaOtherJar);
+$db->execute('DELETE FROM {rota_blockouts} WHERE user_id = ?', [$rotaMe]);
+$db->execute('DELETE FROM {rota_services} WHERE id = ?', [$rotaService]);
+$db->execute('DELETE FROM {rota_teams} WHERE id = ?', [$rotaTeam]);
+$db->execute('DELETE FROM {users} WHERE id = ?', [$rotaOther]);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

@@ -58,6 +58,8 @@ $tabIcon = static function (string $href): string {
         '/live'             => '<circle cx="12" cy="12" r="3"/><path d="M6.5 6.5a8 8 0 0 0 0 11"/>'
                              . '<path d="M17.5 6.5a8 8 0 0 1 0 11"/>',
         '/saved'            => '<path d="M6 3h12v18l-6-4.5L6 21z"/>',
+        '/rota'             => '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/>'
+                             . '<path d="M8 3v4"/><path d="M16 3v4"/><path d="m9 15 2 2 4-4"/>',
         '/account'          => '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/>',
         '/auth/login'       => '<path d="M14 3h5v18h-5"/><path d="M3 12h11"/><path d="m10 8 4 4-4 4"/>',
         '/account/password' => '<rect x="4" y="10" width="16" height="10" rx="2"/>'

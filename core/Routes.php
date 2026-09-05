@@ -17,6 +17,7 @@ use Portal\Controllers\LibraryController;
 use Portal\Controllers\MemberShareController;
 use Portal\Controllers\PwaController;
 use Portal\Controllers\RegistrationCheckController;
+use Portal\Controllers\RotaController;
 use Portal\Controllers\ShareController;
 use Portal\Controllers\SubscriptionController;
 use Portal\Controllers\UploadController;
@@ -285,6 +286,22 @@ final class Routes
          * heartbeat never reached the end.
          */
         $router->post('/watch/mark', [WatchController::class, 'mark'], ['auth.authorized']);
+
+        /*
+         * The rota, as the person serving sees it.
+         *
+         * No capability: answering an ask, saying which days you cannot serve,
+         * asking for cover and taking a slot are all things somebody does about
+         * themselves, and every one of those writes is keyed to the person in
+         * its WHERE clause. A permission for them would be a switch that,
+         * turned off, stops somebody answering a question they were asked.
+         *
+         * Approved-only rather than merely signed in: an account waiting for
+         * approval is on no team and has nothing to answer, so the page would
+         * be an empty screen implying they had been forgotten.
+         */
+        $router->get('/rota', [RotaController::class, 'mine'], ['auth.authorized']);
+        $router->post('/rota', [RotaController::class, 'update'], ['auth.authorized']);
 
         // Saved videos. Approved-only for the same reason /watch is: the pages
         // list content, and an unapproved account cannot see the library either.

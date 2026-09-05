@@ -133,3 +133,13 @@ CREATE TABLE IF NOT EXISTS {rota_blockouts} (
   CONSTRAINT fk_rota_blockout_user FOREIGN KEY (user_id)
     REFERENCES {users} (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- The capability that governs BUILDING a rota.
+--
+-- Answering an ask, marking yourself away, and taking a slot going spare need
+-- no capability at all: they are things a person does about themselves, and
+-- every one of those writes is keyed to the person in its WHERE clause. A
+-- permission for them would be a switch that, turned off, stops somebody
+-- answering a question they were asked.
+INSERT IGNORE INTO {capabilities} (slug, description)
+VALUES ('manage_rota', 'Build the rota: teams, services, and who is asked to serve');
