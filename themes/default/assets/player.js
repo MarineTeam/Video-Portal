@@ -454,4 +454,161 @@
       /* Not every browser accepts every action. */
     }
   }
+
+  /* ---------------------------------------------------------- cast to a TV
+   *
+   * The Remote Playback API, which is a browser standard and needs no SDK. The
+   * Google Cast library would work too and would mean loading a script from
+   * gstatic.com on every video page — a third-party request that has to
+   * succeed before a control appears, on a product whose whole distribution
+   * story is that it runs on shared hosting with nothing else needed.
+   *
+   * A <video>, not the <audio> above: a television showing a still frame and
+   * playing sound is not what anybody means by casting a sermon.
+   *
+   * THE BUTTON IS HIDDEN UNTIL A DEVICE IS FOUND. watchAvailability() answers
+   * that question, so there is no reason to draw a control whose only effect on
+   * most desktops is an empty picker.
+   */
+  var cast = document.getElementById('portal-cast');
+  var castButton = document.getElementById('portal-cast-button');
+  var castVideo = document.getElementById('portal-cast-video');
+  var castState = document.getElementById('portal-cast-state');
+  var castSlug = cast ? (cast.dataset.slug || '') : '';
+
+  if (!cast || !castButton || !castVideo || !castSlug) {
+    return;
+  }
+
+  function castSays(text) {
+    if (castState) {
+      castState.textContent = text;
+      castState.hidden = !text;
+    }
+  }
+
+  var remote = castVideo.remote;
+  var airplay = typeof castVideo.webkitShowPlaybackTargetPicker === 'function';
+
+  if (remote && typeof remote.watchAvailability === 'function') {
+    remote.watchAvailability(function (available) {
+      cast.hidden = !available;
+    }).catch(function () {
+      /* Some browsers expose `remote` and refuse to watch — a disabled
+         feature policy inside an embed, most often. Nothing to show. */
+    });
+  } else if (airplay) {
+    /* Safari answers the same question through an event instead. */
+    castVideo.addEventListener('webkitplaybacktargetavailabilitychanged', function (event) {
+      cast.hidden = event.availability !== 'available';
+    });
+  } else {
+    return;
+  }
+
+  /*
+   * The source is fetched, not written into the markup.
+   *
+   * A receiver is not this browser: it fetches the URL from its own network
+   * stack with no session, so /listen/{slug}.mp4 would hand it a sign-in page
+   * and the cast would fail with nothing to explain it. The signed CDN URL
+   * needs no session because the signature is the permission.
+   *
+   * Fetched on the press rather than on page load, so a page nobody casts from
+   * costs nothing — and so the signature is as young as possible when the
+   * television starts using it.
+   */
+  var castLoading = false;
+
+  castButton.addEventListener('click', function () {
+    if (castLoading) {
+      return;
+    }
+
+    if (castVideo.src) {
+      openPicker();
+      return;
+    }
+
+    castLoading = true;
+    castSays('Finding the file…');
+
+    fetch('/listen/' + encodeURIComponent(castSlug) + '.json', {
+      credentials: 'same-origin'
+    }).then(function (response) {
+      if (!response.ok) {
+        throw new Error('refused');
+      }
+      return response.json();
+    }).then(function (payload) {
+      if (!payload || !payload.url) {
+        throw new Error('no file');
+      }
+
+      castVideo.src = payload.url;
+      castLoading = false;
+      castSays('');
+      openPicker();
+    }).catch(function () {
+      castLoading = false;
+      /* Said rather than swallowed. A cast button that does nothing is the
+         hardest kind of failure to report, because there is no error anywhere
+         the person pressing it can see. */
+      castSays('Could not get the file to cast.');
+    });
+  });
+
+  function openPicker() {
+    /* The audio and the video must not both play. Whichever the person is
+       casting is the one they meant. */
+    audio.pause();
+    send('pause');
+
+    castVideo.hidden = false;
+
+    try {
+      if (remote && typeof remote.prompt === 'function') {
+        remote.prompt().catch(function () {
+          /* Cancelled, or no device chosen. Not an error worth reporting —
+             they closed a picker they opened. */
+        });
+      } else if (airplay) {
+        castVideo.webkitShowPlaybackTargetPicker();
+      }
+    } catch (e) {
+      castSays('This browser would not open the picker.');
+    }
+  }
+
+  /*
+   * Progress from the cast player, through the same save() as everything else.
+   *
+   * A sermon watched to the end on a television is watched, and the site
+   * should know it — otherwise casting is the one way of playing something
+   * that leaves no trace, and continue-watching keeps offering it.
+   */
+  castVideo.addEventListener('timeupdate', function () {
+    position = castVideo.currentTime || 0;
+    duration = castVideo.duration || duration;
+    save(false);
+  });
+
+  castVideo.addEventListener('pause', function () {
+    save(true);
+  });
+
+  castVideo.addEventListener('ended', function () {
+    position = duration;
+    save(true);
+  });
+
+  if (remote) {
+    remote.addEventListener('connect', function () {
+      castSays('Playing on ' + (remote.state === 'connected' ? 'your TV' : 'another device') + '.');
+    });
+    remote.addEventListener('disconnect', function () {
+      castSays('');
+      save(true);
+    });
+  }
 })();

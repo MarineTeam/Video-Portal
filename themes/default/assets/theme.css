@@ -217,6 +217,23 @@ main { padding: 2.5rem 0 4rem; }
   margin: 0;
 }
 
+/* Casting. Hidden by the script until a device is actually found, so this only
+   ever styles a control that can do something. */
+.listen-cast {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.75rem;
+}
+.listen-cast .btn { display: inline-flex; align-items: center; gap: 0.4rem; }
+.listen-cast video {
+  width: 100%;
+  border-radius: 0.5rem;
+  background: #000;
+}
+.listen-cast video[hidden] { display: none; }
+
 /*
  * Breadcrumbs. The separator is a CSS pseudo-element rather than a character in
  * the markup, so a screen reader announces the list and not a slash between

@@ -313,6 +313,37 @@ final class DownloadController extends Controller
     }
 
     /**
+     * The signed URL itself, for casting.
+     *
+     * A television is not this browser. The <audio> element can use the
+     * redirect above because the browser sends its session cookie and follows
+     * the 302 for it; a Chromecast fetches the URL on its own, from its own
+     * network stack, with no session at all — so it would be handed the
+     * sign-in page and report the cast as failed.
+     *
+     * So the receiver is given the signed CDN URL directly, which needs no
+     * session because the signature IS the permission. Exactly the same
+     * reasoning as meta() beside it, which exists because fetch() following a
+     * cross-origin 302 will not reveal where it landed.
+     *
+     * The gates are the listening gates, run by the same method as the
+     * redirect. There is no arrangement in which this hands out a file that
+     * /listen/{slug}.mp4 would refuse.
+     *
+     * @param array<string, string> $params
+     */
+    public function listenMeta(Request $request, array $params): Response
+    {
+        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''), self::FOR_LISTENING);
+
+        return $this->json([
+            'title'  => $resolved['video']->title,
+            'height' => $resolved['source']->height,
+            'url'    => $resolved['source']->url,
+        ]);
+    }
+
+    /**
      * The site-wide default the inheritance chain falls back to.
      *
      * OFF unless somebody turned it on. A download is the one thing this

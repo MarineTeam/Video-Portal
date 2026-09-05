@@ -264,6 +264,16 @@ final class Routes
          * watching it, and the same approval decides both.
          */
         $router->get('/listen/{slug}.mp4', [DownloadController::class, 'listen'], ['auth.authorized']);
+
+        /*
+         * The same decision as JSON, for casting to a television.
+         *
+         * A receiver fetches the URL itself, with no session, so the redirect
+         * above would hand it the sign-in page. It gets the signed CDN URL
+         * instead, where the signature is the permission — the same reason the
+         * offline-save code cannot use the download redirect either.
+         */
+        $router->get('/listen/{slug}.json', [DownloadController::class, 'listenMeta'], ['auth.authorized']);
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
 

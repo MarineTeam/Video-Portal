@@ -9654,6 +9654,68 @@ check(
 );
 
 /*
+ * Casting.
+ *
+ * Whether a picture reaches a television cannot be checked from here — there is
+ * no Chromecast on this network and the Remote Playback API has nothing to
+ * report to. What CAN be checked is the half that is this application's: the
+ * control is on the page, it starts hidden so no dead button is ever drawn, and
+ * the JSON endpoint a receiver needs is gated exactly like the redirect.
+ */
+check(
+    'The cast control is on the page',
+    str_contains($audioPage['body'], 'id="portal-cast-button"'),
+    'casting is impossible from the iframe player, so this is the only place it can be'
+);
+
+check(
+    'and it starts hidden, so no dead button is drawn',
+    preg_match('/<div class="listen-cast"[^>]*\shidden/', $audioPage['body']) === 1,
+    'a Cast button with nothing to cast to opens an empty picker'
+);
+
+$castMeta = getWithJar($baseUrl . '/listen/' . $insideSlug . '.json', $shareJar);
+check(
+    'A receiver can be given the signed URL directly',
+    $castMeta['status'] === 200 && str_contains($castMeta['body'], 'token='),
+    "got {$castMeta['status']} — a television has no session, so the redirect is no use to it"
+);
+
+/*
+ * And it is gated with the redirect rather than beside it. A JSON endpoint that
+ * hands out the same file under a weaker check is the same file without the
+ * refusal.
+ */
+$audioSwitch('0');
+$castMetaOff = getWithJar($baseUrl . '/listen/' . $insideSlug . '.json', $shareJar);
+$audioSwitch('1');
+
+check(
+    'and it is refused when audio mode is off',
+    $castMetaOff['status'] === 403 && !str_contains($castMetaOff['body'], 'token='),
+    "got {$castMetaOff['status']} — the JSON route escaped the switch that governs the redirect"
+);
+
+/*
+ * The visibility gate, on the JSON route as on the redirect.
+ *
+ * The video is unpublished for this, rather than relying on the download
+ * scope: listening has no capability check, so a video outside that scope is
+ * one this viewer may legitimately listen to. Asserting a refusal there would
+ * have been asserting the wrong rule and would have failed against correct
+ * code.
+ */
+$db->execute('UPDATE {videos} SET is_published = 0 WHERE id = ?', [$scopeVideos['outside']]);
+$castOutside = getWithJar($baseUrl . '/listen/' . $outsideSlug . '.json', $shareJar);
+$db->execute('UPDATE {videos} SET is_published = 1 WHERE id = ?', [$scopeVideos['outside']]);
+
+check(
+    'and it obeys the same visibility gate',
+    $castOutside['status'] === 404 && !str_contains($castOutside['body'], 'token='),
+    "got {$castOutside['status']} — the JSON route handed out a file the redirect would refuse"
+);
+
+/*
  * Listening is deliberately not audit-logged, where downloading is. One row per
  * press would bury the entries the log exists for under the ones it does not.
  */

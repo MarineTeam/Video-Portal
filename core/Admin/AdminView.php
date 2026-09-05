@@ -4661,6 +4661,10 @@ REG;
                speed control, a sleep timer, and proper track details on a phone's lock screen so it
                keeps playing with the screen off. None of that is possible in the video player itself,
                which runs on your video service's domain and cannot be reached from here.</p>
+            <p class="muted small">The same panel offers <strong>Play on a TV</strong> where a
+               Chromecast or AirPlay device is on the same network — and only there, so nobody is
+               shown a button that opens an empty list. It uses the browser's own casting, with no
+               script loaded from anywhere else.</p>
 
             <!-- Said plainly rather than glossed. Somebody turning this on is
                  widening access to a file, and they should be told so here

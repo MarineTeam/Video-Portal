@@ -169,6 +169,38 @@ $listenUrl ??= null;
         <span class="muted small" id="portal-audio-sleep-state" hidden></span>
       </div>
 
+      <?php
+      /*
+       * Casting.
+       *
+       * Hidden until a device is actually found. The Remote Playback API can
+       * say whether anything is available, so there is no reason to draw a
+       * button that opens an empty picker — which is what "Cast" looks like on
+       * every desktop with no Chromecast on the network.
+       *
+       * A <video> rather than the <audio> above, because a television showing
+       * a still frame and playing sound is not what anybody means by casting a
+       * sermon. It stays hidden until a cast starts: until then this panel is
+       * the audio player it says it is.
+       *
+       * Its source is set by the script from /listen/{slug}.json, not written
+       * here — the receiver fetches the URL itself with no session, so it needs
+       * the signed CDN address rather than this site's redirect.
+       */
+      ?>
+      <div class="listen-cast" id="portal-cast" data-slug="<?= e((string) ($downloadSlug ?? '')) ?>" hidden>
+        <button type="button" class="btn secondary tiny" id="portal-cast-button">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+               stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 18h.01"/><path d="M3 14a4 4 0 0 1 4 4"/><path d="M3 10a8 8 0 0 1 8 8"/>
+            <path d="M5 6h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-6"/>
+          </svg>
+          Play on a TV
+        </button>
+        <span class="muted small" id="portal-cast-state" hidden></span>
+        <video id="portal-cast-video" controls playsinline hidden></video>
+      </div>
+
       <p class="muted small">
         Audio only. Where you get to is remembered in the same place as the video, so you can start
         listening here and finish watching, or the other way round.
