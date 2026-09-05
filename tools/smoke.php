@@ -2892,6 +2892,114 @@ check(
     'the query is not echoed back, so the page cannot be shared or reloaded'
 );
 
+/* ------------------------------------------------- did you mean
+ *
+ * The pure logic and the guard are covered by TypoToleranceTest and
+ * SearchSuggesterTest. These exist because a suggester nothing calls and a
+ * suggester that works are indistinguishable from those — the defect this
+ * project has now found sixteen times — so every check here drives the real
+ * page over HTTP.
+ */
+$mistyped = get($baseUrl . '/search?q=vidoe');
+check(
+    'A misspelled word is corrected and the results shown',
+    str_contains($mistyped['body'], 'A Test Video'),
+    'the suggester is not wired to the search page'
+);
+
+check(
+    'and the page says which word it used instead',
+    str_contains($mistyped['body'], 'Showing results for'),
+    'results for words nobody typed, presented as though they had been'
+);
+
+/*
+ * The escape hatch. A correction somebody cannot undo is the site arguing with
+ * them, and an unusual spelling really is sometimes the one meant.
+ */
+check(
+    'and offers the words as typed',
+    str_contains($mistyped['body'], 'Search instead for')
+        && str_contains($mistyped['body'], 'exact=1'),
+    'the correction cannot be refused'
+);
+
+$exact = get($baseUrl . '/search?q=vidoe&exact=1');
+check(
+    'Asking for the exact words gets them, uncorrected',
+    !str_contains($exact['body'], 'Showing results for')
+        && str_contains($exact['body'], 'Nothing matched'),
+    'the escape hatch is a link to the same corrected page'
+);
+
+/*
+ * Only on nothing. Correcting a search that already worked replaces an answer
+ * somebody can judge with one the site preferred.
+ */
+check(
+    'A search that already found something is left alone',
+    !str_contains($byTitle['body'], 'Showing results for'),
+    'a working search was second-guessed'
+);
+
+/* THE RULE, over HTTP: a correction is never drawn from a title the asker
+ * cannot see. The word is in the vocabulary either way; what changes is
+ * whether the corrected search finds anything for THIS visitor. */
+$db->execute('UPDATE {videos} SET member_only = 1 WHERE id = ?', [$videoRow]);
+$leakySuggestion = get($baseUrl . '/search?q=vidoe');
+$db->execute('UPDATE {videos} SET member_only = 0 WHERE id = ?', [$videoRow]);
+
+check(
+    'A members-only title is never named by a suggestion',
+    !str_contains($leakySuggestion['body'], 'Showing results for')
+        && !str_contains($leakySuggestion['body'], 'A Test Video'),
+    'A MEMBERS-ONLY TITLE WAS SUGGESTED TO A SIGNED-OUT VISITOR'
+);
+
+/*
+ * The switch. Written straight to {settings} rather than through the admin
+ * form, because that form declares itself whole — posting it here would switch
+ * off every other checkbox on the screen and quietly change what the next two
+ * thousand checks are testing.
+ */
+$searchSwitch = static function (string $value) use ($db): void {
+    $db->execute(
+        'INSERT INTO {settings} (`key`, `value`, updated_at) VALUES (?, ?, NOW())
+         ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = NOW()',
+        ['search_suggestions_enabled', $value]
+    );
+};
+
+$searchSwitch('0');
+$switchedOff = get($baseUrl . '/search?q=vidoe');
+$searchSwitch('1');
+
+check(
+    'With suggestions off the search says nothing matched',
+    !str_contains($switchedOff['body'], 'Showing results for')
+        && str_contains($switchedOff['body'], 'Nothing matched'),
+    'the switch does nothing, so it is a control that lies'
+);
+
+check(
+    'and turning it back on restores the correction',
+    str_contains(get($baseUrl . '/search?q=vidoe')['body'], 'Showing results for'),
+    'the switch only works in one direction'
+);
+
+/*
+ * The platform difference has to be findable by the person who owns the site,
+ * not only by somebody reading the source. This is the spec's requirement to
+ * say so in the admin UI rather than pretend parity.
+ */
+$settingsForSearch = getWithJar($baseUrl . '/admin/settings', $jar);
+check(
+    'The settings screen explains what typo tolerance can and cannot do here',
+    str_contains($settingsForSearch['body'], 'pg_trgm')
+        && str_contains($settingsForSearch['body'], 'name="search_suggestions_enabled"'),
+    'the difference from a Postgres install is not stated anywhere a site owner would find it'
+);
+
 echo "\nSubscriptions\n";
 
 /*

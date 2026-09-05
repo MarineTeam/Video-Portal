@@ -4048,6 +4048,10 @@ final class AdminController extends Controller
                 // Default '1': the box is opt-out, because a subscribe form
                 // that nobody switched on is a feature nobody knows exists.
                 'subscriptions_enabled' => $this->config()->setting('subscriptions_enabled', '1'),
+                // Default '1'. It only ever runs on a search that already
+                // found nothing, so the worst it can do is turn an empty page
+                // into a useful one.
+                'search_suggestions_enabled' => $this->config()->setting('search_suggestions_enabled', '1'),
                 // Default '0': enforcing this is a decision with real lockout
                 // risk, so it belongs to whoever owns the site.
                 'require_verified_email' => $this->config()->setting('require_verified_email', '0'),
@@ -4123,6 +4127,7 @@ final class AdminController extends Controller
             'allow_indexing'            => $checkbox('allow_indexing', false),
             'podcast_explicit'          => $checkbox('podcast_explicit', false),
             'subscriptions_enabled'     => $checkbox('subscriptions_enabled', true),
+            'search_suggestions_enabled' => $checkbox('search_suggestions_enabled', true),
             'require_verified_email'    => $checkbox('require_verified_email', false),
             'allow_access_requests'     => $checkbox('allow_access_requests', true),
             'maintenance_mode'          => $checkbox('maintenance_mode', false),

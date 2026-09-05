@@ -4611,6 +4611,7 @@ REG;
         $allowIndexing = $checked('allow_indexing');
         $podcastExplicit = $checked('podcast_explicit');
         $subscriptionsEnabled = $checked('subscriptions_enabled');
+        $searchSuggestions = $checked('search_suggestions_enabled');
         $requireVerified = $checked('require_verified_email');
         $allowRequests = $checked('allow_access_requests');
         $maintenance = $checked('maintenance_mode');
@@ -4648,6 +4649,33 @@ REG;
              but a file on somebody's phone is there for good. Turning this on is not enough on its own;
              a person also needs the "download content" permission, which nobody but administrators
              holds until you grant it.</p>
+
+          <fieldset>
+            <legend>Search</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="search_suggestions_enabled" value="1"{$searchSuggestions}>
+              Look for a close spelling when a search finds nothing
+            </label>
+            <p class="muted small">Only ever on a search that already returned nothing, so the worst it
+               can do is turn an empty page into a useful one. The corrected search is run and the page
+               says which words it used, with a link back to the words as typed.</p>
+
+            <!-- The platform difference, stated rather than implied. A site
+                 owner comparing this against a Postgres install should be able
+                 to find out what is different here without reading the code. -->
+            <p class="muted small"><strong>What this can and cannot do.</strong> Your library lives in
+               MySQL, which has no trigram index — the Postgres feature (<code>pg_trgm</code>) that makes
+               "how similar are these two words" something a database can rank. There is no equivalent to
+               install on shared hosting, so suggestions are worked out here instead: each word you type
+               is compared against the words already in your titles, speakers, series, categories and
+               tags, and a spelling is accepted if it is within one letter for a short word, two for a
+               long one, or if it sounds the same — so <em>filip</em> finds <em>Philip</em>. That covers
+               ordinary typos exactly. It will not rescue a word typed very differently from the one
+               meant, and it cannot rank near-misses by how near they are.</p>
+            <p class="muted small">A suggestion is only shown after the corrected search has been run and
+               found something <em>that person</em> is allowed to see, so it can never name a
+               members-only title to somebody who cannot open it.</p>
+          </fieldset>
 
           <fieldset>
             <legend>Search engines</legend>
