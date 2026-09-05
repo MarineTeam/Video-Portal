@@ -46,6 +46,7 @@ final class AdminView
             'speakers'      => $this->speakers($data),
             'tags'          => $this->tags($data),
             'users'       => $this->users($data),
+            'audit'         => $this->audit($data),
             'signin-access' => $this->signInAccess($data),
             'permissions' => $this->permissions($data),
             'plugins'    => $this->plugins($data),
@@ -901,6 +902,39 @@ final class AdminView
             $video->downloadMode
         );
 
+        /** @var list<array{id: int, name: string}> $groups */
+        $groups = (array) ($data['groups'] ?? []);
+        /** @var list<int> $chosen */
+        $chosen = array_map('intval', (array) ($data['audiences'] ?? []));
+        /** @var list<int> $fromSeries */
+        $fromSeries = array_map('intval', (array) ($data['seriesAudiences'] ?? []));
+
+        $audienceBoxes = '';
+        foreach ($groups as $group) {
+            $audienceBoxes .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="audiences[]" value="%d"%s> %s</label>',
+                $group['id'],
+                in_array($group['id'], $chosen, true) ? ' checked' : '',
+                e($group['name'])
+            );
+        }
+
+        if ($audienceBoxes === '') {
+            $audienceBoxes = '<p class="muted">There are no groups yet. '
+                . '<a href="/admin/permissions">Create one</a> to restrict this to particular people.</p>';
+        }
+
+        /*
+         * A restriction the video does not carry itself still applies to it.
+         * Saying so is the difference between an administrator understanding
+         * the screen and hunting for a setting that is not on it.
+         */
+        $audienceNote = '';
+        if ($chosen === [] && $fromSeries !== []) {
+            $audienceNote = '<br><strong>This video is already restricted by its series.</strong> '
+                . 'Ticking a group here replaces that for this one video rather than adding to it.';
+        }
+
         $memberOnly = $video->memberOnly ? ' checked' : '';
         $hidden = $video->hidden ? ' checked' : '';
         $premiere = $video->premiere ? ' checked' : '';
@@ -1152,6 +1186,21 @@ final class AdminView
                    /watch is not, so anyone can browse titles while only an approved account can play.
                    Choose "members only" to withhold the artwork too — the image URL is never sent to a
                    visitor who cannot watch, so it is not merely hidden.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Who can see this</legend>
+                {$audienceBoxes}
+                <p class="muted small">
+                  Tick nothing and anyone who may watch can see it, which is how every video starts.
+                  Tick a group and only its members can — the video disappears from listings for
+                  everybody else, and its address answers as though it does not exist.
+                </p>
+                <p class="muted small">
+                  These are permission groups, from <a href="/admin/permissions">Permissions</a>. A
+                  group with no capabilities is simply a named set of people, which is all an audience
+                  needs to be. {$audienceNote}
+                </p>
               </fieldset>
 
               <fieldset>
@@ -1972,6 +2021,25 @@ final class AdminView
             $series->downloadMode
         );
 
+        /** @var list<array{id: int, name: string}> $groups */
+        $groups = (array) ($data['groups'] ?? []);
+        $chosen = array_map('intval', (array) ($data['audiences'] ?? []));
+
+        $audienceBoxes = '';
+        foreach ($groups as $group) {
+            $audienceBoxes .= sprintf(
+                '<label class="checkbox"><input type="checkbox" name="audiences[]" value="%d"%s> %s</label>',
+                $group['id'],
+                in_array($group['id'], $chosen, true) ? ' checked' : '',
+                e($group['name'])
+            );
+        }
+
+        if ($audienceBoxes === '') {
+            $audienceBoxes = '<p class="muted">There are no groups yet. '
+                . '<a href="/admin/permissions">Create one</a> to restrict this to particular people.</p>';
+        }
+
         return <<<HTML
         <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
         <h1>{$title}</h1>
@@ -2009,6 +2077,21 @@ final class AdminView
                 <p class="muted small">Only the episode immediately before counts, so adding one in the
                    middle later locks exactly one thing rather than closing the whole course for
                    somebody who had finished it. Editors are never locked out, so you can still review.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Who can see this</legend>
+                {$audienceBoxes}
+                <p class="muted small">
+                  Tick nothing and anyone who may watch can see every episode. Tick a group and only
+                  its members can — the episodes disappear from listings for everybody else, and their
+                  addresses answer as though they do not exist. An episode with its own groups ticked
+                  overrides this for that one episode.
+                </p>
+                <p class="muted small">
+                  These are permission groups, from <a href="/admin/permissions">Permissions</a>. A
+                  group with no capabilities is simply a named set of people.
+                </p>
               </fieldset>
 
               <fieldset>
@@ -3489,6 +3572,117 @@ final class AdminView
 
     /** @param array<string, mixed> $data */
     /**
+     * The activity log.
+     *
+     * Written to by sixteen files since Phase 1 and, until this screen, read
+     * only fifteen rows at a time on the dashboard.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function audit(array $data): string
+    {
+        /** @var array{items: list<array<string, mixed>>, total: int, pages: int, actions: list<string>} $log */
+        $log = $data['log'] ?? ['items' => [], 'total' => 0, 'pages' => 1, 'actions' => []];
+        /** @var array<string, string> $filters */
+        $filters = $data['filters'] ?? [];
+        $page = (int) ($data['page'] ?? 1);
+
+        $actor = $this->attr($filters['actor'] ?? '');
+        $target = $this->attr($filters['target'] ?? '');
+        $from = $this->attr($filters['from'] ?? '');
+        $to = $this->attr($filters['to'] ?? '');
+
+        $options = '<option value="">Any action</option>';
+        foreach ($log['actions'] as $action) {
+            $options .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($action),
+                ($filters['action'] ?? '') === $action ? ' selected' : '',
+                e($action)
+            );
+        }
+
+        $rows = '';
+        foreach ($log['items'] as $row) {
+            $rows .= sprintf(
+                '<tr>
+                   <td class="muted small">%s</td>
+                   <td>%s</td>
+                   <td><code>%s</code></td>
+                   <td class="muted small">%s</td>
+                   <td class="muted small">%s</td>
+                   <td class="muted small">%s</td>
+                 </tr>',
+                e((string) $row['created_at']),
+                // An action with no actor is the system: cron, a webhook, a
+                // migration. Saying so beats an empty cell that reads as a
+                // missing record.
+                e((string) ($row['actor_email'] ?? '')) ?: '<span class="muted">system</span>',
+                e((string) $row['action']),
+                e(trim(((string) ($row['target_type'] ?? '')) . ' ' . ((string) ($row['target_id'] ?? '')))),
+                e((string) ($row['detail'] ?? '')),
+                e((string) ($row['ip'] ?? ''))
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="6" class="muted">Nothing matches those filters.</td></tr>';
+        }
+
+        // The filters travel with the paging links and the export, or page two
+        // silently drops them and shows a different search than page one.
+        $carry = http_build_query(array_filter([
+            'actor'  => $filters['actor'] ?? '',
+            'action' => $filters['action'] ?? '',
+            'target' => $filters['target'] ?? '',
+            'from'   => $filters['from'] ?? '',
+            'to'     => $filters['to'] ?? '',
+        ], static fn (string $v): bool => $v !== ''));
+
+        $prev = $page > 1
+            ? sprintf('<a class="btn small secondary" href="/admin/activity?%s">Newer</a>', $carry . '&page=' . ($page - 1))
+            : '';
+        $next = $page < $log['pages']
+            ? sprintf('<a class="btn small secondary" href="/admin/activity?%s">Older</a>', $carry . '&page=' . ($page + 1))
+            : '';
+
+        $exportUrl = '/admin/activity.csv' . ($carry !== '' ? '?' . $carry : '');
+
+        return <<<HTML
+        <h1>Activity log</h1>
+        <p class="muted">
+          What was done here, and by whom. Kept for 180 days, then trimmed — on shared hosting the
+          disk quota is real, so this is a record of the recent past rather than an archive.
+        </p>
+
+        <form method="get" class="filters">
+          <label>Who <input type="search" name="actor" value="{$actor}" placeholder="email"></label>
+          <label>Action <select name="action">{$options}</select></label>
+          <label>Target <input type="search" name="target" value="{$target}" placeholder="id, type, or detail"></label>
+          <label>From <input type="date" name="from" value="{$from}"></label>
+          <label>To <input type="date" name="to" value="{$to}"></label>
+          <button class="btn small">Search</button>
+          <a class="btn small secondary" href="/admin/activity">Clear</a>
+        </form>
+
+        <p class="muted small">
+          {$log['total']} entr(ies) match. <a href="{$exportUrl}">Download as CSV</a> — capped at 5,000
+          rows, because building more than that in memory on this kind of hosting is how a page
+          becomes an error.
+        </p>
+
+        <table>
+          <thead>
+            <tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th><th>IP</th></tr>
+          </thead>
+          <tbody>{$rows}</tbody>
+        </table>
+
+        <p>{$prev} {$next}</p>
+HTML;
+    }
+
+    /**
      * Who can sign in: the address list, and everyone the door was shut on.
      *
      * @param array<string, mixed> $data
@@ -3509,9 +3703,69 @@ final class AdminView
         $claimName = e((string) ($data['claimName'] ?? ''));
         $claimValues = e((string) ($data['claimValues'] ?? ''));
         $authParam = e((string) ($data['authParam'] ?? ''));
-        $mode = (string) ($data['gateMode'] ?? 'all');
-        $allSelected = $mode === 'either' ? '' : ' selected';
-        $eitherSelected = $mode === 'either' ? ' selected' : '';
+        $mode = \Portal\Auth\ClaimGate::normalizeMode((string) ($data['gateMode'] ?? ''));
+
+        $modeOptions = '';
+        foreach (\Portal\Auth\ClaimGate::choices() as $value => $label) {
+            $modeOptions .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e($value),
+                $value === $mode ? ' selected' : '',
+                e($label)
+            );
+        }
+
+        $guestsOn = (bool) ($data['guestsOn'] ?? false);
+        $guestState = $guestsOn ? '<span class="pill on">On</span>' : '<span class="pill">Off</span>';
+        $guestToggle = $guestsOn ? 'guests-off' : 'guests-on';
+        $guestToggleLabel = $guestsOn ? 'Turn off' : 'Turn on';
+        $guestUrl = e((string) ($data['guestUrl'] ?? ''));
+
+        $guestRows = '';
+        foreach ((array) ($data['guests'] ?? []) as $guest) {
+            $guestRows .= sprintf(
+                '<tr><td>%s</td><td class="muted small">%s</td><td class="muted small">%s</td>
+                 <td class="right"><form method="post" style="display:inline">
+                   <input type="hidden" name="_token" value="%s">
+                   <input type="hidden" name="id" value="%d">
+                   <button class="btn small danger" name="action" value="guest-remove">Remove</button>
+                 </form></td></tr>',
+                e((string) $guest['email']),
+                e((string) ($guest['note'] ?? '')),
+                e((string) ($guest['added_by'] ?? '')),
+                $token,
+                (int) $guest['id']
+            );
+        }
+
+        if ($guestRows === '') {
+            $guestRows = '<tr><td colspan="4" class="muted">Nobody is excused.</td></tr>';
+        }
+
+        $guestBody = <<<GUEST
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+          <label>Address <input type="email" name="email" placeholder="visitor@example.com"></label>
+          <label>Who they are <input type="text" name="note" maxlength="500"
+                 placeholder="visiting speaker, until the end of March"></label>
+          <p class="muted small">Ask for a reason. An exemption nobody can account for later is one
+             nobody dares remove.</p>
+          <button class="btn" name="action" value="guest-add">Excuse this address</button>
+        </form>
+
+        <table>
+          <thead><tr><th>Address</th><th>Who</th><th>Added by</th><th></th></tr></thead>
+          <tbody>{$guestRows}</tbody>
+        </table>
+
+        <p class="muted small">
+          Send a guest this link rather than the ordinary sign-in page:
+          <code>{$guestUrl}</code> — it asks the provider without naming the organization, which it
+          would otherwise use to refuse them before this site could excuse them. It works for one
+          sign-in and then forgets, so following it once does not change how that browser signs in
+          afterwards.
+        </p>
+GUEST;
 
         $regSecret = (string) ($data['regSecret'] ?? '');
         $regUrl = e((string) ($data['regUrl'] ?? ''));
@@ -3690,6 +3944,25 @@ REG;
         </fieldset>
 
         <fieldset>
+          <legend>Guests {$guestState}</legend>
+          <p class="muted small">
+            For somebody who legitimately has no account in the organization — a visiting speaker,
+            a spouse, a contractor. Without this the choices are adding them to somebody else's
+            identity system, or loosening the whole site to <em>either</em> to admit one person.
+          </p>
+          <p class="muted small">
+            <strong>It excuses the organization check and nothing else.</strong> A guest still has to
+            be on the address list where that is required, and still has to be approved like anybody
+            else. What they are excused is the one check they cannot possibly satisfy.
+          </p>
+          <form method="post" style="margin-bottom:.75rem">
+            <input type="hidden" name="_token" value="{$token}">
+            <button class="btn" name="action" value="{$guestToggle}">{$guestToggleLabel}</button>
+          </form>
+          {$guestBody}
+        </fieldset>
+
+        <fieldset>
           <legend>Refuse signups at the provider {$regState}</legend>
           <p class="muted small">
             Without this, an address nobody listed still gets an account here — unapproved, able to
@@ -3728,16 +4001,19 @@ REG;
             </p>
 
             <label>When both this and the list are on
-              <select name="gate_mode">
-                <option value="all"{$allSelected}>Require both</option>
-                <option value="either"{$eitherSelected}>Either one is enough</option>
-              </select>
+              <select name="gate_mode">{$modeOptions}</select>
             </label>
             <p class="muted small">
-              <strong>Either</strong> is what a site wants when some people sign in through the
-              organization and others have personal accounts — the list is then how you let an
-              individual in without adding them to the organization. There is deliberately no setting
-              that switches both off; the way to have no gate is to configure no gate.
+              <strong>Either one is enough</strong> is what a site wants when some people sign in
+              through the organization and others have personal accounts — the list is then how you
+              let an individual in without adding them to the organization.
+            </p>
+            <p class="muted small">
+              There is deliberately no setting that switches both checks off, and an unrecognised
+              value resolves to <strong>Require both</strong>: a typo must never be the thing that
+              opens a door. A check you have not configured is skipped rather than failed, so
+              choosing <strong>Require both</strong> does not shut out a site with no organization
+              set up.
             </p>
 
             <label>Extra sign-in parameter <input type="text" name="auth_param" value="{$authParam}" placeholder="organization"></label>

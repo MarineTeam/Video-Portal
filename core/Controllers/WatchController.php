@@ -60,6 +60,22 @@ final class WatchController extends Controller
         }
 
         /*
+         * Restricted to named groups?
+         *
+         * The PHP half of the rule the listing query expresses in SQL. Both
+         * exist because this page resolves one video by slug and never runs
+         * that query — the arrangement scheduling has had since Phase 4 — and a
+         * test asserts the two agree, because a disagreement means either a
+         * video that is listed and 404s or one that is hidden and plays.
+         *
+         * The same 404, for the same reason: a person told "you are not in the
+         * right group" has been told the video exists.
+         */
+        if (!$canManage && !$videos->audienceAllows($video, $this->viewerGroupIds())) {
+            throw HttpException::notFound('There is no video at that address.');
+        }
+
+        /*
          * Locked because the episode before it has not been watched.
          *
          * Resolved BEFORE the embed URL is minted, and it suppresses it the
@@ -189,6 +205,7 @@ final class WatchController extends Controller
                  * two come to disagree the first time the URL changes shape.
                  */
                 'downloadSlug' => $video->slug,
+                'pageMeta'     => $this->pageMeta($video),
                 'related' => $this->related($video),
                 'backUrl' => '/',
             ]
@@ -214,6 +231,56 @@ final class WatchController extends Controller
      *
      * @return list<array<string, mixed>>
      */
+    /**
+     * What a link to this video looks like when somebody pastes it somewhere.
+     *
+     * THE IMAGE IS RESOLVED FOR AN ANONYMOUS VISITOR, NOT FOR THIS ONE, and
+     * that is the whole subtlety. The person on this page can watch — that is
+     * why they are on it — but the thing that fetches `og:image` is a
+     * stranger's server with no session, and whatever it fetches it caches.
+     * Asking "may THIS viewer see the artwork" would put a members-only
+     * thumbnail on somebody else's infrastructure, which is precisely what the
+     * setting exists to prevent.
+     *
+     * So the question asked is "would a signed-out visitor be shown this", and
+     * a no means no image at all rather than a fallback to a site logo — an
+     * absent card is a smaller loss than a leaked frame.
+     */
+    private function pageMeta(Video $video): \Portal\Support\PageMeta
+    {
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        try {
+            $provider = $this->container->get(VideoProvider::class);
+        } catch (Throwable) {
+            // No video service configured. There is nothing to sign a
+            // thumbnail with, and a card without one is still a card.
+            $provider = null;
+        }
+
+        $card = (new \Portal\Content\VideoPresenter($videos, $provider))
+            ->cards(
+                [$video],
+                // Deliberately false: the unfurler is anonymous.
+                false,
+                $this->config()->settingBool('members_thumbnail_default', false)
+            )[0] ?? [];
+
+        return \Portal\Support\PageMeta::forVideo(
+            $video->title,
+            (string) ($video->description ?? ''),
+            is_string($card['thumbnail'] ?? null) ? $card['thumbnail'] : null,
+            $this->config()->url('/watch/' . $video->slug),
+            $video->publishedAt,
+            $video->duration,
+            [
+                ['name' => 'Library', 'url' => $this->config()->url('/')],
+                ['name' => $video->title, 'url' => $this->config()->url('/watch/' . $video->slug)],
+            ]
+        );
+    }
+
     /**
      * Both halves of a download decision, without the file lookup.
      *

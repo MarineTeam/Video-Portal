@@ -240,6 +240,17 @@ final class AdminController extends Controller
             'speakers'       => $this->speakerRepo()->all(),
             'inheritedLabel' => $this->inheritedThumbnailLabel($videos, $video),
             'inheritedDownloadLabel' => $this->inheritedDownloadLabel($videos, $video),
+            'groups'         => $this->permissionGroups(),
+            'audiences'      => $videos->audienceGroups('video', $video->id),
+            /*
+             * What the series says, so the screen can explain a restriction the
+             * video does not carry itself. An administrator looking at a video
+             * hidden by its series would otherwise hunt for a setting here that
+             * is not here.
+             */
+            'seriesAudiences' => $video->seriesId !== null
+                ? $videos->audienceGroups('series', $video->seriesId)
+                : [],
             'transcript'     => $this->transcriptSummary($video->id),
             'chapters'       => $this->chapterText($video->id),
             'assets'         => $this->attachments($video->id),
@@ -834,6 +845,21 @@ final class AdminController extends Controller
                     // A tag whose last use has just gone stops existing, so the
                     // admin list never fills with labels linking to empty pages.
                     $tags->pruneUnused();
+
+                    /*
+                     * Group restrictions, inside the same guard and for a
+                     * sharper version of the same reason.
+                     *
+                     * An empty selection here means "not restricted", which
+                     * publishes the video to everybody. Writing that on a
+                     * partial POST that never mentioned audiences would be the
+                     * partial-save defect again, in the one place where it
+                     * reveals content rather than merely losing a setting.
+                     */
+                    $videos->setAudienceGroups('video', $id, array_map(
+                        'intval',
+                        (array) ($request->post['audiences'] ?? [])
+                    ));
                 }
 
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);
@@ -1527,6 +1553,8 @@ final class AdminController extends Controller
             'episodes'   => $videos->forSeries($series->id, true),
             'available'  => $this->unassignedVideos($series->id),
             'inheritedDownloadLabel' => $this->inheritedSeriesDownloadLabel(),
+            'groups'     => $this->permissionGroups(),
+            'audiences'  => $videos->audienceGroups('series', $series->id),
         ]);
     }
 
@@ -1585,6 +1613,20 @@ final class AdminController extends Controller
                         'sequential'   => $request->input('sequential') !== null,
                         'download_mode' => $request->input('download_mode'),
                     ]);
+
+                    /*
+                     * Audiences live in their own table rather than a column,
+                     * so they are written after the update rather than through
+                     * it. The whole form is always posted from this screen, so
+                     * an empty selection genuinely means "not restricted" —
+                     * which is the permissive answer, and the reason the video
+                     * form guards the same write behind `_whole_form`.
+                     */
+                    $this->container->get(VideoRepository::class)->setAudienceGroups('series', $id, array_map(
+                        'intval',
+                        (array) ($request->post['audiences'] ?? [])
+                    ));
+
                     Audit::log($this->db(), $this->user()?->email, 'series.update', 'series', (string) $id);
                     return $this->back($request, 'Series saved.');
 
@@ -3312,6 +3354,149 @@ final class AdminController extends Controller
     }
 
     /**
+     * The named sets of people a piece of content can be restricted to.
+     *
+     * Permission groups, reused rather than a third kind of grouping invented
+     * beside them. A group with no capabilities is simply a named set of
+     * people, which is exactly what an audience is — and a third mechanism
+     * would be one more place to look when somebody asks why a person cannot
+     * see something.
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    private function permissionGroups(): array
+    {
+        try {
+            return array_map(
+                static fn (array $row): array => ['id' => (int) $row['id'], 'name' => (string) $row['name']],
+                $this->db()->all('SELECT id, name FROM {permission_groups} ORDER BY name')
+            );
+        } catch (Throwable $e) {
+            // Before migration 0027 on a half-applied upgrade. The edit screen
+            // matters more than the picker on it.
+            error_log('Could not read permission groups: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
+     * The activity log, with the filters that make it answerable.
+     *
+     * Sixteen files write to this table and, until now, one screen read fifteen
+     * rows of it. `view_audit_log` has been grantable since Phase 1 describing
+     * itself as "Read the activity log" — a capability that promised a screen
+     * nobody had built, which is this project's signature defect wearing a
+     * permission for a hat.
+     */
+    public function auditLog(Request $request): Response
+    {
+        $this->require(Capability::VIEW_AUDIT_LOG);
+
+        $filters = [
+            'actor'  => trim((string) ($request->query['actor'] ?? '')),
+            'action' => trim((string) ($request->query['action'] ?? '')),
+            'target' => trim((string) ($request->query['target'] ?? '')),
+            'from'   => $this->dateOnly((string) ($request->query['from'] ?? '')),
+            'to'     => $this->dateOnly((string) ($request->query['to'] ?? '')),
+        ];
+
+        $result = Audit::page($this->db(), $filters, max(1, (int) ($request->query['page'] ?? 1)));
+
+        return $this->admin('audit', [
+            'log'     => $result,
+            'filters' => $filters,
+            'page'    => max(1, (int) ($request->query['page'] ?? 1)),
+        ]);
+    }
+
+    /**
+     * The same query, as a file.
+     *
+     * An activity log is read when something has gone wrong, and what happens
+     * next usually happens somewhere else — a spreadsheet, an email to whoever
+     * needs to know, a record kept beyond the pruning window. A screen that can
+     * only be scrolled makes somebody retype it.
+     *
+     * Streamed, and bounded at 5000 rows: this runs on shared hosting where
+     * building a year of history in memory is how a page becomes a 500.
+     */
+    public function auditLogCsv(Request $request): Response
+    {
+        $this->require(Capability::VIEW_AUDIT_LOG);
+
+        $result = Audit::page($this->db(), [
+            'actor'  => trim((string) ($request->query['actor'] ?? '')),
+            'action' => trim((string) ($request->query['action'] ?? '')),
+            'target' => trim((string) ($request->query['target'] ?? '')),
+            'from'   => $this->dateOnly((string) ($request->query['from'] ?? '')),
+            'to'     => $this->dateOnly((string) ($request->query['to'] ?? '')),
+        ], 1, 5000);
+
+        $rows = [];
+        foreach ($result['items'] as $row) {
+            $rows[] = [
+                (string) $row['created_at'],
+                (string) ($row['actor_email'] ?? ''),
+                (string) $row['action'],
+                (string) ($row['target_type'] ?? ''),
+                (string) ($row['target_id'] ?? ''),
+                (string) ($row['detail'] ?? ''),
+                (string) ($row['ip'] ?? ''),
+            ];
+        }
+
+        /*
+         * Through Csv::document, which already knows the two things that make
+         * a spreadsheet export wrong: the byte order mark Excel needs to read
+         * UTF-8, and the leading characters it reads as a formula. An audit log
+         * carries free text somebody else wrote, so the formula guard is not
+         * theoretical here.
+         */
+        $body = \Portal\Support\Csv::document(
+            ['when', 'who', 'action', 'target type', 'target', 'detail', 'ip'],
+            $rows
+        );
+
+        /*
+         * Exporting the log is itself logged. Somebody taking a copy of who did
+         * what is exactly the kind of act the log exists to record, and leaving
+         * it out would make the export the one action invisible to it.
+         */
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'audit.export',
+            null,
+            null,
+            sprintf('%d row(s)', count($rows))
+        );
+
+        return Response::text($body)
+            ->header('Content-Type', 'text/csv; charset=utf-8')
+            ->header(
+                'Content-Disposition',
+                'attachment; filename="' . \Portal\Support\Csv::filename('activity-log') . '"'
+            )
+            ->header('Cache-Control', 'private, no-store');
+    }
+
+    /**
+     * A date, or nothing.
+     *
+     * The value goes straight into a comparison against a DATETIME column, so
+     * anything that is not a plain date is dropped rather than passed along to
+     * become either a confusing result or a bound parameter doing nothing
+     * useful.
+     */
+    private function dateOnly(string $value): string
+    {
+        $value = trim($value);
+
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) === 1 ? $value : '';
+    }
+
+    /**
      * Who can sign in — the address list, and everyone the door was shut on.
      *
      * Named for the question it answers, not for its table. The screen next to
@@ -3350,9 +3535,12 @@ final class AdminController extends Controller
             'claimName'   => (string) $this->config()->setting('signin_claim_name', ''),
             'claimValues' => (string) $this->config()->setting('signin_claim_values', ''),
             'gateMode'    => \Portal\Auth\ClaimGate::normalizeMode(
-                (string) $this->config()->setting('signin_gate_mode', \Portal\Auth\ClaimGate::ALL)
+                (string) $this->config()->setting('signin_mode', '')
             ),
             'authParam'   => (string) $this->config()->setting('signin_authorize_param', ''),
+            'guestsOn'    => $this->config()->settingBool('signin_guests_enabled', false),
+            'guests'      => (new \Portal\Auth\GuestExemptions($this->db()))->all(),
+            'guestUrl'    => $this->config()->url('/auth/guest'),
             'regSecret'   => (string) $this->config()->setting('signin_registration_secret', ''),
             'regUrl'      => $this->config()->url('/auth/registration-check'),
         ]);
@@ -3422,6 +3610,39 @@ final class AdminController extends Controller
 
                 return $this->back($request, 'Marked as dealt with.');
 
+            case 'guest-add':
+                $guests = new \Portal\Auth\GuestExemptions($this->db());
+                $email = (string) ($request->input('email') ?? '');
+
+                if (!$guests->add($email, $request->input('note'), $actor)) {
+                    if (!\Portal\Support\Str::isEmail(\Portal\Support\Str::normalizeEmail($email))) {
+                        return $this->back($request, 'That does not look like an address.', 'error');
+                    }
+                }
+
+                Audit::log($this->db(), $actor, 'signin.guest.add', null, null, $email);
+
+                return $this->back($request, 'Excused the organisation check for that address.');
+
+            case 'guest-remove':
+                (new \Portal\Auth\GuestExemptions($this->db()))->remove((int) ($request->input('id') ?? 0));
+                Audit::log($this->db(), $actor, 'signin.guest.remove', null, (string) $request->input('id'));
+
+                return $this->back($request, 'Removed. They are refused on their next request.');
+
+            case 'guests-on':
+            case 'guests-off':
+                $on = $action === 'guests-on';
+                $this->config()->setSettings(['signin_guests_enabled' => $on ? '1' : '0']);
+                Audit::log($this->db(), $actor, 'signin.guests.' . ($on ? 'enabled' : 'disabled'));
+
+                return $this->back(
+                    $request,
+                    $on
+                        ? 'On. Addresses on the list below skip the organisation check — and nothing else.'
+                        : 'Off. The list is kept, and nobody is excused by it.'
+                );
+
             case 'registration-secret':
                 /*
                  * Regenerating is the only way to change it, and the old one
@@ -3464,7 +3685,7 @@ final class AdminController extends Controller
                      * form can still arrive by other means, and it must not be
                      * the loose one.
                      */
-                    'signin_gate_mode'    => \Portal\Auth\ClaimGate::normalizeMode(
+                    'signin_mode'         => \Portal\Auth\ClaimGate::normalizeMode(
                         (string) ($request->input('gate_mode') ?? '')
                     ),
                     'signin_authorize_param' => trim((string) ($request->input('auth_param') ?? '')),

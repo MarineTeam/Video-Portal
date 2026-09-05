@@ -133,6 +133,13 @@ final class Routes
         $router->get('/auth/callback', [AuthController::class, 'callback']);
 
         /*
+         * Sign in as a guest: the same provider, without the organisation
+         * parameter, for an address an administrator has excused that check.
+         * 404 unless the feature is switched on — see AuthController::guest().
+         */
+        $router->get('/auth/guest', [AuthController::class, 'guest']);
+
+        /*
          * Registration, which 404s unless the site has switched it on. One
          * handler for both methods so a failed submission re-renders the form
          * rather than 405-ing.
@@ -171,6 +178,16 @@ final class Routes
         $router->get('/account', [AccountController::class, 'index'], ['auth.user']);
         $router->get('/account/shared-links', [AccountController::class, 'sharedLinks'], ['auth.user']);
         $router->get('/account/downloads', [AccountController::class, 'downloads'], ['auth.user']);
+
+        /*
+         * What this person has watched, and everything the site holds on them.
+         *
+         * No identifier in either URL, deliberately: the only thing that
+         * decides what comes back is who is signed in. An id here would make
+         * the export an endpoint worth guessing at.
+         */
+        $router->any(['GET', 'POST'], '/account/history', [AccountController::class, 'history'], ['auth.user']);
+        $router->get('/account/export.json', [AccountController::class, 'export'], ['auth.user']);
 
         /*
          * Member sharing.
@@ -265,6 +282,15 @@ final class Routes
         $router->get('/admin/playlists/{id}', [AdminController::class, 'editPlaylist'], ['admin.area']);
         $router->get('/admin/analytics', [AdminController::class, 'analytics'], ['admin.area']);
         $router->get('/admin/analytics.csv', [AdminController::class, 'exportAnalytics'], ['admin.area']);
+
+        /*
+         * The activity log. Sixteen files have written to it since Phase 1 and
+         * one dashboard tile read fifteen rows of it; view_audit_log has been
+         * grantable the whole time, describing itself as "Read the activity
+         * log". This is the screen it was always promising.
+         */
+        $router->get('/admin/activity', [AdminController::class, 'auditLog'], ['admin.area']);
+        $router->get('/admin/activity.csv', [AdminController::class, 'auditLogCsv'], ['admin.area']);
         $router->get('/admin/homepage', [AdminController::class, 'homeRows'], ['admin.area']);
         $router->post('/admin/homepage', [AdminController::class, 'saveHomeRow'], ['admin.area']);
         $router->get('/admin/announcements', [AdminController::class, 'announcementsScreen'], ['admin.area']);

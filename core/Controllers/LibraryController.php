@@ -18,6 +18,7 @@ use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
+use Portal\Support\PageMeta;
 use Portal\Video\BunnyStreamProvider;
 use Portal\Video\VideoProvider;
 use Throwable;
@@ -81,6 +82,28 @@ final class LibraryController extends Controller
             'pagination'          => $this->paginate($result['total'], $page, $request),
             'flash'               => $this->flash(),
         ]);
+    }
+
+    /**
+     * A breadcrumb trail, with the library at the front of it.
+     *
+     * Absolute URLs, because a BreadcrumbList is read by a machine that has no
+     * page to resolve a relative path against — and built from BASE_URL rather
+     * than the request host, which is the rule this codebase has had since a
+     * host-header-poisoning fix in the app it replaces.
+     *
+     * @param list<array{name: string, url: string}> $crumbs
+     * @return list<array{name: string, url: string}>
+     */
+    private function trail(array $crumbs): array
+    {
+        $out = [['name' => 'Library', 'url' => $this->config()->url('/')]];
+
+        foreach ($crumbs as $crumb) {
+            $out[] = ['name' => $crumb['name'], 'url' => $this->config()->url($crumb['url'])];
+        }
+
+        return $out;
     }
 
     /**
@@ -200,6 +223,20 @@ final class LibraryController extends Controller
             [
                 'title'               => $category->name,
                 'heading'             => $category->name,
+                /*
+                 * The preview card, and the trail a search engine reads.
+                 *
+                 * Built from the category's own name and description rather
+                 * than the site's, which is the entire difference between a
+                 * shared link that says what it points at and one that says
+                 * the site name for the four hundredth time.
+                 */
+                'pageMeta'            => PageMeta::page(
+                    $category->name,
+                    (string) ($category->description ?? ''),
+                    $this->config()->url('/category/' . $category->slug),
+                    $this->trail([['name' => $category->name, 'url' => '/category/' . $category->slug]])
+                ),
                 'subscribeScope'      => SubscriptionRepository::CATEGORY,
                 'subscribeScopeId'    => $category->id,
                 'subscribeLabel'      => 'new videos in ' . $category->name,
@@ -244,6 +281,12 @@ final class LibraryController extends Controller
             [
                 'title'               => $series->title,
                 'heading'             => $series->title,
+                'pageMeta'            => PageMeta::page(
+                    $series->title,
+                    (string) ($series->description ?? ''),
+                    $this->config()->url('/series/' . $series->slug),
+                    $this->trail([['name' => $series->title, 'url' => '/series/' . $series->slug]])
+                ),
                 'subscribeScope'      => SubscriptionRepository::SERIES,
                 'subscribeScopeId'    => $series->id,
                 'subscribeLabel'      => 'new episodes of ' . $series->title,
@@ -309,6 +352,12 @@ final class LibraryController extends Controller
             [
                 'title'               => $tag->name,
                 'heading'             => $tag->name,
+                'pageMeta'            => PageMeta::page(
+                    $tag->name,
+                    'Everything filed under ' . $tag->name . '.',
+                    $this->config()->url('/tag/' . $tag->slug),
+                    $this->trail([['name' => $tag->name, 'url' => '/tag/' . $tag->slug]])
+                ),
                 'description'         => null,
                 'videos'              => $this->present($result['items']),
                 'children'            => [],
@@ -346,6 +395,12 @@ final class LibraryController extends Controller
             [
                 'title'               => $speaker->name,
                 'heading'             => $speaker->name,
+                'pageMeta'            => PageMeta::page(
+                    $speaker->name,
+                    (string) ($speaker->bio ?? ''),
+                    $this->config()->url('/speaker/' . $speaker->slug),
+                    $this->trail([['name' => $speaker->name, 'url' => '/speaker/' . $speaker->slug]])
+                ),
                 'subscribeScope'      => SubscriptionRepository::SPEAKER,
                 'subscribeScopeId'    => $speaker->id,
                 'subscribeLabel'      => 'new videos from ' . $speaker->name,
@@ -942,7 +997,24 @@ final class LibraryController extends Controller
         if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
             $filters['includeUnpublished'] = true;
             $filters['includeHidden'] = true;
+
+            /*
+             * And past group restrictions, for the same reason they see
+             * unpublished and hidden content: somebody who cannot see what they
+             * are editing cannot edit it. The bypass is theirs alone — it is
+             * not implied by being signed in, or approved, or an ordinary
+             * member of any group.
+             */
+            $filters['bypassAudiences'] = true;
         }
+
+        /*
+         * Which groups this person is in, resolved once per request and handed
+         * to the query rather than asked per row. Anonymous visitors get an
+         * empty list, which satisfies no restriction — correctly, since a
+         * restriction names people and nobody is not one of them.
+         */
+        $filters['audienceGroupIds'] = $this->viewerGroupIds();
 
         return $filters;
     }

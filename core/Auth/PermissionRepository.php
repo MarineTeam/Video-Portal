@@ -110,6 +110,30 @@ final class PermissionRepository
     /**
      * @return list<array{id: int, name: string, description: ?string, capabilities: list<string>, members: list<string>}>
      */
+    /**
+     * The groups one person belongs to.
+     *
+     * Matched on EMAIL, not user id, because that is what {group_members}
+     * stores — a person can be put in a group before they have an account, and
+     * pre-authorisation was the reason that column is an address in the first
+     * place. Matching on id alone would silently drop exactly those people.
+     *
+     * @return list<int>
+     */
+    public function groupIdsFor(?string $email): array
+    {
+        $email = $email === null ? '' : \Portal\Support\Str::normalizeEmail($email);
+
+        if ($email === '') {
+            return [];
+        }
+
+        return array_map(
+            static fn (array $row): int => (int) $row['group_id'],
+            $this->db->all('SELECT group_id FROM {group_members} WHERE email = ?', [$email])
+        );
+    }
+
     public function groups(): array
     {
         $capabilities = [];
