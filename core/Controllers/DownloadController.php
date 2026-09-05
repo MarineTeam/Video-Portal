@@ -32,6 +32,12 @@ use Throwable;
  *   4. Is there a file to hand over — `Mp4Locator`, which now answers from the
  *      video row rather than an API call.
  *
+ * This also serves AUDIO MODE, which wants the same file for a different
+ * reason, and gates 2 and 3 are the only difference: a download is a capability
+ * somebody holds, a listen is a switch the site turned on. Gates 1 and 4 are
+ * identical and run in the same order, so there is no purpose that can reach a
+ * file the watch page would refuse. See listen().
+ *
  * THE RULE THIS INHERITS FROM THE APP IT IS PORTED FROM: downloads may only
  * NARROW view access, never widen it. Gate 1 runs first and is the same query
  * that decides whether the watch page renders, so there is no arrangement of
@@ -55,10 +61,21 @@ final class DownloadController extends Controller
      */
     private const TTL = 10800;
 
+    /**
+     * What the file is being handed over FOR.
+     *
+     * Gates 1 and 4 are the same either way — can this person watch it, and is
+     * there a file. Gates 2 and 3 are not, and they are the whole difference:
+     * a download is a capability somebody holds, a listen is a setting the site
+     * turned on.
+     */
+    private const FOR_DOWNLOAD = 'download';
+    private const FOR_LISTENING = 'listen';
+
     /** @param array<string, string> $params */
     public function media(Request $request, array $params): Response
     {
-        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''));
+        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''), self::FOR_DOWNLOAD);
         $video = $resolved['video'];
         $source = $resolved['source'];
 
@@ -73,6 +90,39 @@ final class DownloadController extends Controller
     }
 
     /**
+     * The same file, for listening rather than keeping.
+     *
+     * Audio mode exists because the video player is a cross-origin iframe: this
+     * site cannot change its speed, cannot put anything on a lock screen, and
+     * cannot keep playing when the phone is locked. An <audio> element on this
+     * origin can do all three, and the file it needs is the MP4 the podcast
+     * feed and the download route already serve.
+     *
+     * SO IT HANDS OUT A SAVABLE FILE, AND THAT IS SAID PLAINLY on the settings
+     * screen rather than glossed. Anybody who can reach this URL can save what
+     * it points at — an <audio src> is one long-press from a download on every
+     * phone. Gating it behind DOWNLOAD_CONTENT instead would be honest about
+     * that and would also mean nobody gets it, because "listen to the sermon in
+     * the car" is the mainstream case and downloading is the rare grant. So it
+     * is a site-wide setting, OFF by default, and the screen says what turning
+     * it on means.
+     *
+     * The narrower reading is worth stating too: for a PUBLIC video the file is
+     * already reachable without any of this, through the podcast enclosure at
+     * /media/{slug}.mp4. What this setting actually widens is members-only
+     * content, to people who may already watch it.
+     *
+     * @param array<string, string> $params
+     */
+    public function listen(Request $request, array $params): Response
+    {
+        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''), self::FOR_LISTENING);
+
+        return Response::redirect((string) $resolved['source']->url, 302)
+            ->header('Cache-Control', 'private, max-age=0, no-store');
+    }
+
+    /**
      * The four gates, in one place.
      *
      * Both entry points run this. A second copy of an access decision is how
@@ -80,9 +130,10 @@ final class DownloadController extends Controller
      * endpoint handing out a signed URL for something the redirect refuses —
      * which is the same file, without the refusal.
      *
+     * @param self::FOR_* $purpose which pair of middle gates to run
      * @return array{video: \Portal\Content\Video, source: \Portal\Video\Mp4Source}
      */
-    private function resolve(Request $request, string $slug): array
+    private function resolve(Request $request, string $slug, string $purpose): array
     {
         $user = $this->user();
         if ($user === null) {
@@ -92,7 +143,7 @@ final class DownloadController extends Controller
              * JSON, fails, and reports as a broken feature rather than a
              * signed-out session.
              */
-            throw HttpException::forbidden('Sign in to download.');
+            throw HttpException::forbidden('Sign in first.');
         }
 
         /** @var VideoRepository $videos */
@@ -121,24 +172,17 @@ final class DownloadController extends Controller
         }
 
         /*
-         * The capability, checked against THIS video. Site-wide holders pass,
-         * and so does somebody granted it on the video's category or series —
-         * the resolver walks that chain. A holder scoped to one section is
-         * refused everywhere else, which is the whole reason it is scopable.
+         * Gates 2 and 3, which are the only ones that differ by purpose.
          *
-         * A 403 here rather than a 404, because at this point the person is
-         * known to be able to watch the video: they can see it exists, so
-         * hiding the refusal would only be confusing.
+         * Written as a match over every case rather than an `if ($download)`,
+         * so a third purpose cannot inherit the download rules by falling
+         * through a default — which on this method would mean handing out a
+         * file under a check nobody wrote for it.
          */
-        if (!$this->guard()->can(Capability::DOWNLOAD_CONTENT, 'video', $video->id)) {
-            throw HttpException::forbidden('You do not have permission to download videos.');
-        }
-
-        $mode = $videos->downloadModeFor($video, $this->siteDefault());
-
-        if (!DownloadPolicy::allows($mode)) {
-            throw HttpException::forbidden('Downloads are turned off for this video.');
-        }
+        match ($purpose) {
+            self::FOR_DOWNLOAD => $this->refuseUnlessDownloadable($video, $videos),
+            self::FOR_LISTENING => $this->refuseUnlessListenable(),
+        };
 
         try {
             /** @var VideoProvider $provider */
@@ -163,17 +207,73 @@ final class DownloadController extends Controller
          * effect outlives the session, so "who has a copy of this" is a
          * question somebody will eventually need answered — and it cannot be
          * reconstructed later from anything else.
+         *
+         * Listening is NOT logged, and the line is worth drawing where it is.
+         * A download is a person exercising a grant somebody gave them, which
+         * is rare and consequential. A listen is an ordinary way of playing a
+         * sermon, and one row per press would bury the entries this log exists
+         * for under the ones it does not. That the file is fetchable either way
+         * is a property of the SETTING, decided once on the settings screen,
+         * not of each person who plays something.
          */
-        Audit::log(
-            $this->db(),
-            $user->email,
-            'video.download',
-            'video',
-            (string) $video->id,
-            $video->title . ' (' . $source->height . 'p)'
-        );
+        if ($purpose === self::FOR_DOWNLOAD) {
+            Audit::log(
+                $this->db(),
+                $user->email,
+                'video.download',
+                'video',
+                (string) $video->id,
+                $video->title . ' (' . $source->height . 'p)'
+            );
+        }
 
         return ['video' => $video, 'source' => $source];
+    }
+
+    /**
+     * Gates 2 and 3 for a download: a scoped capability, then the policy.
+     *
+     * A 403 rather than a 404, because by this point the person is known to be
+     * able to watch the video — they can see it exists, so hiding the refusal
+     * would only confuse.
+     */
+    private function refuseUnlessDownloadable(\Portal\Content\Video $video, VideoRepository $videos): void
+    {
+        /*
+         * Checked against THIS video. Site-wide holders pass, and so does
+         * somebody granted it on the video's category or series — the resolver
+         * walks that chain. A holder scoped to one section is refused
+         * everywhere else, which is the whole reason it is scopable.
+         */
+        if (!$this->guard()->can(Capability::DOWNLOAD_CONTENT, 'video', $video->id)) {
+            throw HttpException::forbidden('You do not have permission to download videos.');
+        }
+
+        $mode = $videos->downloadModeFor($video, $this->siteDefault());
+
+        if (!DownloadPolicy::allows($mode)) {
+            throw HttpException::forbidden('Downloads are turned off for this video.');
+        }
+    }
+
+    /**
+     * Gate 2 for listening: one site-wide switch, off by default.
+     *
+     * There is no per-video question here on purpose. `DownloadPolicy` exists
+     * because handing somebody a file they keep is a decision worth making per
+     * series — but audio mode is a way of PLAYING what they are already allowed
+     * to play, and a tri-state inherited rule for it would be a second policy
+     * chain to learn, set, and get wrong, governing something much closer to
+     * pressing play than to taking a copy.
+     *
+     * A 403 with the reason: the video is watchable and the person can see it,
+     * so a 404 would be a lie about why the control did not work.
+     */
+    private function refuseUnlessListenable(): void
+    {
+        if (!$this->config()->settingBool('audio_mode_enabled', false)) {
+            throw HttpException::forbidden('Audio mode is turned off on this site.');
+        }
     }
 
     /**
@@ -190,7 +290,7 @@ final class DownloadController extends Controller
      */
     public function meta(Request $request, array $params): Response
     {
-        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''));
+        $resolved = $this->resolve($request, (string) ($params['slug'] ?? ''), self::FOR_DOWNLOAD);
         $video = $resolved['video'];
         $source = $resolved['source'];
 

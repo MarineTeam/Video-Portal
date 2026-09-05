@@ -15,8 +15,13 @@
 
   var data = document.getElementById('portal-player-data');
   var frame = document.querySelector('.player iframe');
+  var audio = document.getElementById('portal-audio');
 
-  if (!data || !frame) {
+  /* Either source is enough. The audio panel exists on pages where the video
+     player does not — a premiere has no iframe — and the progress rules below
+     are the same whichever one is playing, which is the point: somebody can
+     start listening and finish watching. */
+  if (!data || (!frame && !audio)) {
     return;
   }
 
@@ -55,6 +60,9 @@
   var SAVE_INTERVAL = 10;
 
   function send(method, value) {
+    if (!frame) {
+      return;
+    }
     try {
       frame.contentWindow.postMessage(
         JSON.stringify({ context: 'player.js', method: method, value: value }),
@@ -222,4 +230,228 @@
       save(true);
     }
   });
+
+  /* ------------------------------------------------------------- audio mode
+   *
+   * The three things the iframe cannot do: change speed, keep playing with the
+   * screen off, and say what is playing on a lock screen. An <audio> element on
+   * this origin can do all of them.
+   *
+   * It shares save() with the video above rather than posting its own
+   * progress. That is the point of putting it in this file: the ten-second
+   * throttle, the ten-second floor and the sendBeacon-on-unload rule are the
+   * heartbeat contract, and a second implementation of it would drift from
+   * this one — which would show up as a position that depends on which player
+   * somebody happened to use.
+   */
+  if (!audio) {
+    return;
+  }
+
+  var controls = document.getElementById('portal-audio-controls');
+  var speed = document.getElementById('portal-audio-speed');
+  var sleep = document.getElementById('portal-audio-sleep');
+  var sleepState = document.getElementById('portal-audio-sleep-state');
+  var sleepTimer = null;
+  var stopAtEnd = false;
+
+  /* Revealed only now. With scripting off the audio still plays and only these
+     two are missing, which is the right thing to lose — a speed menu that does
+     nothing is worse than no speed menu. */
+  if (controls) {
+    controls.hidden = false;
+  }
+
+  /*
+   * Resume applies to audio too, and it is the same position.
+   *
+   * Set on `loadedmetadata` rather than immediately: currentTime before the
+   * duration is known is silently dropped by every browser, which reads as
+   * resume simply not working on audio.
+   */
+  audio.addEventListener('loadedmetadata', function () {
+    duration = audio.duration || duration;
+
+    if (hasResumed || !duration) {
+      return;
+    }
+
+    var wanted = startAt > 0
+      ? (startAt < duration ? startAt : 0)
+      : (resumeAt > 5 && resumeAt < duration * 0.95 ? resumeAt : 0);
+
+    if (wanted > 0) {
+      hasResumed = true;
+      audio.currentTime = wanted;
+    }
+  });
+
+  /*
+   * Starting the audio stops the video.
+   *
+   * Both can play at once otherwise — open the panel while the video is
+   * running and the same sermon comes out twice, a second or two apart, which
+   * sounds like the site is broken rather than like two players. The iframe
+   * cannot be read from here but it can be told, which is enough.
+   */
+  audio.addEventListener('play', function () {
+    send('pause');
+  });
+
+  audio.addEventListener('timeupdate', function () {
+    position = audio.currentTime || 0;
+    duration = audio.duration || duration;
+    save(false);
+  });
+
+  audio.addEventListener('pause', function () {
+    save(true);
+  });
+
+  audio.addEventListener('ended', function () {
+    position = duration;
+    save(true);
+  });
+
+  /*
+   * Speed.
+   *
+   * Applied on `ratechange` guard rather than trusting the select's value
+   * directly, because a browser that refuses a rate leaves the menu showing
+   * something that is not happening.
+   */
+  if (speed) {
+    speed.addEventListener('change', function () {
+      var rate = parseFloat(speed.value);
+
+      if (!(rate > 0)) {
+        return;
+      }
+
+      audio.playbackRate = rate;
+
+      /* Say what actually took effect. Safari clamps above 2× on some
+         versions, and a menu that reads 2 while playing at 1 is a control
+         that lies. */
+      if (Math.abs(audio.playbackRate - rate) > 0.01) {
+        speed.value = String(audio.playbackRate);
+      }
+    });
+  }
+
+  /*
+   * The sleep timer.
+   *
+   * It PAUSES rather than stopping and unloading, so the position is saved by
+   * the pause handler above and somebody who fell asleep finds themselves
+   * where they drifted off — which is the entire reason for the feature.
+   *
+   * "End of this" is a separate answer rather than a duration, because the
+   * length of what is playing is the one interval nobody can estimate and it
+   * is what people actually mean at bedtime.
+   */
+  function clearSleep() {
+    if (sleepTimer) {
+      clearTimeout(sleepTimer);
+      sleepTimer = null;
+    }
+    stopAtEnd = false;
+    if (sleepState) {
+      sleepState.hidden = true;
+      sleepState.textContent = '';
+    }
+  }
+
+  function announceSleep(text) {
+    if (sleepState) {
+      sleepState.textContent = text;
+      sleepState.hidden = false;
+    }
+  }
+
+  if (sleep) {
+    sleep.addEventListener('change', function () {
+      var seconds = parseInt(sleep.value, 10);
+
+      clearSleep();
+
+      if (seconds === -1) {
+        stopAtEnd = true;
+        announceSleep('Stopping at the end of this.');
+        return;
+      }
+
+      if (!(seconds > 0)) {
+        return;
+      }
+
+      /* An absolute wall-clock target, so the message stays true. A countdown
+         driven by setInterval drifts when the tab is backgrounded, which is
+         exactly where this timer spends its life. */
+      var endsAt = Date.now() + seconds * 1000;
+
+      sleepTimer = setTimeout(function () {
+        audio.pause();
+        clearSleep();
+        announceSleep('Paused. Press play to carry on.');
+      }, seconds * 1000);
+
+      announceSleep('Pausing at ' + new Date(endsAt).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }) + '.');
+    });
+  }
+
+  audio.addEventListener('ended', function () {
+    if (stopAtEnd) {
+      clearSleep();
+    }
+  });
+
+  /*
+   * The lock screen.
+   *
+   * Without this a phone shows the page URL, which tells somebody driving
+   * nothing about which sermon is playing. Guarded because Media Session is
+   * absent on desktop Safari and older Android, where the audio still plays —
+   * it is metadata, not playback.
+   */
+  if ('mediaSession' in navigator && window.MediaMetadata) {
+    audio.addEventListener('play', function () {
+      var artwork = [];
+      var image = data.dataset.artwork || '';
+
+      /* Only a real URL. An empty src handed to the operating system draws a
+         broken image on the lock screen, where the absence of one draws the
+         app's own icon. */
+      if (image) {
+        artwork.push({ src: image, sizes: '512x512', type: 'image/jpeg' });
+      }
+
+      try {
+        navigator.mediaSession.metadata = new window.MediaMetadata({
+          title: data.dataset.title || document.title,
+          artist: data.dataset.artist || '',
+          artwork: artwork
+        });
+      } catch (e) {
+        /* Metadata is a courtesy; playback is the feature. */
+      }
+    });
+
+    /* Skip buttons, because the hardware ones on headphones and car stereos
+       map to these and otherwise do nothing. Thirty and fifteen seconds are
+       the podcast conventions rather than a choice made here. */
+    try {
+      navigator.mediaSession.setActionHandler('seekbackward', function () {
+        audio.currentTime = Math.max(0, audio.currentTime - 15);
+      });
+      navigator.mediaSession.setActionHandler('seekforward', function () {
+        audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 30);
+      });
+    } catch (e) {
+      /* Not every browser accepts every action. */
+    }
+  }
 })();

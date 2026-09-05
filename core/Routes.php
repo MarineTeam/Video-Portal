@@ -249,6 +249,21 @@ final class Routes
          * Both run the same four gates, in the same method.
          */
         $router->get('/download/{slug}.json', [DownloadController::class, 'meta'], ['auth.authorized']);
+
+        /*
+         * Audio mode. The same file as the download route and the same first
+         * and last gates, differing only in the middle: a site-wide switch that
+         * is off until somebody turns it on, rather than a capability.
+         *
+         * It exists because the video player is a cross-origin iframe — this
+         * site cannot change its speed, put anything on a lock screen, or keep
+         * it playing while the phone is locked. An <audio> element on this
+         * origin can do all three.
+         *
+         * Behind auth.authorized like /watch: listening to something is
+         * watching it, and the same approval decides both.
+         */
+        $router->get('/listen/{slug}.mp4', [DownloadController::class, 'listen'], ['auth.authorized']);
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
 

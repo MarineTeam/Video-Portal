@@ -9536,6 +9536,138 @@ check(
     "got {$dlOutside['status']} — a grant on one category reached the whole library"
 );
 
+/* ---------------------------------------------------------- audio mode
+ *
+ * The same file as a download, reached under a different pair of gates: a
+ * site-wide switch instead of a capability and a policy. So the checks worth
+ * making are that the switch really governs it, and — the one that matters —
+ * that swapping the gates did not also swap the two that must NOT differ.
+ * Whether somebody may watch a video, and whether there is a file, are
+ * identical questions for both purposes.
+ *
+ * $shareJar is the category-scoped viewer from above, which is what makes the
+ * last check meaningful: they hold no download capability at all.
+ */
+echo "\nAudio mode\n";
+
+$audioSwitch = static function (string $value) use ($db): void {
+    $db->execute(
+        'INSERT INTO {settings} (`key`, `value`, updated_at) VALUES (?, ?, NOW())
+         ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = NOW()',
+        ['audio_mode_enabled', $value]
+    );
+};
+
+$audioOff = getWithJar($baseUrl . '/listen/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'With the switch off the listen route refuses',
+    $audioOff['status'] === 403,
+    "got {$audioOff['status']} — a route that ships on is a decision nobody made"
+);
+
+check(
+    'and the watch page offers no audio player',
+    !str_contains(getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar)['body'], 'portal-audio'),
+    'a control that 403s reads as a broken site rather than a setting'
+);
+
+$audioSwitch('1');
+
+$audioPage = getWithJar($baseUrl . '/watch/' . $insideSlug, $shareJar);
+check(
+    'With it on the player appears',
+    str_contains($audioPage['body'], 'id="portal-audio"')
+        && str_contains($audioPage['body'], '/listen/' . $insideSlug . '.mp4'),
+    'the switch is on and nothing on the page uses it'
+);
+
+check(
+    'and it offers a speed control and a sleep timer',
+    str_contains($audioPage['body'], 'portal-audio-speed')
+        && str_contains($audioPage['body'], 'portal-audio-sleep'),
+    'the three things the iframe cannot do are the whole reason for this'
+);
+
+/*
+ * The lock screen gets the video's REAL title, not merely an attribute.
+ *
+ * The first version of this looked for `data-title=` and passed whether or not
+ * audio mode was on, because that element is rendered on every watch page —
+ * an assertion a coincidence satisfies, which this project has recorded
+ * several times in other forms.
+ */
+$insideTitle = (string) $db->value('SELECT title FROM {videos} WHERE id = ?', [$scopeVideos['inside']]);
+check(
+    'and the lock screen is given the real title to show',
+    $insideTitle !== ''
+        && str_contains($audioPage['body'], 'data-title="' . htmlspecialchars($insideTitle, ENT_QUOTES) . '"'),
+    'a phone shows the page URL, which tells somebody driving nothing'
+);
+
+/*
+ * THE ONE THAT MATTERS. This viewer holds no download capability — the checks
+ * above proved the download route refuses them on this very video — and audio
+ * mode must still work, because it is governed by the switch and not by that
+ * capability. If this failed the same way the download does, the gates were
+ * not actually separated.
+ */
+$audioGo = getWithJar($baseUrl . '/listen/' . $insideSlug . '.mp4', $shareJar);
+check(
+    'Listening does not need the download capability',
+    $audioGo['status'] === 302 && str_contains($audioGo['headers']['location'] ?? '', 'token='),
+    "got {$audioGo['status']} — audio mode inherited the download gates"
+);
+
+check(
+    'and the audio URL is not cacheable either',
+    str_contains(strtolower($audioGo['headers']['cache-control'] ?? ''), 'no-store'),
+    'a cached redirect outlives the signature it carries'
+);
+
+/*
+ * And the gates that must NOT differ, still do not. Gate 1 is the visibility
+ * query: a video this person cannot watch is not one they can listen to,
+ * whatever the switch says.
+ */
+$db->execute('UPDATE {videos} SET is_published = 0 WHERE id = ?', [$scopeVideos['outside']]);
+$audioHidden = getWithJar($baseUrl . '/listen/' . $outsideSlug . '.mp4', $shareJar);
+$db->execute('UPDATE {videos} SET is_published = 1 WHERE id = ?', [$scopeVideos['outside']]);
+
+check(
+    'An unpublished video cannot be listened to',
+    $audioHidden['status'] === 404,
+    "got {$audioHidden['status']} — AUDIO MODE WIDENED VIEW ACCESS"
+);
+
+/*
+ * A signed-out visitor gets bounced to sign in, which is ALSO a 302 — so the
+ * first version of this check asserted "not a 302" and reported correct
+ * behaviour as a leak. The claim is not "no redirect", it is "not a redirect to
+ * the file": what must never appear is a signed CDN URL.
+ */
+$audioStranger = get($baseUrl . '/listen/' . $insideSlug . '.mp4');
+check(
+    'A signed-out visitor is not handed the file',
+    !str_contains($audioStranger['headers']['location'] ?? '', 'token='),
+    'the file is reachable with no session at all — went to '
+        . ($audioStranger['headers']['location'] ?? 'nowhere')
+);
+
+/*
+ * Listening is deliberately not audit-logged, where downloading is. One row per
+ * press would bury the entries the log exists for under the ones it does not.
+ */
+check(
+    'Listening is not written to the audit log',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {audit_log} WHERE action = ? AND target_id = ?',
+        ['video.download', (string) $scopeVideos['inside']]
+    ) === 1,
+    'a listen was recorded as a download, which makes the log say something untrue'
+);
+
+$audioSwitch('0');
+
 /*
  * A blocking series closes an episode its own video row opened, which is the
  * only ordering in the chain that is not obvious. The video says allow; the

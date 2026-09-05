@@ -172,6 +172,52 @@ main { padding: 2.5rem 0 4rem; }
 .page-subtitle { color: var(--text-muted); margin: 0 0 2rem; }
 
 /*
+ * Audio mode. A <details> under the player, closed until asked for — the audio
+ * element has preload="none", so a shut panel costs nothing.
+ */
+.listen { margin-top: 0.75rem; }
+.listen > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: 0.35rem 0;
+  /* The default triangle sits oddly beside an icon, and the icon plus the word
+     is already the affordance. */
+  list-style: none;
+}
+.listen > summary::-webkit-details-marker { display: none; }
+.listen > summary:hover { color: var(--text); }
+
+.listen-body { padding-top: 0.5rem; }
+.listen-body audio { width: 100%; }
+
+.listen-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+.listen-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+.listen-controls select {
+  /* Enough to be a comfortable tap target on a phone without the two menus
+     filling the row on their own. */
+  min-height: 2.25rem;
+  width: auto;
+  margin: 0;
+}
+
+/*
  * Breadcrumbs. The separator is a CSS pseudo-element rather than a character in
  * the markup, so a screen reader announces the list and not a slash between
  * every item, and copying the trail copies the names.

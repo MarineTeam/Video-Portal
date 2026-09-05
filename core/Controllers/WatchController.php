@@ -216,7 +216,37 @@ final class WatchController extends Controller
                  * two come to disagree the first time the URL changes shape.
                  */
                 'downloadSlug' => $video->slug,
+                /*
+                 * The audio player's source, or null when the setting is off.
+                 *
+                 * Only the switch is asked here. Whether a FILE exists is the
+                 * route's question, exactly as with downloads — asking it on a
+                 * page render would cost an API call on any video that has not
+                 * been synced, for a control most people will not press, and
+                 * the route answers with the specific reason if there is none.
+                 *
+                 * Not offered for a premiere: there is no embed URL for one on
+                 * purpose, and an audio player would be the hole in that.
+                 */
+                'listenUrl' => (!$premiering || $canManage)
+                    && $this->config()->settingBool('audio_mode_enabled', false)
+                        ? '/listen/' . rawurlencode($video->slug) . '.mp4'
+                        : null,
                 'pageMeta'     => $meta = $this->pageMeta($video),
+                /*
+                 * Artwork for the phone's lock screen while audio is playing.
+                 *
+                 * Reused from the preview card rather than minted again, which
+                 * means it inherits that card's rule: nothing is offered for a
+                 * video whose artwork is members-only. That is stricter than it
+                 * strictly needs to be — the card is built as an anonymous
+                 * unfurler, so a signed-in member gets no lock-screen image on
+                 * a site that withholds artwork by default — and it errs the
+                 * right way. No picture is a lock screen with the title on it;
+                 * the wrong rule here would be a withheld frame handed to the
+                 * operating system, which caches it.
+                 */
+                'lockScreenArtwork' => $meta->imageUrl ?? '',
                 // The same trail the JSON-LD carries, so what a reader sees and
                 // what a crawler is told cannot disagree.
                 'breadcrumbs'  => $meta->breadcrumbs,

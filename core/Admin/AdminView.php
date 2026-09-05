@@ -4608,6 +4608,7 @@ REG;
 
         $membersDefault = $checked('members_thumbnail_default');
         $downloadsEnabled = $checked('downloads_enabled');
+        $audioMode = $checked('audio_mode_enabled');
         $allowIndexing = $checked('allow_indexing');
         $podcastExplicit = $checked('podcast_explicit');
         $subscriptionsEnabled = $checked('subscriptions_enabled');
@@ -4649,6 +4650,29 @@ REG;
              but a file on somebody's phone is there for good. Turning this on is not enough on its own;
              a person also needs the "download content" permission, which nobody but administrators
              holds until you grant it.</p>
+
+          <fieldset>
+            <legend>Listening</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="audio_mode_enabled" value="1"{$audioMode}>
+              Offer an audio player alongside the video
+            </label>
+            <p class="muted small">Adds a "Listen" control to every video page: audio only, with a
+               speed control, a sleep timer, and proper track details on a phone's lock screen so it
+               keeps playing with the screen off. None of that is possible in the video player itself,
+               which runs on your video service's domain and cannot be reached from here.</p>
+
+            <!-- Said plainly rather than glossed. Somebody turning this on is
+                 widening access to a file, and they should be told so here
+                 rather than discover it. -->
+            <p class="muted small"><strong>What turning this on means.</strong> The audio player needs
+               a real audio file, so anybody who can watch a video can also fetch that file — on a
+               phone the player itself is one long press away from saving it. For public videos this
+               changes nothing: the same file is already published in your podcast feed. What it
+               widens is members-only content, to the people who are already allowed to watch it. If
+               that is not a trade you want, leave this off; the "download content" permission is the
+               narrower tool, and it is unaffected either way.</p>
+          </fieldset>
 
           <fieldset>
             <legend>Search</legend>

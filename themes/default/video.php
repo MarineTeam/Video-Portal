@@ -93,6 +93,89 @@ echo $template->partial('breadcrumbs', get_defined_vars());
   do_action('player_overlay', $video);
   ?>
 </div>
+
+<?php
+/*
+ * Audio mode.
+ *
+ * The video above plays in a cross-origin iframe, so this site cannot change
+ * its speed, cannot put anything on a lock screen, and cannot keep it playing
+ * with the screen off. This is the same sermon as an ordinary <audio> element
+ * on this origin, where all three are possible.
+ *
+ * Rendered as a <details> so it costs nothing until somebody asks for it —
+ * `preload="none"` means no bytes are fetched, and the panel works with
+ * scripting off: the audio plays, and only the speed control and sleep timer
+ * are missing, which is the right thing to lose.
+ */
+?>
+<?php
+/*
+ * A top-level view variable, like $downloadUrl beside it — NOT a key on
+ * $video. The first version read $video['listenUrl'], which is always empty,
+ * so the route worked, the setting worked, and the page never used either. A
+ * smoke check that opened the page caught it; nothing else could have.
+ */
+$listenUrl ??= null;
+?>
+<?php if ($listenUrl !== null && $listenUrl !== ''): ?>
+  <details class="listen">
+    <summary>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+        <path d="M4 14v-2a8 8 0 0 1 16 0v2"/>
+        <rect x="2.5" y="13" width="4" height="7" rx="1.5"/>
+        <rect x="17.5" y="13" width="4" height="7" rx="1.5"/>
+      </svg>
+      Listen
+    </summary>
+
+    <div class="listen-body">
+      <audio id="portal-audio" controls preload="none"
+             src="<?= e($listenUrl) ?>"></audio>
+
+      <?php
+      /*
+       * Both controls start hidden and are revealed by the script. A speed
+       * menu that does nothing is worse than no speed menu, and this is the
+       * one part of the panel that genuinely cannot work without JavaScript.
+       */
+      ?>
+      <div class="listen-controls" id="portal-audio-controls" hidden>
+        <label>
+          Speed
+          <select id="portal-audio-speed">
+            <option value="0.75">0.75&times;</option>
+            <option value="1" selected>1&times;</option>
+            <option value="1.25">1.25&times;</option>
+            <option value="1.5">1.5&times;</option>
+            <option value="1.75">1.75&times;</option>
+            <option value="2">2&times;</option>
+          </select>
+        </label>
+
+        <label>
+          Sleep in
+          <select id="portal-audio-sleep">
+            <option value="0" selected>&mdash;</option>
+            <option value="300">5 min</option>
+            <option value="900">15 min</option>
+            <option value="1800">30 min</option>
+            <option value="3600">1 hour</option>
+            <option value="-1">End of this</option>
+          </select>
+        </label>
+
+        <span class="muted small" id="portal-audio-sleep-state" hidden></span>
+      </div>
+
+      <p class="muted small">
+        Audio only. Where you get to is remembered in the same place as the video, so you can start
+        listening here and finish watching, or the other way round.
+      </p>
+    </div>
+  </details>
+<?php endif ?>
 <?php endif ?>
 
 <h1 class="page-title" style="margin-top:1.5rem"><?= e($video['title']) ?></h1>
@@ -561,6 +644,21 @@ $downloadSlug ??= '';
      data-video-id="<?= (int) $video['id'] ?>"
      data-resume-at="<?= (int) ($video['resumeAt'] ?? 0) ?>"
      data-start-at="<?= (int) ($video['startAt'] ?? 0) ?>"
+     <?php
+     /*
+      * For the lock screen. The Media Session API wants a title, an artist and
+      * artwork, and without them a phone shows the page URL — which tells
+      * somebody in a car nothing about which sermon is playing.
+      *
+      * The artwork is whatever the preview card resolved to, so artwork that
+      * was withheld from the page is withheld from the lock screen too rather
+      * than being minted again here — an operating system caches what it is
+      * handed, and a withheld frame given to one is not recallable.
+      */
+     ?>
+     data-title="<?= e($video['title']) ?>"
+     data-artist="<?= e((string) ($video['speaker'] ?? '')) ?>"
+     data-artwork="<?= e((string) ($lockScreenArtwork ?? '')) ?>"
      hidden></div>
 
 <script src="<?= e(isset($themeAsset) ? $themeAsset('player.js') : ($assetsUrl ?? '/theme-asset/default') . '/player.js') ?>" defer></script>

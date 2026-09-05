@@ -4038,6 +4038,11 @@ final class AdminController extends Controller
                 'timezone'  => $this->config()->setting('timezone', 'UTC'),
                 'members_thumbnail_default' => $this->config()->setting('members_thumbnail_default', '0'),
                 'downloads_enabled'   => $this->config()->setting('downloads_enabled', '0'),
+                // Default '0'. It makes the audio file reachable by anybody who
+                // can watch, which is a decision the site owner makes knowing
+                // what it means — never one that happens because a route
+                // shipped.
+                'audio_mode_enabled'  => $this->config()->setting('audio_mode_enabled', '0'),
                 'allow_indexing'      => $this->config()->setting('allow_indexing', '0'),
                 'podcast_author'      => $this->config()->setting('podcast_author', ''),
                 'podcast_owner_name'  => $this->config()->setting('podcast_owner_name', ''),
@@ -4124,6 +4129,7 @@ final class AdminController extends Controller
 
             'members_thumbnail_default' => $checkbox('members_thumbnail_default', false),
             'downloads_enabled'         => $checkbox('downloads_enabled', false),
+            'audio_mode_enabled'        => $checkbox('audio_mode_enabled', false),
             'allow_indexing'            => $checkbox('allow_indexing', false),
             'podcast_explicit'          => $checkbox('podcast_explicit', false),
             'subscriptions_enabled'     => $checkbox('subscriptions_enabled', true),
