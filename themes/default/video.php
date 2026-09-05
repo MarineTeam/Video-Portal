@@ -22,8 +22,17 @@ $backUrl ??= '/';
 $related ??= [];
 
 echo $template->partial('header', get_defined_vars());
+echo $template->partial('breadcrumbs', get_defined_vars());
 ?>
 
+<?php
+/*
+ * Back, and the trail above it, answer different questions: Back is where you
+ * came from, the trail is where this video LIVES. Somebody who arrived from a
+ * search or a shared link has no useful "back", and the trail is the only thing
+ * that tells them the sermon is part three of a series.
+ */
+?>
 <p style="margin:0 0 1.25rem">
   <a href="<?= e($backUrl) ?>" class="card-meta">&larr; Back</a>
 </p>

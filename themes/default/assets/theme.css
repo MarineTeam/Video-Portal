@@ -99,6 +99,35 @@ main { padding: 2.5rem 0 4rem; }
 }
 .page-subtitle { color: var(--text-muted); margin: 0 0 2rem; }
 
+/*
+ * Breadcrumbs. The separator is a CSS pseudo-element rather than a character in
+ * the markup, so a screen reader announces the list and not a slash between
+ * every item, and copying the trail copies the names.
+ *
+ * It wraps rather than scrolling: a trail is short, and a horizontally
+ * scrolling strip on a phone hides the beginning, which is the part that gets
+ * you back to the top of the library.
+ */
+.breadcrumbs { margin: 0 0 1rem; font-size: 0.8125rem; }
+.breadcrumbs ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+}
+.breadcrumbs li { display: flex; align-items: center; gap: 0.5rem; color: var(--text-muted); }
+.breadcrumbs li + li::before {
+  content: "/";
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.breadcrumbs a { color: var(--text-muted); text-decoration: none; }
+.breadcrumbs a:hover { color: var(--text); text-decoration: underline; }
+.breadcrumbs [aria-current="page"] { color: var(--text); }
+
 .section-title {
   font-size: 1.0625rem;
   font-weight: 600;

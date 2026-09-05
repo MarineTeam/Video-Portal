@@ -6358,6 +6358,7 @@ check(
  * per-row version.
  */
 $searchBefore = $queryCount(getWithJar($baseUrl . '/search?q=scale', $jar)['body']);
+$watchBefore = $queryCount(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body']);
 
 $bulkStart = (int) $db->value('SELECT COALESCE(MAX(id), 0) FROM {videos}');
 $now = date('Y-m-d H:i:s');
@@ -6401,28 +6402,53 @@ check(
     )
 );
 
+$watchAfter = $queryCount(getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body']);
+
 echo sprintf(
-    "    (homepage %s -> %s, search %s -> %s, for 2 -> 32 videos)\n",
+    "    (homepage %s -> %s, search %s -> %s, watch %s -> %s, for 2 -> 32 videos)\n",
     var_export($homeBefore, true),
     var_export($homeAfter, true),
     var_export($searchBefore, true),
-    var_export($searchAfter, true)
+    var_export($searchAfter, true),
+    var_export($watchBefore, true),
+    var_export($watchAfter, true)
 );
 
 $db->execute('DELETE FROM {videos} WHERE id > ?', [$bulkStart]);
 
-$qmWatch = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
-$watchQueries = $queryCount($qmWatch['body']);
-
 /*
- * A watch page is a fixed number of panels rather than a list, so a ceiling is
- * the right shape here — but it is deliberately not much above the real number,
- * because the failure this catches is a new panel that queries per row.
+ * The watch page, measured the same way as the other two.
+ *
+ * It used to be compared against a fixed ceiling of 60, with a comment saying
+ * the failure it catches is "a new panel that queries per row" — which is
+ * exactly what a ceiling cannot see, and this file already learned that once:
+ * the search check was rewritten for the same reason after a reintroduced
+ * per-card query grew the count from 23 to 34 under a ceiling of 39.
+ *
+ * It then failed the other way round. A breadcrumb trail costs ONE query
+ * whatever the library holds, and it tipped a page that had quietly grown to
+ * the edge of the ceiling — so a genuinely constant-cost feature was reported
+ * as a budget failure while a per-row one would have had room to spare. A
+ * ceiling measures the wrong thing in both directions.
+ *
+ * The page does carry a "More like this" section, so it reads the library and
+ * this is not a formality.
  */
 check(
-    'A watch page stays within its budget',
-    $watchQueries !== null && $watchQueries < 60,
-    'watch page used ' . var_export($watchQueries, true) . ' queries'
+    'A watch page does not grow with the library either',
+    $watchBefore !== null && $watchAfter !== null && ($watchAfter - $watchBefore) <= 5,
+    sprintf(
+        '%s queries with 2 videos, %s with 32 — a panel that costs a query per row',
+        var_export($watchBefore, true),
+        var_export($watchAfter, true)
+    )
+);
+
+/* And a backstop, loose on purpose: the check above is the real one. */
+check(
+    'and stays under a sane ceiling',
+    $watchAfter !== null && $watchAfter < 80,
+    'watch page used ' . var_export($watchAfter, true) . ' queries'
 );
 
 /*
@@ -10647,6 +10673,82 @@ check(
         && str_contains($catPreview['body'], '"position":1'),
     'breadcrumbs were listed as a gap for a reason'
 );
+
+/* ------------------------------------------------ the visible trail
+ *
+ * The trail existed and went only into JSON-LD, so the site described its own
+ * shape to crawlers and never to readers. These check the page a person sees,
+ * and then the rule: a trail must not name a section they may not open.
+ */
+$crumbParent = $db->insert('categories', [
+    'slug' => 'crumb-parent', 'name' => 'Crumb Parent', 'path' => '/', 'depth' => 0,
+    'position' => 920, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->execute('UPDATE {categories} SET path = ? WHERE id = ?', ['/' . $crumbParent . '/', $crumbParent]);
+
+$crumbChild = $db->insert('categories', [
+    'slug' => 'crumb-child', 'name' => 'Crumb Child', 'parent_id' => $crumbParent,
+    'path' => '/' . $crumbParent . '/', 'depth' => 1, 'position' => 10,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->execute(
+    'UPDATE {categories} SET path = ? WHERE id = ?',
+    ['/' . $crumbParent . '/' . $crumbChild . '/', $crumbChild]
+);
+
+$childPage = get($baseUrl . '/category/crumb-child');
+check(
+    'A subcategory page shows where it sits',
+    str_contains($childPage['body'], 'class="breadcrumbs"')
+        && str_contains($childPage['body'], 'Crumb Parent'),
+    'the trail is still invisible, which is the state this fixes'
+);
+
+check(
+    'and the parent crumb is a link back to it',
+    str_contains($childPage['body'], 'href="/category/crumb-parent"'),
+    'a trail whose crumbs do not go anywhere is a caption'
+);
+
+check(
+    'while the page you are on is not a link',
+    str_contains($childPage['body'], 'aria-current="page"'),
+    'a link to here from here is a control that appears to do something'
+);
+
+/*
+ * THE RULE. A public subcategory inside a members-only parent resolves for
+ * anybody — so a naive trail puts the restricted section's NAME on a
+ * stranger's page. The title is a leak too.
+ */
+$db->execute('UPDATE {categories} SET member_only = 1 WHERE id = ?', [$crumbParent]);
+$strangerPage = get($baseUrl . '/category/crumb-child');
+
+check(
+    'A members-only section is not named in a stranger\'s trail',
+    $strangerPage['status'] === 200 && !str_contains($strangerPage['body'], 'Crumb Parent'),
+    'A RESTRICTED SECTION NAME WAS PRINTED TO A SIGNED-OUT VISITOR'
+);
+
+check(
+    'and its name is not in the machine-readable copy either',
+    !str_contains($strangerPage['body'], 'Crumb Parent'),
+    'the trail was filtered for the reader and not for the crawler'
+);
+
+/*
+ * The other direction, which is what makes the check above about the rule
+ * rather than about a trail that drops ancestors generally.
+ */
+$memberPage = getWithJar($baseUrl . '/category/crumb-child', $jar);
+check(
+    'while somebody who may see it gets the whole trail',
+    str_contains($memberPage['body'], 'Crumb Parent'),
+    'the filter hides the section from everybody, so nothing above is proved'
+);
+
+$db->execute('DELETE FROM {categories} WHERE id = ?', [$crumbChild]);
+$db->execute('DELETE FROM {categories} WHERE id = ?', [$crumbParent]);
 
 $videoPreview = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
 check(

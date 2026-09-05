@@ -175,14 +175,25 @@ final class CategoryRepository
     public function ancestors(int $categoryId): array
     {
         $category = $this->find($categoryId);
-        if ($category === null) {
-            return [];
-        }
 
-        $ids = array_values(array_filter(
-            array_map('intval', explode('/', trim($category->path, '/'))),
-            static fn (int $id): bool => $id > 0 && $id !== $categoryId
-        ));
+        return $category === null ? [] : $this->ancestorsOf($category);
+    }
+
+    /**
+     * The same, for a caller that already holds the category.
+     *
+     * The path is on the model, so the ancestor IDS cost nothing to work out —
+     * only fetching the rows is a query. Going through ancestors() re-reads a
+     * row the caller is holding, which is one wasted query on every page with a
+     * breadcrumb trail. That is not hypothetical: adding the trail put the
+     * watch page over the query budget the smoke suite enforces, and this is
+     * half of what brought it back.
+     *
+     * @return list<Category>
+     */
+    public function ancestorsOf(Category $category): array
+    {
+        $ids = $category->ancestorIds();
 
         if ($ids === []) {
             return [];

@@ -27,6 +27,9 @@ final class WatchController extends Controller
     /** Playback URLs last three hours — long enough for any single sitting. */
     private const EMBED_TTL = 10800;
 
+    /** @var array<int, \Portal\Content\Series|null> */
+    private array $seriesCache = [];
+
     /** @param array<string, string> $params */
     public function show(Request $request, array $params): Response
     {
@@ -213,7 +216,10 @@ final class WatchController extends Controller
                  * two come to disagree the first time the URL changes shape.
                  */
                 'downloadSlug' => $video->slug,
-                'pageMeta'     => $this->pageMeta($video),
+                'pageMeta'     => $meta = $this->pageMeta($video),
+                // The same trail the JSON-LD carries, so what a reader sees and
+                // what a crawler is told cannot disagree.
+                'breadcrumbs'  => $meta->breadcrumbs,
                 'related' => $this->related($video),
                 'backUrl' => '/',
             ]
@@ -282,11 +288,100 @@ final class WatchController extends Controller
             $this->config()->url('/watch/' . $video->slug),
             $video->publishedAt,
             $video->duration,
-            [
-                ['name' => 'Library', 'url' => $this->config()->url('/')],
-                ['name' => $video->title, 'url' => $this->config()->url('/watch/' . $video->slug)],
-            ]
+            $this->crumbs()->forVideo($video, $this->seriesOf($video), $this->categoryOf($video))
         );
+    }
+
+    /**
+     * The one thing that builds a trail here, as in LibraryController.
+     *
+     * Handed this controller's own visibility answer rather than writing one:
+     * a members-only section must not be named in the trail of a video
+     * somebody is allowed to watch, and there must not be a second opinion
+     * about which sections those are. See Breadcrumbs.
+     */
+    private function crumbs(): \Portal\Content\Breadcrumbs
+    {
+        $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+        $user = $this->user();
+
+        return new \Portal\Content\Breadcrumbs(
+            $this->container->get(\Portal\Content\CategoryRepository::class),
+            fn (string $path): string => $this->config()->url($path),
+            static function (\Portal\Content\Category $category) use ($canManage, $user): bool {
+                if ($canManage) {
+                    return true;
+                }
+                if (!$category->isPublished || $category->hidden) {
+                    return false;
+                }
+                if (!$category->memberOnly) {
+                    return true;
+                }
+
+                return $user !== null && ($user->isAdmin() || $user->authorized);
+            },
+        );
+    }
+
+    /**
+     * The series this video is in, read once per request.
+     *
+     * Memoised because two things want it — the lock and the breadcrumb trail
+     * — and the docblock on lockState() has claimed since it was written that
+     * this is "one field read from a series row already needed for the
+     * breadcrumb". It was not, until now: adding the trail put the page over
+     * its query budget and the smoke suite said so.
+     */
+    private function seriesOf(Video $video): ?\Portal\Content\Series
+    {
+        if ($video->seriesId === null) {
+            return null;
+        }
+
+        if (array_key_exists($video->seriesId, $this->seriesCache)) {
+            return $this->seriesCache[$video->seriesId];
+        }
+
+        try {
+            $series = $this->container->get(\Portal\Content\SeriesRepository::class)->find($video->seriesId);
+        } catch (Throwable) {
+            $series = null;
+        }
+
+        return $this->seriesCache[$video->seriesId] = $series;
+    }
+
+    /**
+     * One category for the trail, when a video may be in several.
+     *
+     * The schema has no primary category, so SOME answer has to be chosen and
+     * every choice is arbitrary. Ordering by `path` makes it the shallowest and
+     * leftmost — the one nearest the top of the tree, which is the one a reader
+     * would call "where this lives" — and, more importantly, makes it stable:
+     * picking whichever row the join table returned first would change the
+     * trail when somebody edited an unrelated video.
+     *
+     * One query rather than a list of ids followed by a lookup. The watch page
+     * is the heaviest in the product and has a query budget with a smoke check
+     * on it, which this feature went over before it was written this way.
+     */
+    private function categoryOf(Video $video): ?\Portal\Content\Category
+    {
+        try {
+            $row = $this->db()->first(
+                'SELECT c.* FROM {video_categories} vc
+                   JOIN {categories} c ON c.id = vc.category_id
+                  WHERE vc.video_id = ? AND c.deleted_at IS NULL
+                  ORDER BY c.path, c.id
+                  LIMIT 1',
+                [$video->id]
+            );
+
+            return $row === null ? null : \Portal\Content\Category::fromRow($row);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
@@ -473,7 +568,9 @@ final class WatchController extends Controller
         }
 
         try {
-            $series = $this->container->get(\Portal\Content\SeriesRepository::class)->find($video->seriesId);
+            // Through the memo, so the trail and the lock read this row once
+            // between them rather than once each.
+            $series = $this->seriesOf($video);
 
             if ($series === null || !$series->sequential) {
                 return null;
