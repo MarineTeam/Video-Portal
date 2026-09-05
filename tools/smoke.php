@@ -11220,6 +11220,103 @@ $rotaAsk = (int) $db->insert('rota_assignments', [
     'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
 ]);
 
+/* ------------------------------------------- building it, as the organiser
+ *
+ * The admin side. The check that carries the weight is the blockout warning
+ * appearing in the PICKER — wouldAsk() was written with a comment saying a
+ * warning shown after the ask has gone out is no use to anybody, and until this
+ * screen existed it had no caller, which would have made that comment a
+ * description of something nobody could do.
+ */
+$rotaAdmin = getWithJar($baseUrl . '/admin/rota', $jar);
+
+check('The rota screen renders', $rotaAdmin['status'] === 200, "got {$rotaAdmin['status']}");
+
+check(
+    'and it is in the admin navigation',
+    str_contains($rotaAdmin['body'], 'href="/admin/rota"'),
+    'a screen reachable only by typing its address'
+);
+
+check(
+    'It says a rota is a list of asks',
+    str_contains($rotaAdmin['body'], 'nobody here can accept on their behalf'),
+    'a builder who thinks they can mark somebody down will record a fact nobody checked'
+);
+
+$rotaServicePage = getWithJar($baseUrl . '/admin/rota/services/' . $rotaService . '?team=' . $rotaTeam, $jar);
+
+check(
+    'A service screen lists who has been asked',
+    $rotaServicePage['status'] === 200 && str_contains($rotaServicePage['body'], 'Sunday Morning'),
+    "got {$rotaServicePage['status']}"
+);
+
+/*
+ * THE WARNING, BEFORE THE BUTTON. The admin is on the welcome team and away on
+ * the day of the service, so the picker must say so beside their name — with
+ * an Ask button still there, because a blockout warns and does not refuse.
+ */
+$rotaAway = (int) $db->insert('users', [
+    'email' => 'rota-away@smoke.test', 'name' => 'Away Person', 'authorized' => 1,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+/*
+ * A person who is NOT already on the service. The first version of this used
+ * the administrator, who is — so the refusal correctly short-circuited the
+ * blockout and two checks failed against right code. Both rules are asserted
+ * separately below for that reason.
+ */
+$db->execute(
+    'INSERT INTO {rota_team_members} (team_id, user_id, created_at) VALUES (?, ?, NOW()), (?, ?, NOW())',
+    [$rotaTeam, $rotaAway, $rotaTeam, $rotaMe]
+);
+$db->insert('rota_blockouts', [
+    'user_id' => $rotaAway,
+    'starts_on' => date('Y-m-d', time() + 604800),
+    'ends_on' => date('Y-m-d', time() + 604800),
+    'reason' => 'At a wedding',
+    'created_at' => date('Y-m-d H:i:s'),
+]);
+
+$rotaPicker = getWithJar($baseUrl . '/admin/rota/services/' . $rotaService . '?team=' . $rotaTeam, $jar);
+
+check(
+    'The picker warns about somebody who is away, before anybody is asked',
+    str_contains($rotaPicker['body'], 'At a wedding')
+        && str_contains($rotaPicker['body'], 'cannot serve that day'),
+    'the warning would arrive after the ask, which is no warning at all'
+);
+
+check(
+    'and still offers to ask them, because it is a note and not a rule',
+    str_contains($rotaPicker['body'], 'value="ask"'),
+    'A BLOCKOUT REFUSED AN ASK — the builder may know something the calendar does not'
+);
+
+check(
+    'and the screen says so in words',
+    str_contains($rotaPicker['body'], 'a warning, not a'),
+    'a greyed name with no explanation reads as a bug'
+);
+
+/*
+ * The other rule, on the same screen: somebody already on the service is shown
+ * with the reason rather than removed from the list. A name that silently
+ * disappears from a picker reads as a bug, where "already on this service"
+ * answers the question being asked.
+ */
+check(
+    'and somebody already on the service is shown, with why',
+    str_contains($rotaPicker['body'], 'already on this service'),
+    'the name would vanish and the builder would wonder where it went'
+);
+
+$db->execute('DELETE FROM {rota_blockouts} WHERE user_id = ?', [$rotaAway]);
+$db->execute('DELETE FROM {rota_team_members} WHERE team_id = ?', [$rotaTeam]);
+$db->execute('DELETE FROM {users} WHERE id = ?', [$rotaAway]);
+
 $rotaPage = getWithJar($baseUrl . '/rota', $jar);
 
 check('The rota page renders', $rotaPage['status'] === 200, "got {$rotaPage['status']}");

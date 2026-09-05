@@ -6,6 +6,7 @@ namespace Portal;
 
 use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
+use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
@@ -316,6 +317,19 @@ final class Routes
         // handler; admin.area only decides who gets through the front door, so
         // a category editor is not met with a 403 on /admin itself.
         $router->get('/admin', [AdminController::class, 'dashboard'], ['admin.area']);
+        /*
+         * Building the rota. Registered before /admin/videos only for
+         * readability; the paths do not overlap.
+         *
+         * The service and team screens are GET-only and every write goes to
+         * /admin/rota, so there is one place the capability is checked for a
+         * write and one CSRF check covering all of them.
+         */
+        $router->get('/admin/rota', [AdminRotaController::class, 'index'], ['admin.area']);
+        $router->post('/admin/rota', [AdminRotaController::class, 'update'], ['admin.area']);
+        $router->get('/admin/rota/services/{id:\d+}', [AdminRotaController::class, 'service'], ['admin.area']);
+        $router->get('/admin/rota/teams/{id:\d+}', [AdminRotaController::class, 'team'], ['admin.area']);
+
         $router->get('/admin/videos', [AdminController::class, 'videos'], ['admin.area']);
         $router->post('/admin/videos', [AdminController::class, 'updateVideo'], ['admin.area']);
         // Registered before {id} so "trash" is not swallowed as a video id.

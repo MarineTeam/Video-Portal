@@ -642,6 +642,24 @@ abstract class Controller
                     ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => Capability::MANAGE_SETTINGS,   'screens' => ['announcements']],
                 ],
             ],
+            /*
+             * A section of its own rather than a link under Content, because a
+             * rota is not content: it is about people and a week, and the
+             * person who builds it is often not the person who edits videos.
+             *
+             * `siteWide` on every child — manage_rota is site-only, since
+             * grants.scope_type is a category, a series or a video and a
+             * service is none of those. Without the flag the navigation would
+             * ask canAnywhere and offer the link to somebody whose only grant
+             * is on a category, landing them on a 403.
+             */
+            [
+                'label' => 'Rota', 'path' => '/admin/rota', 'key' => 'rota', 'icon' => 'calendar',
+                'cap' => Capability::MANAGE_ROTA, 'screens' => [],
+                'children' => [
+                    ['label' => 'Services & teams', 'path' => '/admin/rota', 'key' => 'rota', 'cap' => Capability::MANAGE_ROTA, 'screens' => ['rota', 'rota-service', 'rota-team'], 'siteWide' => true],
+                ],
+            ],
             [
                 'label' => 'Sharing', 'path' => '/admin/shares', 'key' => 'sharing', 'icon' => 'link',
                 'cap' => Capability::MANAGE_SHARES, 'screens' => [],
