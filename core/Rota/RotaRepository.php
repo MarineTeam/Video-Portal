@@ -7,6 +7,7 @@ namespace Portal\Rota;
 use Portal\Db;
 use Portal\Http\HttpException;
 use Portal\Support\Str;
+use Throwable;
 
 /**
  * Teams, services, and the asks between them.
@@ -282,6 +283,198 @@ final class RotaRepository
               WHERE id = ? AND user_id = ?',
             [$state, mb_substr(trim($reason), 0, 300) ?: null, $assignmentId, $userId]
         ) > 0;
+    }
+
+    // ------------------------------------------------------------- cover
+
+    /**
+     * Ask the team to take this slot.
+     *
+     * Only the person holding it, and only once they have accepted it: an ask
+     * nobody has answered is declined rather than handed on, because "I cannot
+     * do it" and "somebody else should do it" are different messages and the
+     * builder needs the first one.
+     *
+     * Keyed to the person in the WHERE clause, like answering.
+     */
+    public function requestCover(int $assignmentId, int $userId, string $note = ''): bool
+    {
+        return $this->db->execute(
+            'UPDATE {rota_assignments}
+                SET cover_requested_at = NOW(), cover_note = ?, updated_at = NOW()
+              WHERE id = ? AND user_id = ? AND state = ?',
+            [mb_substr(trim($note), 0, 300) ?: null, $assignmentId, $userId, Assignment::ACCEPTED]
+        ) > 0;
+    }
+
+    /** Change their mind: take the request back while nobody has taken it. */
+    public function cancelCoverRequest(int $assignmentId, int $userId): bool
+    {
+        return $this->db->execute(
+            'UPDATE {rota_assignments}
+                SET cover_requested_at = NULL, cover_note = NULL, updated_at = NOW()
+              WHERE id = ? AND user_id = ? AND cover_requested_at IS NOT NULL',
+            [$assignmentId, $userId]
+        ) > 0;
+    }
+
+    /**
+     * THE CONDITIONAL WRITE. Take a slot somebody has asked to be covered.
+     *
+     * ONE statement, and the WHERE clause is the whole safety of it:
+     *
+     *   cover_requested_at IS NOT NULL  — the slot is still open
+     *   user_id = :asker                — still held by the person who asked
+     *
+     * Two people pressing "I'll take it" in the same second both run this. The
+     * first matches one row and wins. The second matches NOTHING, because by
+     * then the slot is neither open nor held by the asker, and gets an honest
+     * refusal — where a read-then-write would have the second silently
+     * overwrite the first and two people would each believe they were serving.
+     *
+     * It is not wrapped in a transaction and does not need to be. A single
+     * UPDATE takes its own row lock; adding a transaction around one statement
+     * buys nothing and invites somebody to add a read to it later, which is
+     * exactly the shape this avoids.
+     *
+     * THE OLD NOTE DOES NOT FOLLOW THE SLOT. cover_note is cleared here: it was
+     * the previous person's aside to the organiser, and carrying it onto the
+     * new holder's row would attribute one person's words to another.
+     *
+     * @return string one of TAKEN, GONE, ALREADY_ON, NOT_OPEN
+     */
+    public const TAKEN = 'taken';
+    public const GONE = 'gone';
+    public const ALREADY_ON = 'already_on';
+    public const NOT_OPEN = 'not_open';
+
+    public function takeCover(int $assignmentId, int $takerId): string
+    {
+        $row = $this->db->first(
+            'SELECT id, service_id, user_id, cover_requested_at
+               FROM {rota_assignments} WHERE id = ?',
+            [$assignmentId]
+        );
+
+        if ($row === null) {
+            return self::NOT_OPEN;
+        }
+
+        $asker = (int) $row['user_id'];
+
+        /*
+         * NOTE WHAT IS NOT HERE: a check that the slot is open.
+         *
+         * The first version had one, and the concurrency test found it. Six
+         * processes raced, exactly one won — and four of the five losers came
+         * back "not open" rather than "gone", because they read the row AFTER
+         * the winner had cleared the flag and returned before ever running the
+         * conditional statement.
+         *
+         * The answers were all honest, so the feature was correct. The TEST was
+         * not testing anything: the conditional WHERE — the only thing standing
+         * between this and a lost update — was reached by one process out of
+         * six, and which one depended entirely on timing. A mutation removing
+         * it would have been caught or missed at random.
+         *
+         * So the write goes first and every caller runs it. The reads below
+         * exist only to explain a refusal, which costs nothing on the path that
+         * succeeds.
+         */
+
+        if ($asker === $takerId) {
+            // Taking your own slot back is cancelling the request, and saying
+            // so is kinder than a refusal that reads as a bug.
+            return $this->cancelCoverRequest($assignmentId, $takerId) ? self::TAKEN : self::NOT_OPEN;
+        }
+
+        /*
+         * The same rule as asking: somebody is on a service once. Checked here
+         * so the answer is in words — but the UNIQUE key is what actually makes
+         * it safe, because between this check and the UPDATE the taker could be
+         * asked onto the service by somebody else. That case is caught below
+         * and reported as the same thing rather than as a database error.
+         */
+        if ($this->alreadyOnService((int) $row['service_id'], $takerId)) {
+            return self::ALREADY_ON;
+        }
+
+        try {
+            $changed = $this->db->execute(
+                'UPDATE {rota_assignments}
+                    SET user_id = ?,
+                        covering_for_user_id = ?,
+                        state = ?,
+                        reason = NULL,
+                        answered_at = NOW(),
+                        cover_requested_at = NULL,
+                        cover_note = NULL,
+                        updated_at = NOW()
+                  WHERE id = ? AND cover_requested_at IS NOT NULL AND user_id = ?',
+                [$takerId, $asker, Assignment::ACCEPTED, $assignmentId, $asker]
+            );
+        } catch (Throwable $e) {
+            /*
+             * The unique key fired: the taker was put on this service between
+             * the check above and this write. Reported as the same refusal a
+             * person would have got a moment earlier, rather than as
+             * "something went wrong" — the rule for this whole section.
+             */
+            if (str_contains($e->getMessage(), 'uniq_service_person')) {
+                return self::ALREADY_ON;
+            }
+
+            throw $e;
+        }
+
+        if ($changed > 0) {
+            return self::TAKEN;
+        }
+
+        /*
+         * Zero rows is not an error — it is somebody else having been quicker,
+         * which is a normal outcome of two people being willing to help. Which
+         * of the two honest refusals it is takes one more read, and only ever
+         * on the path that already failed.
+         *
+         * Still held by the person who asked means nothing was open: either no
+         * cover was ever requested, or they withdrew it. Held by somebody else
+         * means it went.
+         */
+        $now = $this->db->first(
+            'SELECT user_id FROM {rota_assignments} WHERE id = ?',
+            [$assignmentId]
+        );
+
+        return $now !== null && (int) $now['user_id'] === $asker ? self::NOT_OPEN : self::GONE;
+    }
+
+    /**
+     * Slots going spare, for the people who could take them.
+     *
+     * Only on published services still ahead, and only where cover was asked
+     * for. A team seeing a slot on a draft service would be offering to cover
+     * something nobody has been asked to do yet.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function coverWanted(int $limit = 100): array
+    {
+        return $this->db->all(
+            'SELECT a.*, s.title AS service_title, s.starts_at,
+                    COALESCE(NULLIF(u.name, ""), u.email) AS person_name,
+                    t.name AS team_name, p.name AS position_name
+               FROM {rota_assignments} a
+               INNER JOIN {rota_services} s ON s.id = a.service_id
+               INNER JOIN {users} u ON u.id = a.user_id
+               INNER JOIN {rota_teams} t ON t.id = a.team_id
+               LEFT JOIN {rota_positions} p ON p.id = a.position_id
+              WHERE a.cover_requested_at IS NOT NULL
+                AND s.is_published = 1
+                AND s.starts_at >= NOW()
+              ORDER BY s.starts_at ASC
+              LIMIT ' . max(1, min(500, $limit))
+        );
     }
 
     /** Withdraw an ask entirely. The organiser's action, not the person's. */
