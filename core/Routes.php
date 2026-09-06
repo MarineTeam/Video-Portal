@@ -6,6 +6,7 @@ namespace Portal;
 
 use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
+use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
@@ -359,6 +360,21 @@ final class Routes
          * /admin/rota, so there is one place the capability is checked for a
          * write and one CSRF check covering all of them.
          */
+        /*
+         * Events, as the organiser sees them.
+         *
+         * The .csv route is registered BEFORE /admin/events/{id}, or "12.csv"
+         * would be swallowed as an id and cast to 12 — the same collision that
+         * once sent /comments/report to /comments/{video}. The id pattern
+         * constrains it to digits too, so the ordering is belt and braces
+         * rather than the only thing standing between them.
+         */
+        $router->get('/admin/events', [AdminEventController::class, 'index'], ['admin.area']);
+        $router->post('/admin/events', [AdminEventController::class, 'update'], ['admin.area']);
+        $router->get('/admin/events/series/{id:\d+}', [AdminEventController::class, 'series'], ['admin.area']);
+        $router->get('/admin/events/{id:\d+}.csv', [AdminEventController::class, 'export'], ['admin.area']);
+        $router->get('/admin/events/{id:\d+}', [AdminEventController::class, 'show'], ['admin.area']);
+
         $router->get('/admin/rota', [AdminRotaController::class, 'index'], ['admin.area']);
         $router->post('/admin/rota', [AdminRotaController::class, 'update'], ['admin.area']);
         $router->get('/admin/rota/services/{id:\d+}', [AdminRotaController::class, 'service'], ['admin.area']);

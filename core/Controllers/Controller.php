@@ -694,10 +694,11 @@ abstract class Controller
              * is on a category, landing them on a 403.
              */
             [
-                'label' => 'Rota', 'path' => '/admin/rota', 'key' => 'rota', 'icon' => 'calendar',
-                'cap' => Capability::MANAGE_ROTA, 'screens' => [],
+                'label' => 'Church life', 'path' => '/admin/rota', 'key' => 'rota', 'icon' => 'calendar',
+                'cap' => null, 'screens' => [],
                 'children' => [
                     ['label' => 'Services & teams', 'path' => '/admin/rota', 'key' => 'rota', 'cap' => Capability::MANAGE_ROTA, 'screens' => ['rota', 'rota-service', 'rota-team'], 'siteWide' => true],
+                    ['label' => 'Events', 'path' => '/admin/events', 'key' => 'events', 'cap' => Capability::MANAGE_EVENTS, 'screens' => ['events', 'event', 'event-series'], 'siteWide' => true],
                 ],
             ],
             [

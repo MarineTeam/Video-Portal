@@ -11847,6 +11847,115 @@ check(
     'a place came free and nobody was moved into it'
 );
 
+/* ------------------------------------------- the organiser's side
+ *
+ * The list on screen and as a file, with the column the spec asks for: which of
+ * these people the church already knows.
+ */
+$adminEvents = getWithJar($baseUrl . '/admin/events', $jar);
+
+check(
+    'The events screen renders',
+    $adminEvents['status'] === 200 && str_contains($adminEvents['body'], 'Harvest Supper'),
+    "got {$adminEvents['status']}"
+);
+
+check(
+    'and it is in the admin navigation',
+    str_contains($adminEvents['body'], 'href="/admin/events"'),
+    'a screen reachable only by typing its address'
+);
+
+/*
+ * A signed-in person signs up, so the export has one row with an account and
+ * one without — which is the only arrangement in which the member column proves
+ * anything.
+ */
+$adminEventPage = getWithJar($baseUrl . '/admin/events/' . $eventId, $jar);
+postWithJar($baseUrl . '/events/signup', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/events/harvest-supper', $jar)['body']),
+    'event'  => 'harvest-supper',
+    'name'   => 'Smoke Admin',
+    'email'  => 'admin@smoke.test',
+], $jar);
+
+$adminEventPage = getWithJar($baseUrl . '/admin/events/' . $eventId, $jar);
+
+check(
+    'The sign-up list is on the event screen',
+    str_contains($adminEventPage['body'], 'later@example.test'),
+    'the organiser cannot see who is coming'
+);
+
+check(
+    'and it marks who has an account here',
+    str_contains($adminEventPage['body'], '>member</span>'),
+    'the question asked afterwards is which of these people the church knows'
+);
+
+$csv = getWithJar($baseUrl . '/admin/events/' . $eventId . '.csv', $jar);
+
+check(
+    'The list downloads as a spreadsheet',
+    $csv['status'] === 200
+        && str_contains($csv['headers']['content-disposition'] ?? '', 'attachment')
+        && str_contains($csv['headers']['content-disposition'] ?? '', '.csv'),
+    "got {$csv['status']}"
+);
+
+check(
+    'and carries the member column, filled in both ways',
+    str_contains($csv['body'], 'Account')
+        && str_contains($csv['body'], 'member')
+        && str_contains($csv['body'], 'guest of the church'),
+    'a column that says the same thing for everybody answers nothing'
+);
+
+/*
+ * The formula guard, on the file where it matters most: every name and note in
+ * it was typed by somebody the site has never met.
+ */
+$db->execute(
+    'UPDATE {event_signups} SET name = ? WHERE email = ?',
+    ['=HYPERLINK("https://evil.example","Click")', 'later@example.test']
+);
+
+$csvDefused = getWithJar($baseUrl . '/admin/events/' . $eventId . '.csv', $jar);
+
+check(
+    'and a name a spreadsheet would run is defused',
+    str_contains($csvDefused['body'], 'HYPERLINK')
+        && !str_contains($csvDefused['body'], '"=HYPERLINK'),
+    'A NAME SOMEBODY TYPED WOULD RUN AS A FORMULA'
+);
+
+/*
+ * Raising the capacity moves the queue, which the spec names alongside a
+ * cancellation — and it happens on the same press rather than needing a second
+ * step somebody would forget.
+ */
+$db->execute('UPDATE {event_signups} SET state = ? WHERE email = ?', ['waiting', 'later@example.test']);
+$db->execute('UPDATE {events} SET capacity = 1 WHERE id = ?', [$eventId]);
+
+postWithJar($baseUrl . '/admin/events', [
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/admin/events/' . $eventId, $jar)['body']),
+    'action'   => 'capacity',
+    'id'       => (string) $eventId,
+    'capacity' => '20',
+], $jar);
+
+check(
+    'Raising the capacity moves the waiting list on the same press',
+    $db->value('SELECT state FROM {event_signups} WHERE email = ?', ['later@example.test']) === 'going',
+    'an organiser raised the number and people stayed waiting beside empty seats'
+);
+
+check(
+    'and says they still need telling',
+    str_contains(getWithJar($baseUrl . '/admin/events/' . $eventId, $jar)['body'], 'need telling'),
+    'somebody moved up and nobody knows'
+);
+
 @unlink($eventJar);
 @unlink($fullJar);
 $db->execute('DELETE FROM {events} WHERE id IN (?, ?)', [$eventId, $hidden]);
