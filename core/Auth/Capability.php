@@ -90,6 +90,17 @@ final class Capability
      */
     public const MANAGE_SCHEDULES = 'manage_schedules';
 
+    /**
+     * Building forms, and reading what people send back.
+     *
+     * One capability for both, deliberately, and it is the more consequential
+     * half that decides: a connect card carries a phone number, an address and
+     * often a good deal more, so this is the permission that reads personal
+     * details a stranger typed into a public page — not merely the permission
+     * to arrange some fields.
+     */
+    public const MANAGE_FORMS = 'manage_forms';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -141,6 +152,7 @@ final class Capability
             self::MANAGE_ROTA         => 'Build the rota: teams, services, and who is asked to serve',
             self::MANAGE_EVENTS       => 'Create events and see who has signed up',
             self::MANAGE_SCHEDULES    => 'Keep the schedules calendar and the list of people on it',
+            self::MANAGE_FORMS        => 'Build forms and connect cards, and read what people send',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -175,6 +187,7 @@ final class Capability
             self::MANAGE_ROTA,
             self::MANAGE_EVENTS,
             self::MANAGE_SCHEDULES,
+            self::MANAGE_FORMS,
         ];
     }
 

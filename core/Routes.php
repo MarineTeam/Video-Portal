@@ -8,12 +8,14 @@ use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
+use Portal\Controllers\AdminFormController;
 use Portal\Controllers\AdminScheduleController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CalendarController;
+use Portal\Controllers\FormController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\DownloadController;
 use Portal\Controllers\EventController;
@@ -350,6 +352,20 @@ final class Routes
          */
         $router->get('/calendar/sync', [CalendarController::class, 'sync']);
 
+        /*
+         * Forms and connect cards. OPEN, and that is the whole point: the
+         * people a connect card is for are the ones who have never made an
+         * account, and a sign-in wall on a card asking "how did you find us"
+         * is the card answering its own question.
+         *
+         * A members-only form is INVISIBLE rather than refused — decided in
+         * one place in the controller, because a refusal announces that there
+         * is something there to be refused.
+         */
+        $router->get('/forms', [FormController::class, 'index']);
+        $router->get('/forms/{slug}', [FormController::class, 'show']);
+        $router->post('/forms/{slug}', [FormController::class, 'submit']);
+
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);
         $router->post('/events/cancel', [EventController::class, 'cancel']);
@@ -412,6 +428,15 @@ final class Routes
         $router->get('/admin/schedules', [AdminScheduleController::class, 'index'], ['admin.area']);
         $router->post('/admin/schedules', [AdminScheduleController::class, 'update'], ['admin.area']);
         $router->get('/admin/schedules/{id:\d+}', [AdminScheduleController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/forms', [AdminFormController::class, 'index'], ['admin.area']);
+        $router->post('/admin/forms', [AdminFormController::class, 'update'], ['admin.area']);
+        $router->get('/admin/forms/{id:\d+}', [AdminFormController::class, 'show'], ['admin.area']);
+        /*
+         * Constrained to digits so it cannot be shadowed by the id route, the
+         * collision that once made /comments/report a comment on video 0.
+         */
+        $router->get('/admin/forms/{id:\d+}/export.csv', [AdminFormController::class, 'export'], ['admin.area']);
 
         $router->get('/admin/rota', [AdminRotaController::class, 'index'], ['admin.area']);
         $router->post('/admin/rota', [AdminRotaController::class, 'update'], ['admin.area']);

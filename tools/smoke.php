@@ -12361,6 +12361,227 @@ check(
 $db->execute('DELETE FROM {schedules} WHERE id = ?', [$schedId]);
 $db->execute('DELETE FROM {schedule_people}');
 
+echo "\nForms and connect cards\n";
+
+$formToken = csrfFrom(getWithJar($baseUrl . '/admin/forms', $jar)['body']);
+
+postWithJar($baseUrl . '/admin/forms', [
+    '_token' => $formToken,
+    'action' => 'create',
+    'title'  => 'Connect card',
+], $jar);
+
+$formId = (int) $db->value('SELECT id FROM {forms} WHERE title = ?', ['Connect card']);
+$formSlug = (string) $db->value('SELECT slug FROM {forms} WHERE id = ?', [$formId]);
+
+check('A form can be built without touching code', $formId > 0, 'the form was not created');
+
+foreach ([
+    ['Your name', 'text', '', '1'],
+    ['Email', 'email', '', ''],
+    ['Which service?', 'choice', "9am\n11am\nEvening", ''],
+] as [$label, $type, $options, $required]) {
+    postWithJar($baseUrl . '/admin/forms', [
+        '_token'      => $formToken,
+        'action'      => 'add-question',
+        'id'          => (string) $formId,
+        'label'       => $label,
+        'type'        => $type,
+        'options'     => $options,
+        'is_required' => $required,
+    ], $jar);
+}
+
+$questionIds = array_column(
+    $db->all('SELECT id, type FROM {form_questions} WHERE form_id = ? ORDER BY position', [$formId]),
+    'id',
+    'type'
+);
+
+check(
+    'and asks the questions it was given',
+    count($questionIds) === 3,
+    'the question form wrote nothing'
+);
+
+/*
+ * The public page, with NO ACCOUNT — which is the point of a connect card.
+ *
+ * Its own cookie jar, not the administrator's: a browser carries cookies
+ * whether or not anybody has signed in, and the form's CSRF token belongs to
+ * that anonymous session. Fetching the page with no jar at all gets a token
+ * from a session the next request will not be in, and the POST answers 419 —
+ * which reads as the form being broken rather than as the check being wrong.
+ */
+$visitorJar = sys_get_temp_dir() . '/portal-smoke-visitor-' . getmypid() . '.txt';
+@unlink($visitorJar);
+
+$publicForm = getWithJar($baseUrl . '/forms/' . $formSlug, $visitorJar);
+
+check('It can be filled in with no account', $publicForm['status'] === 200, "got {$publicForm['status']}");
+check(
+    'and shows the answers it will accept',
+    str_contains($publicForm['body'], 'Which service?') && str_contains($publicForm['body'], '11am'),
+    'the choices are missing from the page'
+);
+
+/*
+ * THE RULE: the server has the last word. A crafted request cannot invent a
+ * fourth answer to a three-way question, whatever page it claims to come from.
+ */
+$crafted = postWithJar($baseUrl . '/forms/' . $formSlug, [
+    '_token'                            => csrfFrom($publicForm['body']),
+    'q' . (int) $questionIds['text']    => 'Jane Cole',
+    'q' . (int) $questionIds['choice']  => 'Midnight',
+], $visitorJar);
+
+/*
+ * The status is asserted as well as the row count, because "nothing was
+ * stored" is exactly what a request refused for some OTHER reason produces —
+ * a CSRF failure passes this check while proving nothing about the rule.
+ */
+check(
+    'An answer nobody offered is refused',
+    $crafted['status'] === 200 && (int) $db->value('SELECT COUNT(*) FROM {form_responses}') === 0,
+    "got {$crafted['status']} — THE SERVER TOOK AN ANSWER IT NEVER OFFERED"
+);
+
+check(
+    'and the page comes back with what was typed still in it',
+    str_contains($crafted['body'], 'Jane Cole'),
+    'a refusal emptied the form and somebody has to type it all again'
+);
+
+$realSend = postWithJar($baseUrl . '/forms/' . $formSlug, [
+    '_token'                           => csrfFrom($crafted['body']),
+    'q' . (int) $questionIds['text']   => 'Jane Cole',
+    'q' . (int) $questionIds['email']  => 'jane@smoke.test',
+    'q' . (int) $questionIds['choice'] => '11am',
+], $visitorJar);
+
+$responseId = (int) $db->value('SELECT id FROM {form_responses} ORDER BY id DESC LIMIT 1');
+
+check('A real answer is taken', $responseId > 0, "got {$realSend['status']}");
+check(
+    'and the sender is thanked rather than shown the form again',
+    !str_contains($realSend['body'], 'name="q' . (int) $questionIds['text'] . '"'),
+    'a page still showing the form is a page people fill in twice'
+);
+
+/*
+ * THE RULE: an answer belongs to the question, not to the words it was asked
+ * in. Renaming must not rewrite history.
+ */
+postWithJar($baseUrl . '/admin/forms', [
+    '_token'   => $formToken,
+    'action'   => 'rename',
+    'question' => (string) (int) $questionIds['choice'],
+    'label'    => 'Which service do you come to?',
+], $jar);
+
+check(
+    'Renaming a question does not change what was answered',
+    (string) $db->value(
+        'SELECT value FROM {form_answers} WHERE response_id = ? AND question_id = ?',
+        [$responseId, (int) $questionIds['choice']]
+    ) === '11am',
+    'RENAMING A QUESTION REWROTE HISTORY'
+);
+
+postWithJar($baseUrl . '/admin/forms', [
+    '_token'   => $formToken,
+    'action'   => 'retire',
+    'question' => (string) (int) $questionIds['email'],
+], $jar);
+
+check(
+    'A question you stop asking keeps its answers',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {form_answers} WHERE question_id = ?',
+        [(int) $questionIds['email']]
+    ) === 1,
+    'RETIRING A QUESTION DESTROYED ITS ANSWERS'
+);
+
+check(
+    'and stops being on the page',
+    !str_contains(
+        getWithJar($baseUrl . '/forms/' . $formSlug, $visitorJar)['body'],
+        'name="q' . (int) $questionIds['email'] . '"'
+    ),
+    'it is still being asked'
+);
+
+$export = getWithJar($baseUrl . '/admin/forms/' . $formId . '/export.csv', $jar);
+$exportHeading = explode("\n", $export['body'])[0] ?? '';
+
+check('The responses download as a spreadsheet', $export['status'] === 200, "got {$export['status']}");
+/*
+ * Matched on the LABELLED heading, not on "Email".
+ *
+ * The export starts with fixed columns — Sent, Name, Email, Dealt with by —
+ * so a bare strpos('Email') finds the sender's address column near the front
+ * and reports the retired question as coming first. The check was comparing
+ * the wrong two columns and calling it a failure of the ordering rule.
+ */
+check(
+    'with retired questions after the live ones, and labelled',
+    strpos($exportHeading, 'Email (no longer asked)') > strpos($exportHeading, 'Which service'),
+    "heading was: {$exportHeading}"
+);
+
+/* Dealt with BY NAME — the way follow-up fails is two people each assuming. */
+postWithJar($baseUrl . '/admin/forms', [
+    '_token'   => $formToken,
+    'action'   => 'handled',
+    'response' => (string) $responseId,
+    'note'     => 'Rang Tuesday.',
+], $jar);
+
+$handled = $db->first('SELECT * FROM {form_responses} WHERE id = ?', [$responseId]);
+
+check(
+    'A response is marked dealt with by a name, not just a tick',
+    $handled !== null && trim((string) $handled['handled_by']) !== '',
+    'two people will each assume the other rang'
+);
+
+/*
+ * A members-only form is INVISIBLE rather than refused, and the title is a leak
+ * too — so the same 404 a form that does not exist gets.
+ */
+postWithJar($baseUrl . '/admin/forms', [
+    '_token'      => $formToken,
+    'action'      => 'save',
+    'id'          => (string) $formId,
+    '_whole_form' => '1',
+    'is_open'     => '1',
+    'member_only' => '1',
+    'title'       => 'Connect card',
+], $jar);
+
+$asStranger = get($baseUrl . '/forms/' . $formSlug);
+$strangerList = get($baseUrl . '/forms');
+
+check(
+    'A members-only form is invisible rather than refused',
+    $asStranger['status'] === 404,
+    "got {$asStranger['status']} — a refusal tells a stranger there is something here"
+);
+
+check(
+    'and its title does not appear anywhere a stranger looks',
+    !str_contains($asStranger['body'], 'Connect card')
+        && !str_contains($strangerList['body'], 'Connect card'),
+    'THE TITLE LEAKED — a name is a leak too'
+);
+
+check(
+    'while a member can still open it',
+    getWithJar($baseUrl . '/forms/' . $formSlug, $jar)['status'] === 200,
+    'members-only shut out the members'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');
