@@ -8,10 +8,12 @@ use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
+use Portal\Controllers\AdminScheduleController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
+use Portal\Controllers\CalendarController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\DownloadController;
 use Portal\Controllers\EventController;
@@ -316,6 +318,14 @@ final class Routes
          * the POST does it. A cancellation on the GET would fire the first time
          * anything fetched the link — a mail preview, a scanner, an unfurler.
          */
+        /*
+         * The schedules calendar. OPEN, like events and for a stronger reason:
+         * the people ON these rotas do not have accounts either, so a guard
+         * would hide the page from everybody it is about.
+         */
+        $router->get('/calendar', [CalendarController::class, 'index']);
+        $router->post('/calendar/me', [CalendarController::class, 'choose']);
+
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);
         $router->post('/events/cancel', [EventController::class, 'cancel']);
@@ -374,6 +384,10 @@ final class Routes
         $router->get('/admin/events/series/{id:\d+}', [AdminEventController::class, 'series'], ['admin.area']);
         $router->get('/admin/events/{id:\d+}.csv', [AdminEventController::class, 'export'], ['admin.area']);
         $router->get('/admin/events/{id:\d+}', [AdminEventController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/schedules', [AdminScheduleController::class, 'index'], ['admin.area']);
+        $router->post('/admin/schedules', [AdminScheduleController::class, 'update'], ['admin.area']);
+        $router->get('/admin/schedules/{id:\d+}', [AdminScheduleController::class, 'show'], ['admin.area']);
 
         $router->get('/admin/rota', [AdminRotaController::class, 'index'], ['admin.area']);
         $router->post('/admin/rota', [AdminRotaController::class, 'update'], ['admin.area']);

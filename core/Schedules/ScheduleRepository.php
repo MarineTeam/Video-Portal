@@ -161,6 +161,37 @@ final class ScheduleRepository
         );
     }
 
+    /**
+     * The names a reader can actually find on the calendar.
+     *
+     * NOT people(). That is every name ever written on a rota, which is the
+     * right answer for the admin screen and the wrong one here: a schedule
+     * taken off the calendar takes its people with it, so a picker built from
+     * people() offers names that appear nowhere on the page and can never be
+     * marked — and it names, on a public page, somebody whose only rota was
+     * deliberately withdrawn. A name is a leak too.
+     *
+     * Not narrowed to the visible window, though. Somebody whose next date is
+     * eight months out still has to be able to say who they are today, or the
+     * calendar will not open on their dates when the day comes round.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function peopleOnCalendar(?string $from = null): array
+    {
+        $from ??= date('Y-m-d');
+
+        return $this->db->all(
+            'SELECT DISTINCT p.id, p.name
+               FROM {schedule_people} p
+               INNER JOIN {schedule_entries} e ON e.person_id = p.id
+               INNER JOIN {schedules} s ON s.id = e.schedule_id AND s.is_enabled = 1
+              WHERE e.on_date >= ?
+              ORDER BY p.name',
+            [$this->day($from)]
+        );
+    }
+
     /** @return array<string, mixed>|null */
     public function person(int $id): ?array
     {

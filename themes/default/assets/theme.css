@@ -965,3 +965,45 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 .event-signup { max-width: 30rem; }
 .event-signup label { display: block; margin-bottom: 1rem; }
 .event-signup .muted { display: block; margin-top: 0.2rem; }
+
+/*
+ * The schedules calendar. Several rotas side by side, so a reader has to tell
+ * them apart at a glance — the chip carries the colour somebody chose, through
+ * a custom property set inline. The value was validated as a hex colour when it
+ * was saved, so there is nothing arbitrary reaching CSS here.
+ */
+.calendar-me { margin: 0 0 1.5rem; }
+.calendar-key { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 2rem; }
+
+.calendar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--text);
+  background: color-mix(in srgb, var(--chip, var(--text-muted)) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip, var(--text-muted)) 45%, transparent);
+}
+
+.calendar-day { margin-bottom: 1.75rem; }
+.calendar-entries { list-style: none; margin: 0; padding: 0; }
+.calendar-entries li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0.4rem;
+}
+
+/* The reader's own dates. A background rather than bold text: the list is
+   scanned rather than read, and a whole row is easier to find than a word. */
+.calendar-entries li.mine {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.calendar-who { font-weight: 600; }

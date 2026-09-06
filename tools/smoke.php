@@ -11960,6 +11960,148 @@ check(
 @unlink($fullJar);
 $db->execute('DELETE FROM {events} WHERE id IN (?, ?)', [$eventId, $hidden]);
 
+/* ---------------------------------------------------- the schedules calendar
+ *
+ * A second rota for people who never log in. The rules are covered against a
+ * real database; these drive the public page, which has no guard at all — a
+ * calendar behind a sign-in would hide it from everybody it is about.
+ */
+echo "\nThe calendar\n";
+
+$schedToken = csrfFrom(getWithJar($baseUrl . '/admin/schedules', $jar)['body']);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'create',
+    'name'   => 'Coffee',
+    'icon'   => '☕',
+    'colour' => '#38bdf8',
+], $jar);
+
+$schedId = (int) $db->value('SELECT id FROM {schedules} WHERE name = ?', ['Coffee']);
+
+check('A schedule can be created', $schedId > 0, 'the form wrote nothing');
+
+/*
+ * Added by NAME, and twice with different spellings — which is the whole point
+ * of the matching key. Two rows, one person.
+ */
+foreach (['José Ángel', 'JOSE ANGEL'] as $i => $spelling) {
+    postWithJar($baseUrl . '/admin/schedules', [
+        '_token'  => $schedToken,
+        'action'  => 'add-entry',
+        'id'      => (string) $schedId,
+        'person'  => $spelling,
+        'on_date' => date('Y-m-d', time() + 86400 * (3 + $i)),
+        'role'    => 'Coffee',
+    ], $jar);
+}
+
+check(
+    'Two spellings of one name are one person',
+    (int) $db->value('SELECT COUNT(*) FROM {schedule_people}') === 1,
+    'a spreadsheet that varies its capitals would put somebody on the rota twice'
+);
+
+check(
+    'and both dates are theirs',
+    (int) $db->value('SELECT COUNT(*) FROM {schedule_entries} WHERE schedule_id = ?', [$schedId]) === 2,
+    'one of the dates went to nobody'
+);
+
+/* The public page, with no session at all. */
+$calendar = get($baseUrl . '/calendar');
+
+check('The calendar renders with no account', $calendar['status'] === 200, "got {$calendar['status']}");
+check(
+    'and shows who is on',
+    str_contains($calendar['body'], 'José Ángel') && str_contains($calendar['body'], 'Coffee'),
+    'the page is empty when there is a rota to show'
+);
+
+check(
+    'and offers to remember which name is yours',
+    str_contains($calendar['body'], 'Which of these is you?'),
+    'a reader cannot make the calendar open on their own dates'
+);
+
+/*
+ * THE RULE: taking a schedule off the calendar hides its dates and DELETES
+ * NOTHING. The second half is the surprising one — somebody who expects
+ * disabling to be destructive re-enters a year of rota they never lost.
+ */
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'disable',
+    'id'     => (string) $schedId,
+], $jar);
+
+$hiddenCalendar = get($baseUrl . '/calendar');
+
+check(
+    'Taking a schedule off hides its dates',
+    !str_contains($hiddenCalendar['body'], 'José Ángel'),
+    'a rota that is not running is still on the public page'
+);
+
+check(
+    'and deletes nothing',
+    (int) $db->value('SELECT COUNT(*) FROM {schedule_entries} WHERE schedule_id = ?', [$schedId]) === 2,
+    'TAKING A SCHEDULE OFF DESTROYED THE ROTA'
+);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'enable',
+    'id'     => (string) $schedId,
+], $jar);
+
+check(
+    'and putting it back brings the dates with it',
+    str_contains(get($baseUrl . '/calendar')['body'], 'José Ángel'),
+    'it came back empty'
+);
+
+/* Near-duplicates are offered, never merged on their own. */
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token'  => $schedToken,
+    'action'  => 'add-entry',
+    'id'      => (string) $schedId,
+    'person'  => 'Dave Smith',
+    'on_date' => date('Y-m-d', time() + 86400 * 10),
+], $jar);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token'  => $schedToken,
+    'action'  => 'add-entry',
+    'id'      => (string) $schedId,
+    'person'  => 'David Smith',
+    'on_date' => date('Y-m-d', time() + 86400 * 17),
+], $jar);
+
+$withDuplicates = getWithJar($baseUrl . '/admin/schedules', $jar);
+
+check(
+    'Two people who might be one are offered for somebody to decide',
+    str_contains($withDuplicates['body'], 'Might be the same person'),
+    'the pair is never put in front of anybody'
+);
+
+check(
+    'and were NOT merged automatically',
+    (int) $db->value('SELECT COUNT(*) FROM {schedule_people}') === 3,
+    'THE SITE MERGED TWO PEOPLE ON ITS OWN'
+);
+
+check(
+    'and the screen says linking to an account is what turns reminders on',
+    str_contains($withDuplicates['body'], 'turns reminders on'),
+    'somebody with no account gets no reminder and nothing says so'
+);
+
+$db->execute('DELETE FROM {schedules} WHERE id = ?', [$schedId]);
+$db->execute('DELETE FROM {schedule_people}');
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

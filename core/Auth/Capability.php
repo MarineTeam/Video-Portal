@@ -81,6 +81,15 @@ final class Capability
      */
     public const MANAGE_EVENTS = 'manage_events';
 
+    /**
+     * Keeping the schedules calendar and the list of names on it.
+     *
+     * Site-wide, like the other two. Nothing on that calendar is scoped to a
+     * category, a series or a video, and the people on it have no accounts at
+     * all — so there is nobody it could be scoped TO.
+     */
+    public const MANAGE_SCHEDULES = 'manage_schedules';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -131,6 +140,7 @@ final class Capability
             self::MODERATE_COMMENTS   => 'Review and remove comments',
             self::MANAGE_ROTA         => 'Build the rota: teams, services, and who is asked to serve',
             self::MANAGE_EVENTS       => 'Create events and see who has signed up',
+            self::MANAGE_SCHEDULES    => 'Keep the schedules calendar and the list of people on it',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -164,6 +174,7 @@ final class Capability
             self::VIEW_AUDIT_LOG,
             self::MANAGE_ROTA,
             self::MANAGE_EVENTS,
+            self::MANAGE_SCHEDULES,
         ];
     }
 

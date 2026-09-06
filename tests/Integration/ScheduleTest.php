@@ -216,6 +216,59 @@ final class ScheduleTest extends DatabaseTestCase
         self::assertCount(1, $this->schedules->calendar(), 'it did not come back');
     }
 
+    /**
+     * The name picker offers only names the reader can find on the page.
+     *
+     * people() is every name ever written on a rota and is right for the admin
+     * screen. On the public page it would put back, as a list of names, exactly
+     * the schedule somebody just took off — the dates hidden and the people
+     * still printed. A name is a leak too.
+     */
+    public function testTheNamePickerLosesTheNamesOfADisabledSchedule(): void
+    {
+        $alice = $this->schedules->personFor('Alice');
+        $this->schedules->put($this->scheduleId, $alice, $this->day(7), 'Reading');
+
+        $other = $this->schedules->createSchedule('Coffee');
+        $bob = $this->schedules->personFor('Bob');
+        $this->schedules->put($other, $bob, $this->day(9), 'Pouring');
+
+        $names = static fn (array $rows): array => array_map(
+            static fn (array $row): string => (string) $row['name'],
+            $rows
+        );
+
+        self::assertSame(['Alice', 'Bob'], $names($this->schedules->peopleOnCalendar()));
+
+        $this->schedules->enableSchedule($other, false);
+
+        self::assertSame(
+            ['Alice'],
+            $names($this->schedules->peopleOnCalendar()),
+            'a withdrawn schedule still names its people on the public page'
+        );
+
+        // And the admin screen keeps both, because that is where a person goes
+        // to put the schedule back.
+        self::assertCount(2, $this->schedules->people());
+    }
+
+    /**
+     * Somebody whose next date is a long way off can still say who they are.
+     *
+     * Narrowing the picker to the visible window would mean the calendar was
+     * not open on their dates on the day it finally mattered — which is the
+     * only thing choosing a name is for.
+     */
+    public function testTheNamePickerReachesPastTheVisibleWindow(): void
+    {
+        $person = $this->schedules->personFor('Alice');
+        $this->schedules->put($this->scheduleId, $person, $this->day(400), 'Far off');
+
+        self::assertSame([], $this->schedules->calendar(), 'the window did not bound the calendar');
+        self::assertCount(1, $this->schedules->peopleOnCalendar(), 'they cannot say who they are');
+    }
+
     /** The calendar is a window, and days outside it are not in the payload. */
     public function testTheCalendarIsAWindow(): void
     {

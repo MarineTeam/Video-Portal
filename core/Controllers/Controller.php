@@ -699,6 +699,7 @@ abstract class Controller
                 'children' => [
                     ['label' => 'Services & teams', 'path' => '/admin/rota', 'key' => 'rota', 'cap' => Capability::MANAGE_ROTA, 'screens' => ['rota', 'rota-service', 'rota-team'], 'siteWide' => true],
                     ['label' => 'Events', 'path' => '/admin/events', 'key' => 'events', 'cap' => Capability::MANAGE_EVENTS, 'screens' => ['events', 'event', 'event-series'], 'siteWide' => true],
+                    ['label' => 'Calendar', 'path' => '/admin/schedules', 'key' => 'schedules', 'cap' => Capability::MANAGE_SCHEDULES, 'screens' => ['schedules', 'schedule'], 'siteWide' => true],
                 ],
             ],
             [
