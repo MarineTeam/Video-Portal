@@ -308,6 +308,32 @@ final class Cron
 
             return "Removed {$removed} old delivery record(s).";
         };
+
+        /*
+         * The horizon: recurring events are made six months ahead, and the
+         * window is pushed forward every day.
+         *
+         * A horizon rather than the whole rule at once, because "every Tuesday
+         * for ever" has no end and a table cannot hold one. Six months is far
+         * enough that a person planning a term can see what they need and near
+         * enough that a rule somebody fixes tomorrow has not already written
+         * three years of wrong dates.
+         *
+         * Safe to run repeatedly: generate() leaves a date that already has a
+         * meeting alone, so nothing an organiser edited is rewritten nightly.
+         */
+        $this->handlers['events.horizon'] = static function (App $app): string {
+            $db = $app->container()->get(\Portal\Db::class);
+
+            $made = (new \Portal\Events\SeriesRepository(
+                $db,
+                new \Portal\Events\EventRepository($db)
+            ))->generateAll();
+
+            return $made === 0
+                ? 'Every series is already made up to the horizon.'
+                : sprintf('Made %d meeting(s).', $made);
+        };
     }
 
     /**
@@ -338,6 +364,9 @@ final class Cron
             'webhooks.cleanup'   => 86400,
             'scripture.scan'     => 300,
             'access_attempts.prune' => 86400,
+            // Daily. The horizon moves by a day at a time, so running it more
+            // often would find nothing to do on all but one run in ninety.
+            'events.horizon'     => 86400,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)
