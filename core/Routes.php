@@ -9,6 +9,7 @@ use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminFormController;
+use Portal\Controllers\AdminGroupController;
 use Portal\Controllers\AdminPrayerController;
 use Portal\Controllers\AdminScheduleController;
 use Portal\Controllers\AdminShareController;
@@ -17,6 +18,7 @@ use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CalendarController;
 use Portal\Controllers\FormController;
+use Portal\Controllers\GroupController;
 use Portal\Controllers\PrayerController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\DownloadController;
@@ -377,6 +379,21 @@ final class Routes
          * repository has no way to do it, so the moderation rule does not
          * depend on a controller remembering.
          */
+        /*
+         * Small groups. The directory is open — a directory nobody can read is
+         * not a directory — but JOINING needs an account, because a group has
+         * to be able to answer somebody and because membership is what the
+         * address travels with.
+         *
+         * The literal paths come before /groups/{slug} so they cannot be
+         * shadowed by a group whose slug happens to be "ask".
+         */
+        $router->get('/groups', [GroupController::class, 'index']);
+        $router->post('/groups/ask', [GroupController::class, 'ask'], ['auth.user']);
+        $router->post('/groups/leave', [GroupController::class, 'leave'], ['auth.user']);
+        $router->post('/groups/answer', [GroupController::class, 'answer'], ['auth.user']);
+        $router->get('/groups/{slug}', [GroupController::class, 'show']);
+
         $router->get('/prayer', [PrayerController::class, 'index']);
         $router->post('/prayer', [PrayerController::class, 'add']);
         $router->post('/prayer/pray', [PrayerController::class, 'pray']);
@@ -447,6 +464,10 @@ final class Routes
 
         $router->get('/admin/prayer', [AdminPrayerController::class, 'index'], ['admin.area']);
         $router->post('/admin/prayer', [AdminPrayerController::class, 'update'], ['admin.area']);
+
+        $router->get('/admin/groups', [AdminGroupController::class, 'index'], ['admin.area']);
+        $router->post('/admin/groups', [AdminGroupController::class, 'update'], ['admin.area']);
+        $router->get('/admin/groups/{id:\d+}', [AdminGroupController::class, 'show'], ['admin.area']);
 
         $router->get('/admin/forms', [AdminFormController::class, 'index'], ['admin.area']);
         $router->post('/admin/forms', [AdminFormController::class, 'update'], ['admin.area']);

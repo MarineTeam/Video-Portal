@@ -111,6 +111,17 @@ final class Capability
      */
     public const MODERATE_PRAYER = 'moderate_prayer';
 
+    /**
+     * Keeping the small-group directory.
+     *
+     * Site-wide. This is the person who makes groups and appoints leaders —
+     * NOT the leaders, who answer requests for their own group on that group's
+     * own page. LEADING IS A ROW, NOT A CAPABILITY: granting one would make
+     * every leader of every group a moderator of all of them, and would hand
+     * them every group's address with it.
+     */
+    public const MANAGE_GROUPS = 'manage_groups';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -164,6 +175,7 @@ final class Capability
             self::MANAGE_SCHEDULES    => 'Keep the schedules calendar and the list of people on it',
             self::MANAGE_FORMS        => 'Build forms and connect cards, and read what people send',
             self::MODERATE_PRAYER     => 'Read the prayer queue and decide what goes on the wall',
+            self::MANAGE_GROUPS       => 'Keep the small-group directory and appoint leaders',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -200,6 +212,7 @@ final class Capability
             self::MANAGE_SCHEDULES,
             self::MANAGE_FORMS,
             self::MODERATE_PRAYER,
+            self::MANAGE_GROUPS,
         ];
     }
 

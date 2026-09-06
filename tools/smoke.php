@@ -12759,6 +12759,149 @@ check(
     'AN ANSWERED REQUEST DISAPPEARED — that is the half worth reading'
 );
 
+echo "\nSmall groups\n";
+
+$groupToken = csrfFrom(getWithJar($baseUrl . '/admin/groups', $jar)['body']);
+
+postWithJar($baseUrl . '/admin/groups', [
+    '_token' => $groupToken,
+    'action' => 'create',
+    'name'   => 'Tuesday night',
+], $jar);
+
+$groupId = (int) $db->value('SELECT id FROM {small_groups} WHERE name = ?', ['Tuesday night']);
+$groupSlug = (string) $db->value('SELECT slug FROM {small_groups} WHERE id = ?', [$groupId]);
+
+check('A small group can be created', $groupId > 0, 'the form wrote nothing');
+
+check(
+    'and a group with nobody leading it is flagged',
+    str_contains(getWithJar($baseUrl . '/admin/groups', $jar)['body'], 'Nobody is leading these'),
+    'requests to a leaderless group go to nobody and nothing says so'
+);
+
+postWithJar($baseUrl . '/admin/groups', [
+    '_token'       => $groupToken,
+    'action'       => 'save',
+    'id'           => (string) $groupId,
+    '_whole_form'  => '1',
+    'is_published' => '1',
+    'name'         => 'Tuesday night',
+    'area'         => 'Northside',
+    'address'      => '14 Elm Row, Northside',
+    'meets'        => 'Tuesdays, 7.30pm',
+    'capacity'     => '2',
+], $jar);
+
+/*
+ * THE RULE: a group that meets in somebody's living room must never publish
+ * where they live. Driven as real requests, because a page is where it leaks.
+ */
+$publicList = get($baseUrl . '/groups');
+$publicGroup = get($baseUrl . '/groups/' . $groupSlug);
+
+check('The directory is readable by anybody', $publicList['status'] === 200, "got {$publicList['status']}");
+
+check(
+    'and says the area',
+    str_contains($publicList['body'], 'Northside'),
+    'a directory that cannot say roughly where is not a directory'
+);
+
+check(
+    'and never the address',
+    !str_contains($publicList['body'], 'Elm Row') && !str_contains($publicGroup['body'], 'Elm Row'),
+    'A HOME ADDRESS WAS PUBLISHED'
+);
+
+/* Having merely asked is not being in. */
+$memberJar = sys_get_temp_dir() . '/portal-smoke-groupmember-' . getmypid() . '.txt';
+@unlink($memberJar);
+
+$memberLogin = getWithJar($baseUrl . '/auth/login', $memberJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token'   => csrfFrom($memberLogin['body']),
+    'email'    => 'note-reader@smoke.test',
+    'password' => 'note-reader-password-1234',
+], $memberJar);
+
+$asMember = getWithJar($baseUrl . '/groups/' . $groupSlug, $memberJar);
+
+postWithJar($baseUrl . '/groups/ask', [
+    '_token' => csrfFrom($asMember['body']),
+    'group'  => $groupSlug,
+    'note'   => 'I live nearby.',
+], $memberJar);
+
+$readerId = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['note-reader@smoke.test']);
+
+check(
+    'Somebody can ask to join',
+    (string) $db->value(
+        'SELECT state FROM {small_group_members} WHERE group_id = ? AND user_id = ?',
+        [$groupId, $readerId]
+    ) === 'requested',
+    'the ask wrote nothing'
+);
+
+check(
+    'and an unanswered ask holds a place',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {small_group_members} WHERE group_id = ? AND state IN (?, ?)',
+        [$groupId, 'member', 'requested']
+    ) === 1,
+    'a promoted request would leave the place looking free and be offered again'
+);
+
+check(
+    'but having asked does NOT give them the address',
+    !str_contains(getWithJar($baseUrl . '/groups/' . $groupSlug, $memberJar)['body'], 'Elm Row'),
+    'ANYBODY WITH AN ACCOUNT LEARNS WHERE A LEADER LIVES BY PRESSING A BUTTON'
+);
+
+/* The leader says yes, and THAT is when the address travels. */
+$adminUserId2 = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['admin@smoke.test']);
+
+postWithJar($baseUrl . '/admin/groups', [
+    '_token' => $groupToken,
+    'action' => 'leader',
+    'id'     => (string) $groupId,
+    'person' => (string) $adminUserId2,
+], $jar);
+
+$leaderPage = getWithJar($baseUrl . '/groups/' . $groupSlug, $jar);
+
+check(
+    'A leader sees who has asked',
+    str_contains($leaderPage['body'], 'Who has asked'),
+    'a leader cannot answer anybody'
+);
+
+check(
+    'and a leader has the address',
+    str_contains($leaderPage['body'], 'Elm Row'),
+    'the people who meet there cannot see where'
+);
+
+postWithJar($baseUrl . '/groups/answer', [
+    '_token' => csrfFrom($leaderPage['body']),
+    'group'  => $groupSlug,
+    'person' => (string) $readerId,
+    'answer' => 'yes',
+], $jar);
+
+check(
+    'Once the leader says yes, the address travels with it',
+    str_contains(getWithJar($baseUrl . '/groups/' . $groupSlug, $memberJar)['body'], 'Elm Row'),
+    'somebody in the group cannot see where it meets'
+);
+
+check(
+    'and still not to a stranger',
+    !str_contains(get($baseUrl . '/groups/' . $groupSlug)['body'], 'Elm Row'),
+    'A HOME ADDRESS WAS PUBLISHED'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

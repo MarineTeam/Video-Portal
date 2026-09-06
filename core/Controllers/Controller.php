@@ -702,6 +702,7 @@ abstract class Controller
                     ['label' => 'Calendar', 'path' => '/admin/schedules', 'key' => 'schedules', 'cap' => Capability::MANAGE_SCHEDULES, 'screens' => ['schedules', 'schedule'], 'siteWide' => true],
                     ['label' => 'Forms', 'path' => '/admin/forms', 'key' => 'forms', 'cap' => Capability::MANAGE_FORMS, 'screens' => ['forms', 'form'], 'siteWide' => true],
                     ['label' => 'Prayer', 'path' => '/admin/prayer', 'key' => 'prayer', 'cap' => Capability::MODERATE_PRAYER, 'screens' => ['prayer'], 'siteWide' => true],
+                    ['label' => 'Small groups', 'path' => '/admin/groups', 'key' => 'groups', 'cap' => Capability::MANAGE_GROUPS, 'screens' => ['groups', 'group'], 'siteWide' => true],
                 ],
             ],
             [
