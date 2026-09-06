@@ -199,17 +199,26 @@ final class EventRepository
             $now = date('Y-m-d H:i:s');
 
             if ($existing !== null) {
+                /*
+                 * The token is kept, not reissued. A link somebody was given
+                 * when they first signed up has to keep working — reissuing on
+                 * every edit would silently break the one they saved.
+                 */
+                $token = (string) ($existing['token'] ?? '') ?: $this->newToken();
+
                 $this->db->execute(
                     'UPDATE {event_signups}
-                        SET name = ?, phone = ?, guests = ?, state = ?, note = ?,
+                        SET name = ?, phone = ?, guests = ?, state = ?, note = ?, token = ?,
                             user_id = COALESCE(?, user_id), updated_at = ?
                       WHERE id = ?',
-                    [$name, trim($phone) ?: null, $guests, $newState, trim($note) ?: null,
+                    [$name, trim($phone) ?: null, $guests, $newState, trim($note) ?: null, $token,
                      $userId, $now, (int) $existing['id']]
                 );
 
                 $id = (int) $existing['id'];
             } else {
+                $token = $this->newToken();
+
                 $id = (int) $this->db->insert('event_signups', [
                     'event_id'   => $eventId,
                     'name'       => mb_substr($name, 0, 190),
@@ -218,13 +227,14 @@ final class EventRepository
                     'user_id'    => $userId,
                     'guests'     => $guests,
                     'state'      => $newState,
+                    'token'      => $token,
                     'note'       => mb_substr(trim($note), 0, 500) ?: null,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
             }
 
-            return new SignupResult($newState, $id, $party);
+            return new SignupResult($newState, $id, $party, $token);
         });
     }
 
@@ -258,6 +268,82 @@ final class EventRepository
 
             return $this->promoteInsideLock($eventId);
         });
+    }
+
+    /**
+     * Cancel with the token from the link, no account and no session.
+     *
+     * The token IS the authority, exactly as it is for unsubscribing. It is
+     * format-checked before any lookup — the same rule share ids follow — so a
+     * malformed one never reaches the database.
+     *
+     * @return list<int> the ids that moved up
+     */
+    public function cancelByToken(string $token): array
+    {
+        if (preg_match('/^[A-Za-z0-9_-]{16,64}$/', $token) !== 1) {
+            return [];
+        }
+
+        $row = $this->db->first(
+            'SELECT event_id, email FROM {event_signups} WHERE token = ?',
+            [$token]
+        );
+
+        if ($row === null) {
+            return [];
+        }
+
+        return $this->cancel((int) $row['event_id'], (string) $row['email']);
+    }
+
+    /** @return array<string, mixed>|null */
+    public function findByToken(string $token): ?array
+    {
+        if (preg_match('/^[A-Za-z0-9_-]{16,64}$/', $token) !== 1) {
+            return null;
+        }
+
+        return $this->db->first('SELECT * FROM {event_signups} WHERE token = ?', [$token]);
+    }
+
+    /**
+     * What one person is signed up for, by address.
+     *
+     * By EMAIL rather than by user id, because a sign-up made before somebody
+     * had an account is still theirs — and matching on the address is what
+     * makes their history already be there the moment they create one. Same
+     * reasoning as the notification record.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function signupsFor(string $email, bool $upcomingOnly = true): array
+    {
+        $email = mb_strtolower(trim($email));
+
+        if ($email === '') {
+            return [];
+        }
+
+        $where = $upcomingOnly ? ' AND e.starts_at >= NOW()' : '';
+
+        return $this->db->all(
+            "SELECT s.*, e.title, e.slug, e.starts_at, e.location
+               FROM {event_signups} s
+               INNER JOIN {events} e ON e.id = s.event_id
+              WHERE s.email = ? AND s.state <> ?{$where}
+              ORDER BY e.starts_at ASC",
+            [$email, Signup::CANCELLED]
+        );
+    }
+
+    /**
+     * 22 characters of base64url randomness, the same shape share ids and
+     * subscription tokens use.
+     */
+    private function newToken(): string
+    {
+        return rtrim(strtr(base64_encode(random_bytes(16)), '+/', '-_'), '=');
     }
 
     /**

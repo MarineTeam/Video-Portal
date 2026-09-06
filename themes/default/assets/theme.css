@@ -940,3 +940,28 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
+
+/* Events. A list of dates and a form, so most of the work is spacing. */
+.event-list { list-style: none; margin: 0 0 2rem; padding: 0; }
+.event-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.event-description { max-width: 44rem; margin: 0 0 2rem; }
+
+.event-yours {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1rem 1.125rem;
+  margin: 0 0 2rem;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.event-signup { max-width: 30rem; }
+.event-signup label { display: block; margin-bottom: 1rem; }
+.event-signup .muted { display: block; margin-top: 0.2rem; }

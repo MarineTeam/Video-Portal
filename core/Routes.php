@@ -13,6 +13,7 @@ use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\DownloadController;
+use Portal\Controllers\EventController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\MemberShareController;
@@ -301,6 +302,29 @@ final class Routes
          * approval is on no team and has nothing to answer, so the page would
          * be an empty screen implying they had been forgotten.
          */
+        /*
+         * Events. OPEN, with no guard at all, which is the point of the
+         * section: the people a church most wants at an event are the ones who
+         * never made an account.
+         *
+         * A members-only event is invisible rather than refused — absent from
+         * the list and a 404 at its own address — because "you may not see this
+         * event" tells somebody there is an event.
+         *
+         * The token route is GET and POST: the GET shows what would happen and
+         * the POST does it. A cancellation on the GET would fire the first time
+         * anything fetched the link — a mail preview, a scanner, an unfurler.
+         */
+        $router->get('/events', [EventController::class, 'index']);
+        $router->post('/events/signup', [EventController::class, 'signUp']);
+        $router->post('/events/cancel', [EventController::class, 'cancel']);
+        $router->any(
+            ['GET', 'POST'],
+            '/events/cancel/{token}',
+            [EventController::class, 'cancelByToken']
+        );
+        $router->get('/events/{slug}', [EventController::class, 'show']);
+
         $router->get('/rota', [RotaController::class, 'mine'], ['auth.authorized']);
         $router->post('/rota', [RotaController::class, 'update'], ['auth.authorized']);
 

@@ -11673,6 +11673,184 @@ $db->execute('DELETE FROM {rota_services} WHERE id = ?', [$rotaService]);
 $db->execute('DELETE FROM {rota_teams} WHERE id = ?', [$rotaTeam]);
 $db->execute('DELETE FROM {users} WHERE id = ?', [$rotaOther]);
 
+/* -------------------------------------------------------------- events
+ *
+ * The rules — the row lock, the waiting list, the exclusion — are covered
+ * against a real database, including six processes racing for three places.
+ * These drive the pages, because the whole point of this section is somebody
+ * with no account putting their name down, and that is a form or it is nothing.
+ */
+echo "\nEvents\n";
+
+$eventId = (int) $db->insert('events', [
+    'slug' => 'harvest-supper', 'title' => 'Harvest Supper',
+    'description' => 'Bring a pudding.',
+    'location' => 'The hall',
+    'starts_at' => date('Y-m-d H:i:s', time() + 1209600),
+    'is_published' => 1, 'signup_enabled' => 1, 'capacity' => 2, 'max_guests' => 3,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$hidden = (int) $db->insert('events', [
+    'slug' => 'members-evening', 'title' => 'Members Evening',
+    'starts_at' => date('Y-m-d H:i:s', time() + 1209600),
+    'is_published' => 1, 'member_only' => 1,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$eventsPage = get($baseUrl . '/events');
+
+check('The events page renders with no account', $eventsPage['status'] === 200, "got {$eventsPage['status']}");
+check(
+    'and lists what is on',
+    str_contains($eventsPage['body'], 'Harvest Supper'),
+    'the list is empty when there is something on it'
+);
+
+/*
+ * THE RULE: a members-only event is INVISIBLE to a stranger rather than
+ * refused. Leaving it in the list and rejecting the click tells them there is
+ * an event and what it is called.
+ */
+check(
+    'A members-only event is absent for a stranger',
+    !str_contains($eventsPage['body'], 'Members Evening'),
+    'A MEMBERS-ONLY EVENT WAS NAMED TO A SIGNED-OUT VISITOR'
+);
+
+check(
+    'and its own address 404s rather than refusing',
+    get($baseUrl . '/events/members-evening')['status'] === 404,
+    'a 403 says there is an event to be refused'
+);
+
+check(
+    'while a member sees it',
+    str_contains(getWithJar($baseUrl . '/events', $jar)['body'], 'Members Evening'),
+    'the filter hides it from everybody, so nothing above is proved'
+);
+
+$eventPage = get($baseUrl . '/events/harvest-supper');
+
+check(
+    'An event page offers a form with no account',
+    $eventPage['status'] === 200
+        && str_contains($eventPage['body'], 'name="email"')
+        && str_contains($eventPage['body'], 'No account needed'),
+    "got {$eventPage['status']}"
+);
+
+check(
+    'and says how many places are left',
+    str_contains($eventPage['body'], '2 places left'),
+    'somebody cannot tell whether it is worth signing up'
+);
+
+$eventJar = sys_get_temp_dir() . '/portal-smoke-event-' . getmypid() . '.txt';
+@unlink($eventJar);
+
+$formPage = getWithJar($baseUrl . '/events/harvest-supper', $eventJar);
+
+postWithJar($baseUrl . '/events/signup', [
+    '_token' => csrfFrom($formPage['body']),
+    'event'  => 'harvest-supper',
+    'name'   => 'Stranger Person',
+    'email'  => 'stranger@example.test',
+    'guests' => '1',
+], $eventJar);
+
+check(
+    'Somebody with no account can sign up',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {event_signups} WHERE event_id = ? AND email = ?',
+        [$eventId, 'stranger@example.test']
+    ) === 1,
+    'the form wrote nothing'
+);
+
+check(
+    'and their guest took a place too',
+    (int) $db->value('SELECT COALESCE(SUM(party_size),0) FROM {event_signups} WHERE event_id = ? AND state = ?', [$eventId, 'going']) === 2,
+    'a guest was not counted, so the hall is over-full'
+);
+
+$afterSignup = getWithJar($baseUrl . '/events/harvest-supper', $eventJar);
+check(
+    'and they are given a link to take their name off',
+    str_contains($afterSignup['body'], '/events/cancel/'),
+    'somebody with no account is on a list with no way off it'
+);
+
+/* Full now. The next person waits, and is told so rather than refused. */
+$fullJar = sys_get_temp_dir() . '/portal-smoke-event2-' . getmypid() . '.txt';
+@unlink($fullJar);
+$fullPage = getWithJar($baseUrl . '/events/harvest-supper', $fullJar);
+
+postWithJar($baseUrl . '/events/signup', [
+    '_token' => csrfFrom($fullPage['body']),
+    'event'  => 'harvest-supper',
+    'name'   => 'Later Person',
+    'email'  => 'later@example.test',
+], $fullJar);
+
+check(
+    'When it is full the next person goes on the waiting list',
+    $db->value('SELECT state FROM {event_signups} WHERE email = ?', ['later@example.test']) === 'waiting',
+    'they were refused, or seated in a hall that is full'
+);
+
+check(
+    'and is told that rather than that it failed',
+    str_contains(getWithJar($baseUrl . '/events/harvest-supper', $fullJar)['body'], 'waiting list'),
+    'somebody told "that did not work" fills the form in again'
+);
+
+/*
+ * THE RULE: a GET on the cancellation link must not cancel. The link is fetched
+ * by things that are not the person holding it — a mail preview, a scanner, a
+ * chat app's unfurler — and every one would give up a place.
+ */
+$strangerToken = (string) $db->value(
+    'SELECT token FROM {event_signups} WHERE email = ?',
+    ['stranger@example.test']
+);
+
+$cancelPage = getWithJar($baseUrl . '/events/cancel/' . $strangerToken, $eventJar);
+
+check(
+    'Opening the cancellation link does not cancel',
+    $cancelPage['status'] === 200
+        && $db->value('SELECT state FROM {event_signups} WHERE email = ?', ['stranger@example.test']) === 'going',
+    'A PREVIEW OF THE LINK WOULD GIVE UP SOMEBODY\'S PLACE'
+);
+
+check(
+    'and asks before doing it',
+    str_contains($cancelPage['body'], 'Take your name off?'),
+    'no confirmation, so the page is the action'
+);
+
+postWithJar($baseUrl . '/events/cancel/' . $strangerToken, [
+    '_token' => csrfFrom($cancelPage['body']),
+], $eventJar);
+
+check(
+    'Confirming it takes the name off',
+    $db->value('SELECT state FROM {event_signups} WHERE email = ?', ['stranger@example.test']) === 'cancelled',
+    'the button did nothing'
+);
+
+/* And the queue moved, which is what the place coming free is for. */
+check(
+    'and the waiting list moved up',
+    $db->value('SELECT state FROM {event_signups} WHERE email = ?', ['later@example.test']) === 'going',
+    'a place came free and nobody was moved into it'
+);
+
+@unlink($eventJar);
+@unlink($fullJar);
+$db->execute('DELETE FROM {events} WHERE id IN (?, ?)', [$eventId, $hidden]);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

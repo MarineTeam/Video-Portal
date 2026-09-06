@@ -18,6 +18,8 @@ final class SignupResult
         public readonly string $state,
         public readonly int $id,
         public readonly int $partySize,
+        /** The token that lets somebody with no account take their name off. */
+        public readonly string $token = '',
     ) {
     }
 

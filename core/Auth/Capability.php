@@ -71,6 +71,16 @@ final class Capability
      */
     public const MANAGE_ROTA = 'manage_rota';
 
+    /**
+     * Creating events and seeing who has signed up.
+     *
+     * Site-wide, like the rota and for the same reason: grants.scope_type is a
+     * category, a series or a video, and an event is none of those. Signing up
+     * and taking your own name off need no capability at all — one is open to
+     * anybody and the other is keyed to the person doing it.
+     */
+    public const MANAGE_EVENTS = 'manage_events';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -120,6 +130,7 @@ final class Capability
             self::MANAGE_VIEWERS      => 'Approve viewers and manage viewer groups',
             self::MODERATE_COMMENTS   => 'Review and remove comments',
             self::MANAGE_ROTA         => 'Build the rota: teams, services, and who is asked to serve',
+            self::MANAGE_EVENTS       => 'Create events and see who has signed up',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -152,6 +163,7 @@ final class Capability
             self::MANAGE_SETTINGS,
             self::VIEW_AUDIT_LOG,
             self::MANAGE_ROTA,
+            self::MANAGE_EVENTS,
         ];
     }
 

@@ -428,6 +428,19 @@ abstract class Controller
          * visitor — and, worse, in front of accounts that are signed in but not
          * yet approved, for whom it would bounce with no explanation.
          */
+        /*
+         * What is on. Offered only when there is something on it, like Live
+         * above — and to EVERYBODY rather than only to members, because the
+         * whole point of the section is the people who never made an account.
+         *
+         * The count is of what THIS visitor may see, so a site whose only
+         * events are members-only shows a stranger no link rather than one to
+         * an empty page.
+         */
+        if ($this->visibleEvents() > 0) {
+            $items[] = ['label' => 'What\'s on', 'href' => '/events'];
+        }
+
         $user = $this->user();
         if ($user !== null && ($user->isAdmin() || $user->authorized)) {
             $items[] = ['label' => 'Saved', 'href' => '/saved'];
@@ -572,6 +585,33 @@ abstract class Controller
      *     children: list<array{label: string, path: string, key: string, screens: list<string>}>
      * }>
      */
+    /**
+     * How many upcoming events this visitor may see.
+     *
+     * Members-only ones are excluded for a stranger, so the link never leads to
+     * a page that says nothing is on — which would be worse than no link,
+     * because it is a promise the site does not keep.
+     *
+     * Fails to zero, like the rota count and the unread badge: this runs on
+     * every page, and the migration creating the table has one request during
+     * which it does not exist.
+     */
+    private function visibleEvents(): int
+    {
+        $user = $this->user();
+        $member = $user !== null && ($user->isAdmin() || $user->authorized);
+
+        try {
+            return (int) $this->db()->value(
+                'SELECT COUNT(*) FROM {events}
+                  WHERE is_published = 1 AND starts_at >= NOW()'
+                . ($member ? '' : ' AND member_only = 0')
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
     /**
      * How much of the rota is this person's problem right now.
      *
