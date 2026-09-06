@@ -703,6 +703,7 @@ abstract class Controller
                     ['label' => 'Forms', 'path' => '/admin/forms', 'key' => 'forms', 'cap' => Capability::MANAGE_FORMS, 'screens' => ['forms', 'form'], 'siteWide' => true],
                     ['label' => 'Prayer', 'path' => '/admin/prayer', 'key' => 'prayer', 'cap' => Capability::MODERATE_PRAYER, 'screens' => ['prayer'], 'siteWide' => true],
                     ['label' => 'Small groups', 'path' => '/admin/groups', 'key' => 'groups', 'cap' => Capability::MANAGE_GROUPS, 'screens' => ['groups', 'group'], 'siteWide' => true],
+                    ['label' => 'Broadcasts', 'path' => '/admin/broadcasts', 'key' => 'broadcasts', 'cap' => Capability::SEND_BROADCASTS, 'screens' => ['broadcasts', 'broadcast'], 'siteWide' => true],
                 ],
             ],
             [

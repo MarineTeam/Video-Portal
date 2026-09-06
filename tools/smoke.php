@@ -12902,6 +12902,133 @@ check(
     'A HOME ADDRESS WAS PUBLISHED'
 );
 
+echo "\nBroadcasts\n";
+
+$bcToken = csrfFrom(getWithJar($baseUrl . '/admin/broadcasts', $jar)['body']);
+
+postWithJar($baseUrl . '/admin/broadcasts', [
+    '_token'  => $bcToken,
+    'action'  => 'create',
+    'subject' => 'Church weekend',
+], $jar);
+
+$bcId = (int) $db->value('SELECT id FROM {broadcasts} WHERE subject = ?', ['Church weekend']);
+
+check('A broadcast can be written', $bcId > 0, 'the form wrote nothing');
+
+/*
+ * A member who has opted OUT of email but never opted IN to texts. The three
+ * rules have to give three different answers about the same person.
+ */
+$bcReaderId = (int) $db->value('SELECT id FROM {users} WHERE email = ?', ['note-reader@smoke.test']);
+
+$messagesPage = getWithJar($baseUrl . '/account/messages', $memberJar);
+
+check(
+    'Somebody can change what this site sends them',
+    $messagesPage['status'] === 200,
+    "got {$messagesPage['status']} — an opt-out nobody can reach is not an opt-out"
+);
+
+postWithJar($baseUrl . '/account/messages', [
+    '_token' => csrfFrom($messagesPage['body']),
+    'phone'  => '07700 900123',
+    // by_email absent: an unticked box IS the opt-out. by_sms absent too.
+], $memberJar);
+
+$bcPrefs = $db->first('SELECT * FROM {broadcast_prefs} WHERE user_id = ?', [$bcReaderId]);
+
+check(
+    'and an unticked email box is an opt-out',
+    $bcPrefs !== null && (int) $bcPrefs['email_opt_out'] === 1,
+    'somebody cannot turn announcements off'
+);
+
+check(
+    'while having a number is NOT an opt-in to texts',
+    $bcPrefs !== null && (int) $bcPrefs['sms_opt_in'] === 0 && $bcPrefs['phone'] !== null,
+    'A NUMBER WAS TREATED AS PERMISSION TO TEXT IT'
+);
+
+postWithJar($baseUrl . '/admin/broadcasts', [
+    '_token'        => $bcToken,
+    'action'        => 'save',
+    'id'            => (string) $bcId,
+    '_whole_form'   => '1',
+    'subject'       => 'Church weekend',
+    'body'          => 'It is on the 14th.',
+    'audience_type' => 'everyone',
+    'by_email'      => '1',
+    'by_sms'        => '1',
+], $jar);
+
+$bcPage = getWithJar($baseUrl . '/admin/broadcasts/' . $bcId, $jar);
+
+check(
+    'The reach preview says who it will actually get to',
+    str_contains($bcPage['body'], 'Who it reaches') && str_contains($bcPage['body'], 'By email'),
+    '"300 recipients" is a number that gets believed and is not true'
+);
+
+check(
+    'and names why the rest will not hear',
+    str_contains($bcPage['body'], 'turned announcements off')
+        || str_contains($bcPage['body'], 'has not opted in to texts'),
+    'the refusals are lumped together and nobody can act on them'
+);
+
+check(
+    'and it can be sent to yourself first',
+    str_contains($bcPage['body'], 'Send it to me first'),
+    'a rendered preview is not what a mail client does with it'
+);
+
+$beforeSend = (int) $db->value('SELECT COUNT(*) FROM {broadcast_recipients}');
+
+check(
+    'Nothing is resolved until somebody presses send',
+    $beforeSend === 0,
+    'recipient rows were written by looking at the page'
+);
+
+postWithJar($baseUrl . '/admin/broadcasts', [
+    '_token' => $bcToken,
+    'action' => 'send',
+    'id'     => (string) $bcId,
+], $jar);
+
+$resolved = (int) $db->value('SELECT COUNT(*) FROM {broadcast_recipients} WHERE broadcast_id = ?', [$bcId]);
+
+check(
+    'Sending resolves everybody into rows first',
+    $resolved > 0,
+    'nothing was resolved, so an interrupted send could not carry on'
+);
+
+check(
+    'and the person who opted out is not among them',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {broadcast_recipients} WHERE broadcast_id = ? AND address = ?',
+        [$bcId, 'note-reader@smoke.test']
+    ) === 0,
+    'SOMEBODY WHO TURNED ANNOUNCEMENTS OFF WAS SENT ONE'
+);
+
+check(
+    'and nobody was resolved for a text',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {broadcast_recipients} WHERE broadcast_id = ? AND channel = ?',
+        [$bcId, 'sms']
+    ) === 0,
+    'A TEXT WAS QUEUED TO SOMEBODY WHO NEVER OPTED IN'
+);
+
+check(
+    'and a started broadcast can no longer be rewritten',
+    (string) $db->value('SELECT state FROM {broadcasts} WHERE id = ?', [$bcId]) !== 'draft',
+    'half the list would get the old words and half the new'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

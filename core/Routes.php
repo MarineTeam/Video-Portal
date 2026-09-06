@@ -8,6 +8,7 @@ use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
+use Portal\Controllers\AdminBroadcastController;
 use Portal\Controllers\AdminFormController;
 use Portal\Controllers\AdminGroupController;
 use Portal\Controllers\AdminPrayerController;
@@ -230,6 +231,20 @@ final class Routes
             ['GET', 'POST'],
             '/account/reminders',
             [AccountController::class, 'reminders'],
+            ['auth.user']
+        );
+
+        /*
+         * What this site may send you, and how.
+         *
+         * The three consent rules are only real if somebody can exercise them:
+         * an opt-out nobody can reach is not an opt-out, and an SMS opt-in only
+         * an administrator can tick is not consent.
+         */
+        $router->any(
+            ['GET', 'POST'],
+            '/account/messages',
+            [AccountController::class, 'messages'],
             ['auth.user']
         );
 
@@ -464,6 +479,10 @@ final class Routes
 
         $router->get('/admin/prayer', [AdminPrayerController::class, 'index'], ['admin.area']);
         $router->post('/admin/prayer', [AdminPrayerController::class, 'update'], ['admin.area']);
+
+        $router->get('/admin/broadcasts', [AdminBroadcastController::class, 'index'], ['admin.area']);
+        $router->post('/admin/broadcasts', [AdminBroadcastController::class, 'update'], ['admin.area']);
+        $router->get('/admin/broadcasts/{id:\d+}', [AdminBroadcastController::class, 'show'], ['admin.area']);
 
         $router->get('/admin/groups', [AdminGroupController::class, 'index'], ['admin.area']);
         $router->post('/admin/groups', [AdminGroupController::class, 'update'], ['admin.area']);

@@ -122,6 +122,16 @@ final class Capability
      */
     public const MANAGE_GROUPS = 'manage_groups';
 
+    /**
+     * Writing and sending a broadcast.
+     *
+     * Site-wide, and the most consequential permission in this product after
+     * the administrative ones: it reaches every member's inbox, and — where a
+     * gateway is configured — their phone, at whatever hour it is pressed. It
+     * also spends money.
+     */
+    public const SEND_BROADCASTS = 'send_broadcasts';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -176,6 +186,7 @@ final class Capability
             self::MANAGE_FORMS        => 'Build forms and connect cards, and read what people send',
             self::MODERATE_PRAYER     => 'Read the prayer queue and decide what goes on the wall',
             self::MANAGE_GROUPS       => 'Keep the small-group directory and appoint leaders',
+            self::SEND_BROADCASTS     => 'Write and send broadcasts by email, text and push',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -213,6 +224,7 @@ final class Capability
             self::MANAGE_FORMS,
             self::MODERATE_PRAYER,
             self::MANAGE_GROUPS,
+            self::SEND_BROADCASTS,
         ];
     }
 
