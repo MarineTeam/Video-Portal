@@ -12582,6 +12582,183 @@ check(
     'members-only shut out the members'
 );
 
+/*
+ * A CLOSED form: gone for everybody except whoever can edit it, so they can
+ * see what they closed.
+ *
+ * Driven because nothing else does. This branch held an undefined method call
+ * that php -l, load-all.php and check-imports.php all passed, and no check
+ * reached it — which is what tools/check-calls.php now exists for.
+ */
+postWithJar($baseUrl . '/admin/forms', [
+    '_token'      => $formToken,
+    'action'      => 'save',
+    'id'          => (string) $formId,
+    '_whole_form' => '1',
+    'title'       => 'Connect card',
+], $jar);
+
+check(
+    'A closed form is gone for everybody else',
+    get($baseUrl . '/forms/' . $formSlug)['status'] === 404,
+    'a closed form is still taking answers'
+);
+
+check(
+    'and still readable by whoever can edit it',
+    getWithJar($baseUrl . '/forms/' . $formSlug, $jar)['status'] === 200,
+    'somebody cannot see the form they just closed'
+);
+
+echo "\nThe prayer wall\n";
+
+$prayerJar = sys_get_temp_dir() . '/portal-smoke-prayer-' . getmypid() . '.txt';
+@unlink($prayerJar);
+
+$prayerPage = getWithJar($baseUrl . '/prayer', $prayerJar);
+
+check('The prayer wall opens with no account', $prayerPage['status'] === 200, "got {$prayerPage['status']}");
+
+postWithJar($baseUrl . '/prayer', [
+    '_token'     => csrfFrom($prayerPage['body']),
+    'body'       => 'Please pray for my mother, who is in hospital.',
+    'name'       => 'Jane Cole',
+    'anonymous'  => '1',
+    'visibility' => 'everyone',
+], $prayerJar);
+
+$prayerId = (int) $db->value('SELECT id FROM {prayer_requests} ORDER BY id DESC LIMIT 1');
+
+check('Anybody can ask for prayer', $prayerId > 0, 'the form wrote nothing');
+
+/*
+ * THE RULE: nothing appears until a human has read it, and there is no setting
+ * that switches that off.
+ */
+check(
+    'and nothing appears until somebody has read it',
+    !str_contains(get($baseUrl . '/prayer')['body'], 'in hospital'),
+    'AN UNREAD REQUEST WENT STRAIGHT ONTO A PUBLIC PAGE'
+);
+
+/*
+ * THE RULE: anonymous means anonymous INCLUDING TO MODERATORS. Checked on the
+ * moderator's own screen, which is the only place it could be broken quietly.
+ */
+$queue = getWithJar($baseUrl . '/admin/prayer', $jar);
+
+check(
+    'A moderator sees the request waiting',
+    str_contains($queue['body'], 'in hospital'),
+    "got {$queue['status']} — the queue is empty"
+);
+
+check(
+    'and cannot see who asked',
+    !str_contains($queue['body'], 'Jane Cole'),
+    'A MODERATOR CAN SEE WHO ASKED ANONYMOUSLY'
+);
+
+check(
+    'because the name was never stored',
+    $db->value('SELECT requester_name FROM {prayer_requests} WHERE id = ?', [$prayerId]) === null,
+    'the name is in the database waiting for somebody to write a query'
+);
+
+check(
+    'and the screen says what anonymity costs',
+    str_contains($queue['body'], 'cannot be followed up'),
+    'the trade is being made without saying so'
+);
+
+postWithJar($baseUrl . '/admin/prayer', [
+    '_token' => csrfFrom($queue['body']),
+    'action' => 'approve',
+    'id'     => (string) $prayerId,
+], $jar);
+
+$wallAfter = getWithJar($baseUrl . '/prayer', $prayerJar);
+
+check(
+    'Once read, it is on the wall',
+    str_contains($wallAfter['body'], 'in hospital'),
+    'approving it did not put it up'
+);
+
+check(
+    'and it is still anonymous there',
+    !str_contains($wallAfter['body'], 'Jane Cole'),
+    'THE NAME REACHED THE PUBLIC WALL'
+);
+
+/* "I prayed for this" is a count — and there is no table of who. */
+postWithJar($baseUrl . '/prayer/pray', [
+    '_token' => csrfFrom($wallAfter['body']),
+    'id'     => (string) $prayerId,
+], $prayerJar);
+
+check(
+    'Praying for something is counted',
+    (int) $db->value('SELECT prayed_count FROM {prayer_requests} WHERE id = ?', [$prayerId]) === 1,
+    'the count did not move'
+);
+
+check(
+    'and there is no table of who prayed',
+    count(array_filter(
+        array_map(
+            static fn (array $row): string => (string) reset($row),
+            $db->all('SHOW TABLES')
+        ),
+        static fn (string $t): bool => str_contains($t, 'prayer_') && !str_contains($t, 'prayer_requests')
+    )) === 0,
+    'THERE IS A LIST OF WHO PRAYED FOR WHAT'
+);
+
+/* A leaders-only request is absent from a stranger's page rather than refused. */
+postWithJar($baseUrl . '/prayer', [
+    '_token'     => csrfFrom($wallAfter['body']),
+    'body'       => 'A matter for the leadership only.',
+    'visibility' => 'leaders',
+], $prayerJar);
+
+$leadersId = (int) $db->value('SELECT id FROM {prayer_requests} ORDER BY id DESC LIMIT 1');
+
+postWithJar($baseUrl . '/admin/prayer', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/prayer', $jar)['body']),
+    'action' => 'approve',
+    'id'     => (string) $leadersId,
+], $jar);
+
+check(
+    'A leaders-only request is absent from a stranger\'s wall',
+    !str_contains(get($baseUrl . '/prayer')['body'], 'for the leadership only'),
+    'A LEADERS-ONLY REQUEST WAS PUBLIC'
+);
+
+check(
+    'and present on a moderator\'s',
+    str_contains(getWithJar($baseUrl . '/prayer', $jar)['body'], 'for the leadership only'),
+    'the people it is for cannot read it'
+);
+
+/* An answered request STAYS UP — that is the half worth reading. */
+postWithJar($baseUrl . '/admin/prayer', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/prayer', $jar)['body']),
+    'action' => 'answered',
+    'id'     => (string) $prayerId,
+    'note'   => 'She is home and doing well.',
+], $jar);
+
+$answeredWall = get($baseUrl . '/prayer');
+
+check(
+    'An answered request stays on the wall, with the news',
+    str_contains($answeredWall['body'], 'in hospital')
+        && str_contains($answeredWall['body'], 'She is home'),
+    'AN ANSWERED REQUEST DISAPPEARED — that is the half worth reading'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

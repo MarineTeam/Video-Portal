@@ -101,6 +101,16 @@ final class Capability
      */
     public const MANAGE_FORMS = 'manage_forms';
 
+    /**
+     * Reading the prayer queue and deciding what goes on the wall.
+     *
+     * Site-wide, and it does NOT come with the ability to see who asked. An
+     * anonymous request is anonymous to whoever holds this too — see
+     * PortalPrayerPrayerName. Holding it also means seeing leaders-only
+     * requests, because somebody has to read those before they appear.
+     */
+    public const MODERATE_PRAYER = 'moderate_prayer';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -153,6 +163,7 @@ final class Capability
             self::MANAGE_EVENTS       => 'Create events and see who has signed up',
             self::MANAGE_SCHEDULES    => 'Keep the schedules calendar and the list of people on it',
             self::MANAGE_FORMS        => 'Build forms and connect cards, and read what people send',
+            self::MODERATE_PRAYER     => 'Read the prayer queue and decide what goes on the wall',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -188,6 +199,7 @@ final class Capability
             self::MANAGE_EVENTS,
             self::MANAGE_SCHEDULES,
             self::MANAGE_FORMS,
+            self::MODERATE_PRAYER,
         ];
     }
 

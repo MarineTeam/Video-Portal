@@ -128,6 +128,18 @@ try {
     }
     Write-Host "  Every class reference resolves."
 
+    # And the same question about METHODS. check-imports.php resolves class
+    # names and says nothing about whether the method being called exists, so
+    # `$this->can(...)` where the base class has no can() passes every check
+    # above and fatals the moment that line runs. That shipped twice in one
+    # afternoon; one of the two was on a branch nothing drove.
+    & $php (Join-Path $PSScriptRoot 'check-calls.php') | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        & $php (Join-Path $PSScriptRoot 'check-calls.php')
+        Write-Error "A method call goes nowhere. Refusing to publish."
+    }
+    Write-Host "  Every method call resolves."
+
     $probe = Join-Path $env:TEMP "portal-release-check-$(Get-Random).php"
     @"
 <?php

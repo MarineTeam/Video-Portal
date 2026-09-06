@@ -9,6 +9,7 @@ use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminFormController;
+use Portal\Controllers\AdminPrayerController;
 use Portal\Controllers\AdminScheduleController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
@@ -16,6 +17,7 @@ use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CalendarController;
 use Portal\Controllers\FormController;
+use Portal\Controllers\PrayerController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\DownloadController;
 use Portal\Controllers\EventController;
@@ -366,6 +368,20 @@ final class Routes
         $router->get('/forms/{slug}', [FormController::class, 'show']);
         $router->post('/forms/{slug}', [FormController::class, 'submit']);
 
+        /*
+         * The prayer wall. Open, because the public requests are public and a
+         * sign-in wall over them means the only people who can read them are
+         * the ones who already know.
+         *
+         * Nothing on these routes can put a request on the wall — the
+         * repository has no way to do it, so the moderation rule does not
+         * depend on a controller remembering.
+         */
+        $router->get('/prayer', [PrayerController::class, 'index']);
+        $router->post('/prayer', [PrayerController::class, 'add']);
+        $router->post('/prayer/pray', [PrayerController::class, 'pray']);
+        $router->post('/prayer/withdraw', [PrayerController::class, 'withdraw']);
+
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);
         $router->post('/events/cancel', [EventController::class, 'cancel']);
@@ -428,6 +444,9 @@ final class Routes
         $router->get('/admin/schedules', [AdminScheduleController::class, 'index'], ['admin.area']);
         $router->post('/admin/schedules', [AdminScheduleController::class, 'update'], ['admin.area']);
         $router->get('/admin/schedules/{id:\d+}', [AdminScheduleController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/prayer', [AdminPrayerController::class, 'index'], ['admin.area']);
+        $router->post('/admin/prayer', [AdminPrayerController::class, 'update'], ['admin.area']);
 
         $router->get('/admin/forms', [AdminFormController::class, 'index'], ['admin.area']);
         $router->post('/admin/forms', [AdminFormController::class, 'update'], ['admin.area']);

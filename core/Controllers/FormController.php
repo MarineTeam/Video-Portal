@@ -196,7 +196,7 @@ final class FormController extends Controller
 
     private function canManage(): bool
     {
-        return $this->can(\Portal\Auth\Capability::MANAGE_FORMS);
+        return $this->guard()->can(\Portal\Auth\Capability::MANAGE_FORMS);
     }
 
     private function forms(): FormRepository
