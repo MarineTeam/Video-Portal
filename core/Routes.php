@@ -341,6 +341,15 @@ final class Routes
         $router->get('/calendar', [CalendarController::class, 'index']);
         $router->post('/calendar/me', [CalendarController::class, 'choose']);
 
+        /*
+         * What has changed since a device last asked.
+         *
+         * Registered after /calendar/me so the literal path cannot be shadowed,
+         * and open for the same reason the page is: everything in the payload
+         * is already in that page's HTML.
+         */
+        $router->get('/calendar/sync', [CalendarController::class, 'sync']);
+
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);
         $router->post('/events/cancel', [EventController::class, 'cancel']);

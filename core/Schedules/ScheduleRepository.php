@@ -325,9 +325,21 @@ final class ScheduleRepository
                 [$mergeId]
             );
 
-            // Whatever could not move was a duplicate of a day the winner
-            // already had.
-            $this->db->execute('DELETE FROM {schedule_entries} WHERE person_id = ?', [$mergeId]);
+            /*
+             * Whatever could not move was a duplicate of a day the winner
+             * already had. Through removeEntries() rather than a DELETE of its
+             * own, so these get tombstones too: a device holding the loser's
+             * row has no other way to learn that id is gone, and it would sit
+             * on the phone alongside the winner's as a second person on the
+             * same day.
+             */
+            $this->removeEntries(array_map(
+                'intval',
+                array_column(
+                    $this->db->all('SELECT id FROM {schedule_entries} WHERE person_id = ?', [$mergeId]),
+                    'id'
+                )
+            ));
 
             // The loser's aliases come too, or the spellings they covered stop
             // matching anybody.
@@ -416,7 +428,7 @@ final class ScheduleRepository
 
     public function removeEntry(int $id): void
     {
-        $this->db->execute('DELETE FROM {schedule_entries} WHERE id = ?', [$id]);
+        $this->removeEntries([$id]);
     }
 
     /**
@@ -672,7 +684,16 @@ final class ScheduleRepository
         );
     }
 
-    /** @param list<int> $ids */
+    /**
+     * The ONLY way an entry is removed.
+     *
+     * removeEntry() goes through here too, so there is no delete path that
+     * skips the tombstone. A second one that forgot it would leave a cancelled
+     * date on somebody's phone for ever, with nothing anywhere to explain how
+     * it got there — and a device cannot find out about a row that is gone.
+     *
+     * @param list<int> $ids
+     */
     public function removeEntries(array $ids): int
     {
         if ($ids === []) {
@@ -682,7 +703,17 @@ final class ScheduleRepository
         $ids = array_map('intval', $ids);
         $marks = implode(',', array_fill(0, count($ids), '?'));
 
-        return $this->db->execute("DELETE FROM {schedule_entries} WHERE id IN ({$marks})", $ids);
+        return $this->db->transaction(function () use ($ids, $marks): int {
+            // Written FIRST, while the rows still exist to be copied from.
+            $this->db->execute(
+                "INSERT INTO {schedule_entry_tombstones} (entry_id, schedule_id, on_date, deleted_at)
+                 SELECT id, schedule_id, on_date, NOW() FROM {schedule_entries} WHERE id IN ({$marks})
+                 ON DUPLICATE KEY UPDATE deleted_at = NOW()",
+                $ids
+            );
+
+            return $this->db->execute("DELETE FROM {schedule_entries} WHERE id IN ({$marks})", $ids);
+        });
     }
 
     // --------------------------------------------------------- internals

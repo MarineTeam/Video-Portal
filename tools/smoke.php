@@ -2481,10 +2481,19 @@ postWithJar($baseUrl . '/auth/login', [
     'password' => 'note-reader-password-1234',
 ], $verifyJar);
 
+/*
+ * The status is named in the message, because 200 has one meaning here and
+ * everything else has several. A 403 is the setting refusing the account, which
+ * is the defect this guards; a 500 is a request that died and answered nothing.
+ * Reporting both in the same words once produced a confident claim about a
+ * security property that was really a thirty-second query.
+ */
+$localPassword = getWithJar($baseUrl . '/watch/' . $videoSlug, $verifyJar);
+
 check(
     'An account with a local password is never blocked',
-    getWithJar($baseUrl . '/watch/' . $videoSlug, $verifyJar)['status'] === 200,
-    'local sign-in is the way back in on a host with no shell, and this closed it'
+    $localPassword['status'] === 200,
+    "got {$localPassword['status']} — local sign-in is the way back in on a host with no shell"
 );
 
 /*
@@ -12200,6 +12209,90 @@ check(
 );
 
 /*
+ * KEEPING THE CALENDAR ON A DEVICE.
+ *
+ * Driven as a real request, with no session at all, because that is how a phone
+ * asks. The two rules the payload cannot state are applied by the client — what
+ * is checked here is that the payload carries what the client needs to apply
+ * them, which is the half a device cannot supply for itself.
+ */
+$firstSync = get($baseUrl . '/calendar/sync');
+$first = json_decode($firstSync['body'], true);
+
+check('A device can ask for the calendar', $firstSync['status'] === 200, "got {$firstSync['status']}");
+
+check(
+    'and a first ask is answered in full, and says so',
+    is_array($first) && ($first['full'] ?? null) === true,
+    'a device would merge a first answer into nothing and never know'
+);
+
+check(
+    'and every answer carries the window it answers for',
+    is_array($first) && !empty($first['window']['from']) && !empty($first['window']['to']),
+    'DAYS BEHIND THE WINDOW WOULD SIT ON THE PHONE FOR EVER — the device cannot work out '
+        . 'which those are without being told the window'
+);
+
+$syncMark = $first['now'] ?? '';
+
+/* Disabling touches no entry row, so this is the case the payload cannot state. */
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'disable',
+    'id'     => (string) $schedId,
+], $jar);
+
+$afterDisable = json_decode(get($baseUrl . '/calendar/sync?since=' . urlencode($syncMark))['body'], true);
+$listed = $afterDisable['schedules'] ?? [];
+
+check(
+    'A withdrawn schedule is still listed, switched off',
+    count(array_filter(
+        $listed,
+        static fn (array $s): bool => (int) $s['id'] === $schedId && $s['enabled'] === false
+    )) === 1,
+    'A DEVICE CANNOT TELL A WITHDRAWN SCHEDULE FROM AN UNCHANGED ONE — its dates would stay '
+        . 'on the phone and somebody would turn up'
+);
+
+check(
+    'and its dates are not sent as changes',
+    ($afterDisable['entries'] ?? []) === [] && ($afterDisable['removed'] ?? []) === [],
+    'disabling reported a change it cannot have made — nothing was written to any entry'
+);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'enable',
+    'id'     => (string) $schedId,
+], $jar);
+
+/* A cancellation IS reportable, because a tombstone remembers it. */
+$doomedEntry = (int) $db->value(
+    'SELECT id FROM {schedule_entries} WHERE schedule_id = ? ORDER BY id LIMIT 1',
+    [$schedId]
+);
+$beforeDelete = json_decode(get($baseUrl . '/calendar/sync')['body'], true)['now'] ?? '';
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'remove-entry',
+    'entry'  => (string) $doomedEntry,
+], $jar);
+
+$afterDelete = json_decode(
+    get($baseUrl . '/calendar/sync?since=' . urlencode($beforeDelete))['body'],
+    true
+);
+
+check(
+    'A cancelled date is reported as gone',
+    in_array($doomedEntry, $afterDelete['removed'] ?? [], true),
+    'A CANCELLED DATE WOULD SIT ON THE PHONE — a deleted row leaves no trace without a tombstone'
+);
+
+/*
  * REMINDERS, and the limitation the screen has to state.
  *
  * Somebody on a rota with no account gets none. The settings page is therefore
@@ -12323,6 +12416,49 @@ if ($transportFailures !== []) {
     echo "reply that never arrives leaves the cookie jar holding a dead session,\n";
     echo "and everything downstream answers 302. Re-run on an idle machine\n";
     echo "before believing any failure above.\n";
+}
+
+/*
+ * The same warning, for the other way a request stops being an answer.
+ *
+ * A request killed by PHP's execution limit does not fail to arrive — it comes
+ * back a perfectly ordinary 500, and every check then reports whatever it
+ * reports when the status is not the one it wanted. That is how a busy machine
+ * produced "An account with a local password is never blocked" failing with the
+ * message "local sign-in is the way back in on a host with no shell, and this
+ * closed it": a claim about a security property, made because a query took
+ * thirty seconds.
+ *
+ * The transport banner already exists for "I could not ask it". This is the
+ * same category — the application never answered the question — and it was
+ * invisible because the request technically completed.
+ */
+if (isset($serverLog) && is_file($serverLog)) {
+    $fatals = [];
+
+    foreach (file($serverLog, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+        if (preg_match('/(Maximum execution time|Fatal error|Allowed memory size)/', $line) === 1) {
+            $fatals[] = trim($line);
+        }
+    }
+
+    if ($fatals !== []) {
+        echo "\n";
+        echo str_repeat('!', 50) . "\n";
+        printf("%d request(s) died inside PHP:\n", count($fatals));
+        foreach (array_slice($fatals, 0, 10) as $fatal) {
+            echo '  ' . $fatal . "\n";
+        }
+        echo "\nTHESE ARE NOT ANSWERS ABOUT THE APPLICATION.\n";
+        echo "A request killed by the execution limit comes back as an ordinary\n";
+        echo "500, so whichever check made it reports its own wording — which is\n";
+        echo "a claim about the feature, not about a busy machine. Read any\n";
+        echo "failure above against this list before believing it.\n";
+
+        // A run that could not ask its questions is not a passing run, whatever
+        // the tally says.
+        $failed = max($failed, 1);
+    }
 }
 
 exit($failed === 0 ? 0 : 1);

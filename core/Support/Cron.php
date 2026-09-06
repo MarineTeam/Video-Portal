@@ -346,6 +346,30 @@ final class Cron
         };
 
         /*
+         * Forget cancellations older than a device could plausibly be away.
+         *
+         * The tombstones exist so a phone can find out about a date that was
+         * removed; kept for ever they would become a permanent register of
+         * every cancellation this site has ever made. Past the window the sync
+         * answers `full` instead, which is the honest answer rather than a
+         * cheaper wrong one.
+         */
+        $this->handlers['schedules.prune'] = static function (App $app): string {
+            $db = $app->container()->get(\Portal\Db::class);
+
+            $removed = (new \Portal\Schedules\CalendarSync(
+                $db,
+                new \Portal\Schedules\ScheduleRepository($db)
+            ))->prune();
+
+            return $removed === 0
+                ? 'Nothing to forget.'
+                : sprintf('Forgot %d cancellation(s) older than %d days.',
+                    $removed,
+                    \Portal\Schedules\CalendarSync::TOMBSTONE_DAYS);
+        };
+
+        /*
          * Tell people what they are on for.
          *
          * Runs often, because the decision is per-subscriber wall clock: with
@@ -436,6 +460,7 @@ final class Cron
             'events.horizon'     => 86400,
             'schedules.sync'     => 900,
             'schedules.reminders' => 900,
+            'schedules.prune'    => 86400,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

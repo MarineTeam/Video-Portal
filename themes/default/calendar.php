@@ -91,6 +91,15 @@ echo $template->partial('breadcrumbs', get_defined_vars());
   </p>
 <?php endif ?>
 
+<?php
+/*
+ * Where the copy saved on this device goes when there is no signal. Empty and
+ * hidden on a request that reached the server, because that page is better —
+ * this is the fallback, not the source.
+ */
+?>
+<div data-calendar-offline hidden></div>
+
 <?php if ($days === []): ?>
   <div class="empty">Nothing on the rota between
     <?= e($dayName($from)) ?> and <?= e($dayName($to)) ?>.</div>
@@ -126,5 +135,16 @@ echo $template->partial('breadcrumbs', get_defined_vars());
     </section>
   <?php endforeach ?>
 <?php endif ?>
+
+<?php
+/*
+ * Keeps a copy on the device and applies the two rules the sync payload cannot
+ * state — see the file itself. Deferred and entirely optional: without it the
+ * page is exactly what it is now, which is the whole calendar.
+ */
+?>
+<script src="<?= e(isset($themeAsset)
+    ? $themeAsset('calendar-sync.js')
+    : ($assetsUrl ?? '/theme-asset/default') . '/calendar-sync.js') ?>" defer></script>
 
 <?= $template->partial('footer', get_defined_vars()) ?>

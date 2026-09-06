@@ -6,6 +6,7 @@ namespace Portal\Controllers;
 
 use Portal\Http\Request;
 use Portal\Http\Response;
+use Portal\Schedules\CalendarSync;
 use Portal\Schedules\ScheduleRepository;
 
 /**
@@ -110,6 +111,31 @@ final class CalendarController extends Controller
             // dates, which is the entire point of remembering it.
             'samesite' => 'Lax',
         ]);
+    }
+
+    /**
+     * What has changed since a device last asked.
+     *
+     * No login, like the page it belongs to — every name and date here is
+     * already on /calendar, so a guard would refuse a device the same rows it
+     * can read by fetching the HTML.
+     *
+     * No CSRF token either, and for the reason the subscribe endpoints carry:
+     * a token protects an action that borrows the visitor's authority, and this
+     * reads public data and borrows none. Requiring one would also start a
+     * session for every device that ever syncs.
+     */
+    public function sync(Request $request): Response
+    {
+        $sync = new CalendarSync($this->db(), $this->schedules());
+
+        return Response::json($sync->payload((string) ($request->query('since') ?? '') ?: null))
+            /*
+             * Never cached. The whole value of an incremental answer is that
+             * it is answered against the moment it was asked; a proxy handing
+             * back yesterday's would tell a device that nothing had changed.
+             */
+            ->private();
     }
 
     private function day(string $raw, string $fallback): string
