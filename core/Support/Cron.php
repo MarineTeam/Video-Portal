@@ -346,6 +346,23 @@ final class Cron
         };
 
         /*
+         * Tell people what they are on for.
+         *
+         * Runs often, because the decision is per-subscriber wall clock: with
+         * subscribers in two zones there is no single hour this could fire at,
+         * and the work is one indexed query when nothing is due.
+         */
+        $this->handlers['schedules.reminders'] = static function (App $app): string {
+            $db = $app->container()->get(\Portal\Db::class);
+
+            return (new \Portal\Schedules\Reminders(
+                $db,
+                $app->container()->get(\Portal\Config::class),
+                $app->container()->get(\Portal\Mail\MailProvider::class)
+            ))->run();
+        };
+
+        /*
          * Pull every rota that is fed from a spreadsheet.
          *
          * ONE SOURCE'S FAILURE IS NOT THE JOB'S. Each is fetched from somebody
@@ -418,6 +435,7 @@ final class Cron
             // often would find nothing to do on all but one run in ninety.
             'events.horizon'     => 86400,
             'schedules.sync'     => 900,
+            'schedules.reminders' => 900,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

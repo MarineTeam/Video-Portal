@@ -287,6 +287,60 @@ final class AccountController extends Controller
         return new \Portal\Content\NotificationLog($this->db());
     }
 
+    /**
+     * When to be reminded of a rota you are on.
+     *
+     * On its own screen rather than folded into the notifications list, because
+     * the two answer different questions: that one is "what was I told", this
+     * one is "what do I want to be told". And this one is reachable by
+     * somebody who has never been told anything, which is exactly who needs it.
+     */
+    public function reminders(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        $schedules = new \Portal\Schedules\ScheduleRepository($this->db());
+
+        if ($request->method === 'POST') {
+            $this->verifyCsrf($request);
+
+            $schedules->saveReminderPrefs(
+                $user->id,
+                $request->input('day_before') !== null,
+                $request->input('day_of') !== null,
+                (int) ($request->input('send_hour') ?? 18),
+                (string) ($request->input('timezone') ?? '')
+            );
+
+            return $this->back($request, 'Saved.');
+        }
+
+        $upcoming = $schedules->upcomingFor($user->id);
+
+        return $this->view(['account-reminders'], [
+            'title'    => 'Rota reminders',
+            'prefs'    => $schedules->reminderPrefs($user->id),
+            'upcoming' => $upcoming,
+            /*
+             * Whether this account is linked to a name at all. Without it the
+             * screen is a form that quietly does nothing — somebody sets an
+             * hour, saves, and is never reminded of anything, with no way to
+             * find out that the link is what was missing.
+             */
+            'linked'   => (int) $this->db()->value(
+                'SELECT COUNT(*) FROM {schedule_people} WHERE user_id = ?',
+                [$user->id]
+            ) > 0,
+            'siteZone' => $this->config()->setting('timezone', date_default_timezone_get()),
+            'token'    => $this->csrfToken(),
+            'flash'    => $this->flash(),
+        ]);
+    }
+
     public function password(Request $request): Response
     {
         $user = $this->user();

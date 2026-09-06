@@ -12199,6 +12199,72 @@ check(
     'DISCONNECTING A SPREADSHEET DELETED THE ROTA IT HAD BUILT'
 );
 
+/*
+ * REMINDERS, and the limitation the screen has to state.
+ *
+ * Somebody on a rota with no account gets none. The settings page is therefore
+ * a form that quietly does nothing until an account is linked — so it has to
+ * say so before the form rather than after it, or somebody sets an hour, saves,
+ * is never reminded of anything, and has no way to learn what was missing.
+ */
+$remindersPage = getWithJar($baseUrl . '/account/reminders', $jar);
+
+check(
+    'The reminder settings open',
+    $remindersPage['status'] === 200,
+    "got {$remindersPage['status']}"
+);
+
+check(
+    'and say plainly that an unlinked account gets nothing',
+    str_contains($remindersPage['body'], 'not linked to a name'),
+    'the form would quietly do nothing and never say why'
+);
+
+$davePersonId = (int) $db->value('SELECT id FROM {schedule_people} WHERE name = ?', ['Dave Smith']);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'link',
+    'person' => (string) $davePersonId,
+    'user'   => (string) $adminUserId,
+], $jar);
+
+$linkedPage = getWithJar($baseUrl . '/account/reminders', $jar);
+
+check(
+    'and stop saying it once a name is linked',
+    !str_contains($linkedPage['body'], 'not linked to a name'),
+    'linking is what turns reminders on and the screen still says it has not happened'
+);
+
+check(
+    'and show what that person is on for',
+    str_contains($linkedPage['body'], 'What you are on'),
+    'somebody cannot check the site agrees with them about their own dates'
+);
+
+postWithJar($baseUrl . '/account/reminders', [
+    '_token'    => csrfFrom($linkedPage['body']),
+    'day_of'    => '1',
+    'send_hour' => '7',
+    'timezone'  => 'Pacific/Auckland',
+], $jar);
+
+$prefs = $db->first('SELECT * FROM {schedule_reminder_prefs} WHERE user_id = ?', [$adminUserId]);
+
+check(
+    'An hour and a place can be chosen',
+    $prefs !== null && (int) $prefs['send_hour'] === 7 && $prefs['timezone'] === 'Pacific/Auckland',
+    'the hour is where the person is, not where the server is'
+);
+
+check(
+    'and an unticked box really is off',
+    $prefs !== null && (int) $prefs['day_before'] === 0 && (int) $prefs['day_of'] === 1,
+    'somebody cannot turn the day-before reminder off'
+);
+
 $db->execute('DELETE FROM {schedules} WHERE id = ?', [$schedId]);
 $db->execute('DELETE FROM {schedule_people}');
 

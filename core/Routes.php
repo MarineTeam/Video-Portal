@@ -213,6 +213,21 @@ final class Routes
         );
 
         /*
+         * When to be reminded of a rota you are on.
+         *
+         * auth.user rather than auth.authorized, like the rest of the account
+         * area: somebody waiting for approval still owns their settings, and a
+         * rota is one of the things a church puts people on before the website
+         * catches up with them.
+         */
+        $router->any(
+            ['GET', 'POST'],
+            '/account/reminders',
+            [AccountController::class, 'reminders'],
+            ['auth.user']
+        );
+
+        /*
          * Asking for access.
          *
          * Guarded by `auth.user` and NOT by `auth.authorized`, which is the

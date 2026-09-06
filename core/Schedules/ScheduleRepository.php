@@ -460,6 +460,79 @@ final class ScheduleRepository
         );
     }
 
+    // --------------------------------------------------------- reminders
+
+    /**
+     * What somebody has asked for, or what they get if they have never said.
+     *
+     * ABSENT MEANS THE DEFAULT, not "off". Linking a name to an account is what
+     * turns reminders on — if a missing row meant silence, linking would only
+     * turn on the possibility of somebody finding a settings page, and nobody
+     * would ever be reminded of anything.
+     *
+     * @return array{day_before: bool, day_of: bool, send_hour: int, timezone: ?string}
+     */
+    public function reminderPrefs(int $userId): array
+    {
+        $row = $this->db->first('SELECT * FROM {schedule_reminder_prefs} WHERE user_id = ?', [$userId]);
+
+        return [
+            'day_before' => $row === null || (bool) $row['day_before'],
+            'day_of'     => $row !== null && (bool) $row['day_of'],
+            'send_hour'  => ReminderSchedule::hour($row === null ? 18 : (int) $row['send_hour']),
+            'timezone'   => $row === null ? null : ($row['timezone'] ?: null),
+        ];
+    }
+
+    public function saveReminderPrefs(
+        int $userId,
+        bool $dayBefore,
+        bool $dayOf,
+        int $hour,
+        string $timezone
+    ): void {
+        $now = date('Y-m-d H:i:s');
+
+        // Anything that is not a real zone becomes nothing at all, and the
+        // sender falls back to the site's — a bad string here would otherwise
+        // make WallClock guess for ever afterwards.
+        $zone = in_array($timezone, \DateTimeZone::listIdentifiers(), true) ? $timezone : null;
+
+        $this->db->execute(
+            'INSERT INTO {schedule_reminder_prefs}
+                (user_id, day_before, day_of, send_hour, timezone, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                day_before = VALUES(day_before), day_of = VALUES(day_of),
+                send_hour = VALUES(send_hour), timezone = VALUES(timezone),
+                updated_at = VALUES(updated_at)',
+            [$userId, $dayBefore ? 1 : 0, $dayOf ? 1 : 0, ReminderSchedule::hour($hour), $zone, $now, $now]
+        );
+    }
+
+    /**
+     * The dates one account is on, for their own settings screen.
+     *
+     * Through the linked person rather than the account, because the rota is
+     * kept as names — the link is the only thing that connects the two, and it
+     * is what turns reminders on in the first place.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function upcomingFor(int $userId, int $limit = 20): array
+    {
+        return $this->db->all(
+            'SELECT e.on_date, e.role, s.name AS schedule_name, s.icon, s.colour
+               FROM {schedule_entries} e
+               INNER JOIN {schedules} s ON s.id = e.schedule_id AND s.is_enabled = 1
+               INNER JOIN {schedule_people} p ON p.id = e.person_id
+              WHERE p.user_id = ? AND e.on_date >= CURDATE()
+              ORDER BY e.on_date
+              LIMIT ' . max(1, min(100, $limit)),
+            [$userId]
+        );
+    }
+
     // ----------------------------------------------------------- sources
 
     /** @return array<string, mixed>|null */
