@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Portal\Controllers;
 
+use Portal\Auth\Capability;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
@@ -51,6 +52,52 @@ final class RotaController extends Controller
             'me'          => $user->id,
             'token'       => $this->csrfToken(),
             'flash'       => $this->flash(),
+        ]);
+    }
+
+    /**
+     * One service: the running order, and who is serving.
+     *
+     * Behind auth.authorized like the rest of this controller. A public "what
+     * is on" page is a later section with its own rules about names; until
+     * then, a page listing who is serving is for the people serving.
+     *
+     * A draft is visible to whoever may build the rota and to nobody else —
+     * they are the person checking it before it goes out, and the 404 for
+     * everybody else is the same answer a service that does not exist gets.
+     *
+     * @param array<string, string> $params
+     */
+    public function service(Request $request, array $params): Response
+    {
+        $rota = $this->rota();
+        $service = $rota->service((int) ($params['id'] ?? 0));
+
+        if ($service === null) {
+            throw HttpException::notFound('There is no service at that address.');
+        }
+
+        if (!$service['is_published'] && !$this->guard()->can(Capability::MANAGE_ROTA)) {
+            throw HttpException::notFound('There is no service at that address.');
+        }
+
+        /*
+         * Only the people who said yes. An invitation nobody has answered is
+         * not a fact about Sunday, and printing it would have somebody turn up
+         * expecting help that was never agreed to — or, worse, not turn up
+         * because they saw a name that was only ever a question.
+         */
+        $serving = array_values(array_filter(
+            $rota->forService((int) $service['id']),
+            static fn (Assignment $a): bool => $a->isAccepted()
+        ));
+
+        return $this->view(['service'], [
+            'title'   => (string) $service['title'],
+            'service' => $service,
+            'plan'    => $rota->plan((int) $service['id']),
+            'serving' => $serving,
+            'flash'   => $this->flash(),
         ]);
     }
 

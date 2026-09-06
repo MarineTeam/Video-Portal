@@ -11317,6 +11317,153 @@ $db->execute('DELETE FROM {rota_blockouts} WHERE user_id = ?', [$rotaAway]);
 $db->execute('DELETE FROM {rota_team_members} WHERE team_id = ?', [$rotaTeam]);
 $db->execute('DELETE FROM {users} WHERE id = ?', [$rotaAway]);
 
+/* ------------------------------------------------ the order of service
+ *
+ * A running order named by the hymn rather than by the book it is in, and a
+ * page laid out to be printed.
+ */
+$planToken = csrfFrom(getWithJar($baseUrl . '/admin/rota/services/' . $rotaService, $jar)['body']);
+
+postWithJar($baseUrl . '/admin/rota', [
+    '_token'     => $planToken,
+    'action'     => 'add-plan-item',
+    'service_id' => (string) $rotaService,
+    'kind'       => 'hymn',
+    'title'      => 'Be Thou My Vision',
+    'reference'  => '245',
+    'note'       => 'Organ only, no descant',
+], $jar);
+
+postWithJar($baseUrl . '/admin/rota', [
+    '_token'     => $planToken,
+    'action'     => 'add-plan-item',
+    'service_id' => (string) $rotaService,
+    'kind'       => 'reading',
+    'title'      => 'Romans 8',
+    'reference'  => 'Romans 8:1-11',
+], $jar);
+
+check(
+    'A line can be added to the order',
+    (int) $db->value('SELECT COUNT(*) FROM {service_plan_items} WHERE service_id = ?', [$rotaService]) === 2,
+    'the form wrote nothing'
+);
+
+check(
+    'and it is named by the hymn, with the board number separate',
+    $db->value(
+        'SELECT title FROM {service_plan_items} WHERE service_id = ? ORDER BY position LIMIT 1',
+        [$rotaService]
+    ) === 'Be Thou My Vision'
+        && $db->value(
+            'SELECT reference FROM {service_plan_items} WHERE service_id = ? ORDER BY position LIMIT 1',
+            [$rotaService]
+        ) === '245',
+    'a plan that says only "245" means nothing to anybody holding a different book'
+);
+
+/* Reordering, asserted on the stored rows rather than on the rendering. */
+$secondId = (int) $db->value(
+    'SELECT id FROM {service_plan_items} WHERE service_id = ? ORDER BY position DESC LIMIT 1',
+    [$rotaService]
+);
+
+postWithJar($baseUrl . '/admin/rota', [
+    '_token' => $planToken,
+    'action' => 'plan-up',
+    'id'     => (string) $secondId,
+], $jar);
+
+check(
+    'The order can be rearranged',
+    (int) $db->value(
+        'SELECT id FROM {service_plan_items} WHERE service_id = ? ORDER BY position, id LIMIT 1',
+        [$rotaService]
+    ) === $secondId,
+    'the arrows did nothing'
+);
+
+$sheet = getWithJar($baseUrl . '/services/' . $rotaService, $jar);
+
+check(
+    'The service page renders the order',
+    $sheet['status'] === 200
+        && str_contains($sheet['body'], 'Be Thou My Vision')
+        && str_contains($sheet['body'], '245'),
+    "got {$sheet['status']}"
+);
+
+/*
+ * THE RULE: only people who said yes. An invitation nobody has answered is not
+ * a fact about Sunday, and printing it would have somebody expect help that
+ * was never agreed to.
+ */
+/*
+ * Both people are made here rather than relying on the answering checks further
+ * down. A check that depends on the state a later block leaves behind passes or
+ * fails on the ORDER of two things that have nothing to do with each other —
+ * which is how this failed the first time: the sheet was asked who was serving
+ * before anybody in the script had said yes.
+ */
+$rotaWaiting = (int) $db->insert('users', [
+    'email' => 'rota-waiting@smoke.test', 'name' => 'Not Answered Yet', 'authorized' => 1,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->insert('rota_assignments', [
+    'service_id' => $rotaService, 'team_id' => $rotaTeam, 'user_id' => $rotaWaiting,
+    'state' => 'invited',
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$rotaServing = (int) $db->insert('users', [
+    'email' => 'rota-serving@smoke.test', 'name' => 'Said Yes Already', 'authorized' => 1,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->insert('rota_assignments', [
+    'service_id' => $rotaService, 'team_id' => $rotaTeam, 'user_id' => $rotaServing,
+    'state' => 'accepted', 'answered_at' => date('Y-m-d H:i:s'),
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$sheetAgain = getWithJar($baseUrl . '/services/' . $rotaService, $jar);
+
+check(
+    'Somebody who has not answered is not printed as though they had',
+    !str_contains($sheetAgain['body'], 'Not Answered Yet'),
+    'AN INVITATION WAS PRINTED AS AN ARRANGEMENT'
+);
+
+check(
+    'while somebody who said yes is',
+    str_contains($sheetAgain['body'], 'Said Yes Already')
+        && str_contains($sheetAgain['body'], 'Who is serving'),
+    'the sheet does not say who is there, which is what it is read for'
+);
+
+/* The print stylesheet is real, and served. */
+$themeCss = get($baseUrl . '/theme-asset/default/theme.css');
+check(
+    'The theme carries a print stylesheet',
+    str_contains($themeCss['body'], '@media print')
+        && str_contains($themeCss['body'], '@page'),
+    'a page meant to be printed with no print rules is a screenshot'
+);
+
+check(
+    'and it turns the dark theme to ink on paper',
+    str_contains($themeCss['body'], '--text: #000'),
+    'a dark theme printed as-is is a black page and an empty cartridge'
+);
+
+check(
+    'and drops the controls a printed page cannot use',
+    str_contains($themeCss['body'], '.tab-bar,'),
+    'ink spent on buttons nobody can press'
+);
+
+$db->execute('DELETE FROM {users} WHERE id = ?', [$rotaWaiting]);
+$db->execute('DELETE FROM {users} WHERE id = ?', [$rotaServing]);
+
 $rotaPage = getWithJar($baseUrl . '/rota', $jar);
 
 check('The rota page renders', $rotaPage['status'] === 200, "got {$rotaPage['status']}");

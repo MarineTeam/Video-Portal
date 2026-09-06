@@ -304,6 +304,16 @@ final class Routes
         $router->get('/rota', [RotaController::class, 'mine'], ['auth.authorized']);
         $router->post('/rota', [RotaController::class, 'update'], ['auth.authorized']);
 
+        /*
+         * One service: the running order, and who said yes. Laid out to be
+         * printed — the sheet somebody holds on a Sunday morning.
+         *
+         * Behind the same guard as the rest. A public "what is on" page is a
+         * later section with its own rules about naming people; until then, a
+         * page listing who is serving is for the people serving.
+         */
+        $router->get('/services/{id:\d+}', [RotaController::class, 'service'], ['auth.authorized']);
+
         // Saved videos. Approved-only for the same reason /watch is: the pages
         // list content, and an unapproved account cannot see the library either.
         $router->get('/notes', [LibraryController::class, 'notes'], ['auth.authorized']);

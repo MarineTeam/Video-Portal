@@ -68,6 +68,7 @@ final class AdminRotaController extends Controller
 
         return $this->render('rota-service', [
             'service'     => $service,
+            'plan'        => $rota->plan((int) $service['id']),
             'assignments' => $rota->forService((int) $service['id']),
             'teams'       => $teams,
             'teamId'      => $teamId,
@@ -132,6 +133,10 @@ final class AdminRotaController extends Controller
                 'unpublish'       => $this->publish($request, $rota, false),
                 'ask'             => $this->ask($request, $rota),
                 'withdraw'        => $this->withdraw($request, $rota),
+                'add-plan-item'   => $this->addPlanItem($request, $rota),
+                'remove-plan-item' => $this->removePlanItem($request, $rota),
+                'plan-up'         => $this->movePlanItem($request, $rota, -1),
+                'plan-down'       => $this->movePlanItem($request, $rota, 1),
                 default           => $this->back($request, 'That is not something this screen can do.', 'error'),
             };
         } catch (HttpException $e) {
@@ -269,6 +274,38 @@ final class AdminRotaController extends Controller
         $rota->withdraw((int) ($request->input('id') ?? 0));
 
         return $this->back($request, 'Withdrawn.');
+    }
+
+    private function addPlanItem(Request $request, RotaRepository $rota): Response
+    {
+        $rota->addPlanItem(
+            (int) ($request->input('service_id') ?? 0),
+            (string) ($request->input('kind') ?? 'item'),
+            (string) ($request->input('title') ?? ''),
+            (string) ($request->input('reference') ?? ''),
+            (string) ($request->input('note') ?? '')
+        );
+
+        return $this->back($request, 'Added to the order.');
+    }
+
+    private function removePlanItem(Request $request, RotaRepository $rota): Response
+    {
+        $rota->removePlanItem((int) ($request->input('id') ?? 0));
+
+        return $this->back($request, 'Removed.');
+    }
+
+    private function movePlanItem(Request $request, RotaRepository $rota, int $direction): Response
+    {
+        $moved = $rota->movePlanItem((int) ($request->input('id') ?? 0), $direction);
+
+        /*
+         * Silent on success, like the other ordering buttons on this site — the
+         * list itself is the feedback. Only the no-op is worth a word, because
+         * a button that appears to do nothing otherwise looks broken.
+         */
+        return $this->back($request, $moved ? '' : 'That one is already at the end.');
     }
 
     // ---------------------------------------------------------------- helpers

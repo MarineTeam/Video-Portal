@@ -190,6 +190,127 @@ final class RotaRepository
         );
     }
 
+    // ------------------------------------------------------- service plan
+
+    /**
+     * The running order, in the order somebody arranged it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function plan(int $serviceId): array
+    {
+        return $this->db->all(
+            'SELECT * FROM {service_plan_items} WHERE service_id = ? ORDER BY position, id',
+            [$serviceId]
+        );
+    }
+
+    /**
+     * Add a line to the order.
+     *
+     * The title is the HYMN'S OWN NAME, and the reference is whatever goes on
+     * the board. See the migration for why that way round: a row that said
+     * "Ancient & Modern 245" would be meaningless to anybody holding a
+     * different book, and to this site the day the church buys new hymnals.
+     */
+    public function addPlanItem(
+        int $serviceId,
+        string $kind,
+        string $title,
+        string $reference = '',
+        string $note = ''
+    ): int {
+        $title = trim($title);
+
+        if ($title === '') {
+            throw HttpException::badRequest('A line in the order needs a name.');
+        }
+
+        $next = (int) $this->db->value(
+            'SELECT COALESCE(MAX(position), 0) + 10 FROM {service_plan_items} WHERE service_id = ?',
+            [$serviceId]
+        );
+
+        $now = date('Y-m-d H:i:s');
+
+        return (int) $this->db->insert('service_plan_items', [
+            'service_id' => $serviceId,
+            'kind'       => self::planKind($kind),
+            'title'      => mb_substr($title, 0, 190),
+            'reference'  => mb_substr(trim($reference), 0, 120) ?: null,
+            'note'       => mb_substr(trim($note), 0, 300) ?: null,
+            'position'   => $next,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    public function removePlanItem(int $id): void
+    {
+        $this->db->execute('DELETE FROM {service_plan_items} WHERE id = ?', [$id]);
+    }
+
+    /**
+     * Move one line up or down.
+     *
+     * Swaps positions with its neighbour rather than renumbering everything,
+     * which is the same shape as the category ordering and for the same reason:
+     * one write, and nothing else in the list moves.
+     *
+     * @param int $direction -1 for earlier, 1 for later
+     */
+    public function movePlanItem(int $id, int $direction): bool
+    {
+        if ($direction !== -1 && $direction !== 1) {
+            return false;
+        }
+
+        $item = $this->db->first('SELECT * FROM {service_plan_items} WHERE id = ?', [$id]);
+
+        if ($item === null) {
+            return false;
+        }
+
+        $order = $this->plan((int) $item['service_id']);
+        $index = null;
+
+        foreach ($order as $i => $row) {
+            if ((int) $row['id'] === $id) {
+                $index = $i;
+                break;
+            }
+        }
+
+        $swapWith = $index === null ? null : ($order[$index + $direction] ?? null);
+
+        if ($swapWith === null) {
+            // Already at one end. Reported rather than silently doing nothing:
+            // a button that appears not to work is one somebody presses again.
+            return false;
+        }
+
+        return $this->db->transaction(function () use ($item, $swapWith): bool {
+            $this->db->execute(
+                'UPDATE {service_plan_items} SET position = ?, updated_at = NOW() WHERE id = ?',
+                [(int) $swapWith['position'], (int) $item['id']]
+            );
+            $this->db->execute(
+                'UPDATE {service_plan_items} SET position = ?, updated_at = NOW() WHERE id = ?',
+                [(int) $item['position'], (int) $swapWith['id']]
+            );
+
+            return true;
+        });
+    }
+
+    /** The kinds a line can be. An unknown one renders as a plain item. */
+    public static function planKind(string $kind): string
+    {
+        $kind = strtolower(trim($kind));
+
+        return in_array($kind, ['hymn', 'reading', 'item'], true) ? $kind : 'item';
+    }
+
     // -------------------------------------------------------------- asks
 
     /**

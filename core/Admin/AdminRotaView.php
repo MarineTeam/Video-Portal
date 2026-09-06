@@ -228,11 +228,13 @@ final class AdminRotaView
         }
 
         $picker = $this->picker($data, $serviceId, $teamId, $token);
+        $plan = $this->plan($data, $serviceId, $token);
 
         return <<<HTML
         <p class="muted small"><a href="/admin/rota">&larr; The rota</a></p>
         <h1>{$this->text((string) $service['title'])}</h1>
-        <p class="page-subtitle muted">{$this->text($this->when((string) $service['starts_at']))}</p>
+        <p class="page-subtitle muted">{$this->text($this->when((string) $service['starts_at']))}
+           · <a href="/services/{$serviceId}">See it as everybody else does</a></p>
 
         <table>
           <thead><tr><th>Who</th><th>Doing what</th><th>Answer</th><th></th></tr></thead>
@@ -242,6 +244,87 @@ final class AdminRotaView
         <h2>Ask somebody</h2>
         <p>{$teamTabs}</p>
         {$picker}
+
+        {$plan}
+        HTML;
+    }
+
+    /**
+     * The running order.
+     *
+     * A line is named by the HYMN, and the reference is whatever goes on the
+     * board — see the migration for why that way round. The form says so, in
+     * the field labels rather than in help text underneath, because the person
+     * filling it in is reading the labels.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function plan(array $data, int $serviceId, string $token): string
+    {
+        $rows = '';
+
+        foreach ((array) ($data['plan'] ?? []) as $item) {
+            $rows .= sprintf(
+                '<tr>
+                   <td><span class="pill">%s</span></td>
+                   <td><strong>%s</strong>%s</td>
+                   <td class="muted small">%s</td>
+                   <td class="right">
+                     <form method="post" action="/admin/rota" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="plan-up" class="btn tiny secondary"
+                               title="Move up">&uarr;</button>
+                       <button name="action" value="plan-down" class="btn tiny secondary"
+                               title="Move down">&darr;</button>
+                       <button name="action" value="remove-plan-item" class="btn tiny danger">Remove</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e((string) $item['kind']),
+                e((string) $item['title']),
+                empty($item['reference'])
+                    ? ''
+                    : ' <span class="muted">' . e((string) $item['reference']) . '</span>',
+                e((string) ($item['note'] ?? '')),
+                $token,
+                (int) $item['id']
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="4" class="muted">Nothing in the order yet.</td></tr>';
+        }
+
+        return <<<HTML
+        <h2>The order</h2>
+        <p class="muted small">A hymn is named by ITS OWN NAME, not by the book it is in — the same
+           hymn is a different number in every hymnal, and a plan that said "245" would mean nothing
+           to anybody holding a different book. Put the number on the board in the reference.</p>
+
+        <table>
+          <thead><tr><th>Kind</th><th>What</th><th>Note for whoever leads</th><th></th></tr></thead>
+          <tbody>{$rows}</tbody>
+        </table>
+
+        <form method="post" action="/admin/rota">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="service_id" value="{$serviceId}">
+          <label>Kind
+            <select name="kind">
+              <option value="hymn">Hymn</option>
+              <option value="reading">Reading</option>
+              <option value="item" selected>Something else</option>
+            </select>
+          </label>
+          <label>Name of the hymn, reading, or item
+            <input type="text" name="title" required placeholder="Be Thou My Vision"></label>
+          <label>What goes on the board <span class="muted small">— optional</span>
+            <input type="text" name="reference" maxlength="120" placeholder="245"></label>
+          <label>Note for whoever leads <span class="muted small">— not printed for the congregation</span>
+            <input type="text" name="note" maxlength="300"></label>
+          <button class="btn" name="action" value="add-plan-item">Add to the order</button>
+        </form>
         HTML;
     }
 

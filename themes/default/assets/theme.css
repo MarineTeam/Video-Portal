@@ -214,6 +214,88 @@ main { padding: 2.5rem 0 4rem; }
 .rota-away-form label { margin: 0; font-size: 0.8125rem; color: var(--text-muted); }
 .rota-away-form input { margin-top: 0.25rem; }
 
+/* The order of service, on screen. */
+.service-order { margin: 0 0 2rem; padding-left: 1.4rem; }
+.service-order li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.service-order-ref { color: var(--text-muted); white-space: nowrap; }
+
+.service-serving { list-style: none; margin: 0; padding: 0; }
+.service-serving li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.service-serving-role { color: var(--text-muted); }
+
+/*
+ * PRINT.
+ *
+ * A real print stylesheet, not display:none on the header. What gets printed is
+ * a sheet somebody holds on a Sunday morning: black on white, the order and the
+ * names, and nothing that only makes sense on a screen.
+ *
+ * The rules are here rather than in the template so a child theme inherits
+ * them, and `.no-print` is the one hook a template needs to know about.
+ */
+@media print {
+  /* Ink. A dark theme printed as-is is a black page and an empty cartridge —
+     and the tokens are redefined rather than overridden per rule, so anything
+     added later prints correctly without being remembered. */
+  :root {
+    --bg: #fff;
+    --surface: #fff;
+    --text: #000;
+    --text-muted: #333;
+    --border: #999;
+    --accent: #000;
+  }
+
+  body { background: #fff; color: #000; padding-bottom: 0; }
+
+  /* Everything that is navigation or a control. A printed page cannot be
+     clicked, so a button on it is ink spent on nothing. */
+  .site-header,
+  .tab-bar,
+  .breadcrumbs,
+  .site-footer,
+  .no-print,
+  form,
+  .btn,
+  .announcement { display: none !important; }
+
+  main { padding: 0; }
+  .wrap { max-width: none; padding: 0; }
+
+  .page-title { font-size: 18pt; margin: 0 0 0.2cm; }
+  .page-subtitle { font-size: 11pt; margin: 0 0 0.6cm; }
+  .section-title { font-size: 12pt; margin: 0.6cm 0 0.2cm; }
+
+  .service-order li,
+  .service-serving li {
+    border-bottom: 1px solid #ccc;
+    /* A hymn and its number must not be split across two sheets — somebody
+       following an order of service on paper cannot turn back. */
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .service-order { font-size: 12pt; }
+  .service-serving { font-size: 11pt; }
+
+  /* Headings keep at least their first lines with what follows. */
+  h1, h2 { break-after: avoid; page-break-after: avoid; }
+
+  @page { margin: 1.5cm; }
+}
+
 /*
  * Audio mode. A <details> under the player, closed until asked for — the audio
  * element has preload="none", so a shut panel costs nothing.
