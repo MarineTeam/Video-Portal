@@ -150,6 +150,30 @@ final class ScheduleRepository
         ]);
     }
 
+    /**
+     * Find somebody, WITHOUT making them.
+     *
+     * The preview screen needs this: it says how many names on the sheet are
+     * new, and personFor() would answer that question by creating every one of
+     * them. A preview that writes is not a preview.
+     */
+    public function findPerson(string $name): ?int
+    {
+        $key = PersonKey::for($name);
+
+        if ($key === '') {
+            return null;
+        }
+
+        $id = $this->db->value('SELECT id FROM {schedule_people} WHERE match_key = ?', [$key])
+            ?? $this->db->value(
+                'SELECT person_id FROM {schedule_person_aliases} WHERE match_key = ?',
+                [$key]
+            );
+
+        return $id === null ? null : (int) $id;
+    }
+
     /** @return list<array<string, mixed>> */
     public function people(): array
     {
@@ -346,18 +370,48 @@ final class ScheduleRepository
             'INSERT INTO {schedule_entries}
                 (schedule_id, person_id, on_date, role, note, source, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE note = VALUES(note), source = VALUES(source), updated_at = VALUES(updated_at)',
+             ON DUPLICATE KEY UPDATE note = VALUES(note),
+                /*
+                 * A row somebody TYPED stays theirs even when the sheet turns
+                 * out to say the same thing. Letting the sync take ownership
+                 * would put a hand-entered row in reach of the sync\'s own
+                 * tidying pass, and it would vanish the first week the sheet
+                 * did not mention it.
+                 */
+                source = IF(source = "manual", "manual", VALUES(source)),
+                updated_at = VALUES(updated_at)',
             [
                 $scheduleId,
                 $personId,
                 $this->day($day),
-                mb_substr(trim($role), 0, 120) ?: null,
-                mb_substr(trim($note), 0, 300) ?: null,
+                self::role($role),
+                self::text($note, 300),
                 $source === 'sheet' ? 'sheet' : 'manual',
                 $now,
                 $now,
             ]
         );
+    }
+
+    /**
+     * A role, normalised once.
+     *
+     * Shared with the sync, which has to compare what the sheet says against
+     * what is stored — two normalisations would disagree about "Coffee " and
+     * the sync would delete and re-add the same row every quarter of an hour.
+     */
+    public static function role(string $raw): ?string
+    {
+        return self::text($raw, 120);
+    }
+
+    private static function text(string $raw, int $limit): ?string
+    {
+        $value = mb_substr(trim($raw), 0, $limit);
+
+        // Not `?:` — a role of "0" is silly but it is not nothing, and this is
+        // the shape of bug that gets found a year later.
+        return $value === '' ? null : $value;
     }
 
     public function removeEntry(int $id): void
@@ -404,6 +458,158 @@ final class ScheduleRepository
               LIMIT ' . max(1, min(500, $limit)),
             [$scheduleId]
         );
+    }
+
+    // ----------------------------------------------------------- sources
+
+    /** @return array<string, mixed>|null */
+    public function source(int $scheduleId): ?array
+    {
+        return $this->db->first('SELECT * FROM {schedule_sources} WHERE schedule_id = ?', [$scheduleId]);
+    }
+
+    /**
+     * Every source a sync should look at.
+     *
+     * A source on a DISABLED schedule is skipped. Its dates are off the
+     * calendar, so fetching somebody else's server every quarter of an hour to
+     * update rows nobody can see is a request nobody asked for.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function dueSources(): array
+    {
+        return $this->db->all(
+            'SELECT src.*, s.name AS schedule_name
+               FROM {schedule_sources} src
+               INNER JOIN {schedules} s ON s.id = src.schedule_id AND s.is_enabled = 1
+              WHERE src.is_enabled = 1
+              -- Never-run first, then oldest, so a site with more sources than
+              -- one run will fetch works its way round them all instead of
+              -- leaving the tail permanently unsynced.
+              ORDER BY src.last_run_at IS NOT NULL, src.last_run_at, src.id'
+        );
+    }
+
+    /**
+     * Save the sheet a schedule is fed from.
+     *
+     * The stored URL is the CSV one, derived from whatever was pasted — so the
+     * sync never has to work it out again, and a URL that could not be turned
+     * into one is refused HERE rather than at the first run in the middle of
+     * the night.
+     */
+    public function saveSource(int $scheduleId, string $url, string $layout, string $dateOrder): void
+    {
+        $csvUrl = SheetUrl::toCsv($url);
+
+        if ($csvUrl === null) {
+            throw HttpException::badRequest(
+                'That is not a Google Sheets address. Copy the one in the address bar with the '
+                . 'sheet open.'
+            );
+        }
+
+        $layout = $layout === SheetLayout::GRID ? SheetLayout::GRID : SheetLayout::ROWS;
+        $dateOrder = in_array($dateOrder, [SheetDate::DMY, SheetDate::MDY], true)
+            ? $dateOrder
+            : SheetDate::AUTO;
+
+        $now = date('Y-m-d H:i:s');
+
+        $this->db->execute(
+            'INSERT INTO {schedule_sources}
+                (schedule_id, url, layout, date_order, is_enabled, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 1, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                url = VALUES(url), layout = VALUES(layout), date_order = VALUES(date_order),
+                /*
+                 * Everything remembered about the LAST fetch is cleared, because
+                 * it describes a different sheet now. Keeping the hash would
+                 * make the next run decide nothing had changed and do nothing,
+                 * which reads as the new address being ignored.
+                 */
+                etag = NULL, last_modified = NULL, content_hash = NULL,
+                updated_at = VALUES(updated_at)',
+            [$scheduleId, $csvUrl, $layout, $dateOrder, $now, $now]
+        );
+    }
+
+    public function enableSource(int $scheduleId, bool $enabled): void
+    {
+        $this->db->execute(
+            'UPDATE {schedule_sources} SET is_enabled = ?, updated_at = NOW() WHERE schedule_id = ?',
+            [$enabled ? 1 : 0, $scheduleId]
+        );
+    }
+
+    /**
+     * Forget the sheet. The DATES STAY — they are as real as any typed by hand,
+     * and deleting a year of rota because somebody detached a spreadsheet is
+     * not a thing to do quietly.
+     */
+    public function deleteSource(int $scheduleId): void
+    {
+        $this->db->execute('DELETE FROM {schedule_sources} WHERE schedule_id = ?', [$scheduleId]);
+    }
+
+    /**
+     * What happened on the last run.
+     *
+     * The validators are only written on a run that actually read something —
+     * a failed fetch must not clear them, or the next run loses the one thing
+     * that makes an unchanged sheet cheap.
+     */
+    public function recordRun(
+        int $sourceId,
+        string $status,
+        string $message,
+        int $rows = 0,
+        ?string $etag = null,
+        ?string $lastModified = null,
+        ?string $hash = null
+    ): void {
+        $this->db->execute(
+            'UPDATE {schedule_sources}
+                SET last_run_at = NOW(), last_status = ?, last_message = ?, last_rows = ?,
+                    etag = COALESCE(?, etag),
+                    last_modified = COALESCE(?, last_modified),
+                    content_hash = COALESCE(?, content_hash),
+                    updated_at = NOW()
+              WHERE id = ?',
+            [$status, mb_substr($message, 0, 500), $rows, $etag, $lastModified, $hash, $sourceId]
+        );
+    }
+
+    /**
+     * The rows a sync wrote, over the span the sheet covers.
+     *
+     * Only source = 'sheet', so what somebody typed by hand is invisible to the
+     * sync's tidying pass and cannot be swept away by it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function sheetEntriesBetween(int $scheduleId, string $from, string $to): array
+    {
+        return $this->db->all(
+            'SELECT id, on_date, person_id, role
+               FROM {schedule_entries}
+              WHERE schedule_id = ? AND source = "sheet" AND on_date BETWEEN ? AND ?',
+            [$scheduleId, $this->day($from), $this->day($to)]
+        );
+    }
+
+    /** @param list<int> $ids */
+    public function removeEntries(array $ids): int
+    {
+        if ($ids === []) {
+            return 0;
+        }
+
+        $ids = array_map('intval', $ids);
+        $marks = implode(',', array_fill(0, count($ids), '?'));
+
+        return $this->db->execute("DELETE FROM {schedule_entries} WHERE id IN ({$marks})", $ids);
     }
 
     // --------------------------------------------------------- internals

@@ -47,6 +47,16 @@ final class Cron
     private const SHARES_PER_RUN = 500;
 
     /**
+     * How many spreadsheets one run of schedules.sync will fetch.
+     *
+     * Each is a request to somebody else's server inside what may be a
+     * visitor's page view, so the run has to be bounded by something. Ten is
+     * far more schedules than a church has, and the next run picks up any
+     * beyond it.
+     */
+    private const MAX_SHEETS = 10;
+
+    /**
      * How far videos.sync will page before giving up.
      *
      * 20 x 100 = 2,000 videos, which covers this product's scale with room to
@@ -334,6 +344,46 @@ final class Cron
                 ? 'Every series is already made up to the horizon.'
                 : sprintf('Made %d meeting(s).', $made);
         };
+
+        /*
+         * Pull every rota that is fed from a spreadsheet.
+         *
+         * ONE SOURCE'S FAILURE IS NOT THE JOB'S. Each is fetched from somebody
+         * else's server, and letting the first unreachable sheet abort the run
+         * would mean one broken link stopping every other rota from updating —
+         * with the job's own message naming only the broken one, so the others
+         * would look fine.
+         *
+         * Bounded, for the reason videos.sync is: this can run inside a
+         * visitor's page view on a host with no real cron, and a request killed
+         * halfway through is how a partial read happens.
+         */
+        $this->handlers['schedules.sync'] = static function (App $app): string {
+            $db = $app->container()->get(\Portal\Db::class);
+            $schedules = new \Portal\Schedules\ScheduleRepository($db);
+            $sync = new \Portal\Schedules\SheetSync($db, $schedules);
+
+            $sources = array_slice($schedules->dueSources(), 0, self::MAX_SHEETS);
+
+            if ($sources === []) {
+                return 'No schedule is fed from a spreadsheet.';
+            }
+
+            $counts = [];
+
+            foreach ($sources as $source) {
+                $status = $sync->run($source)['status'];
+                $counts[$status] = ($counts[$status] ?? 0) + 1;
+            }
+
+            return sprintf(
+                '%d sheet(s): %d read, %d unchanged, %d failed.',
+                count($sources),
+                $counts[\Portal\Schedules\SheetSync::OK] ?? 0,
+                $counts[\Portal\Schedules\SheetSync::UNCHANGED] ?? 0,
+                $counts[\Portal\Schedules\SheetSync::FAILED] ?? 0
+            );
+        };
     }
 
     /**
@@ -367,6 +417,7 @@ final class Cron
             // Daily. The horizon moves by a day at a time, so running it more
             // often would find nothing to do on all but one run in ninety.
             'events.horizon'     => 86400,
+            'schedules.sync'     => 900,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

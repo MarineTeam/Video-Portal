@@ -6,10 +6,12 @@ namespace Portal\Controllers;
 
 use Portal\Admin\AdminScheduleView;
 use Portal\Auth\Capability;
+use Portal\Auth\Session;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Schedules\ScheduleRepository;
+use Portal\Schedules\SheetSync;
 use Portal\Support\Audit;
 
 /**
@@ -56,6 +58,14 @@ final class AdminScheduleController extends Controller
             'schedule' => $schedule,
             'entries'  => $schedules->forSchedule((int) $schedule['id']),
             'people'   => $schedules->people(),
+            'source'   => $schedules->source((int) $schedule['id']),
+            /*
+             * The preview is held in the session rather than recomputed on
+             * render, because it is a request to somebody else's server — a
+             * page that re-fetched on every reload would hammer Google every
+             * time somebody used the back button.
+             */
+            'preview'  => $this->takePreview((int) $schedule['id']),
         ]);
     }
 
@@ -69,14 +79,18 @@ final class AdminScheduleController extends Controller
 
         try {
             return match ($action) {
-                'create'       => $this->create($request, $schedules),
-                'enable'       => $this->enable($request, $schedules, true),
-                'disable'      => $this->enable($request, $schedules, false),
-                'add-entry'    => $this->addEntry($request, $schedules),
-                'remove-entry' => $this->removeEntry($request, $schedules),
-                'merge'        => $this->merge($request, $schedules),
-                'link'         => $this->link($request, $schedules),
-                default        => $this->back($request, 'That is not something this screen can do.', 'error'),
+                'create'        => $this->create($request, $schedules),
+                'enable'        => $this->enable($request, $schedules, true),
+                'disable'       => $this->enable($request, $schedules, false),
+                'add-entry'     => $this->addEntry($request, $schedules),
+                'remove-entry'  => $this->removeEntry($request, $schedules),
+                'merge'         => $this->merge($request, $schedules),
+                'link'          => $this->link($request, $schedules),
+                'save-source'   => $this->saveSource($request, $schedules),
+                'forget-source' => $this->forgetSource($request, $schedules),
+                'preview'       => $this->previewSource($request, $schedules),
+                'sync'          => $this->syncSource($request, $schedules),
+                default         => $this->back($request, 'That is not something this screen can do.', 'error'),
             };
         } catch (HttpException $e) {
             return $this->back($request, $e->getMessage(), 'error');
@@ -197,6 +211,132 @@ final class AdminScheduleController extends Controller
                 ? 'Linked. That is what turns reminders on for them.'
                 : 'Unlinked. They will get no reminders — there is nowhere to send one.'
         );
+    }
+
+    // ------------------------------------------------------- the spreadsheet
+
+    private function saveSource(Request $request, ScheduleRepository $schedules): Response
+    {
+        $id = (int) ($request->input('id') ?? 0);
+
+        $schedules->saveSource(
+            $id,
+            (string) ($request->input('url') ?? ''),
+            (string) ($request->input('layout') ?? ''),
+            (string) ($request->input('date_order') ?? '')
+        );
+
+        Audit::log($this->db(), $this->user()?->email, 'schedule.source.save', 'schedule', (string) $id);
+
+        // Straight to a preview, because "saved" tells nobody whether the
+        // address works — and the moment to find out is now, not at the first
+        // unattended run in the middle of the night.
+        return $this->previewSource($request, $schedules, $id);
+    }
+
+    private function forgetSource(Request $request, ScheduleRepository $schedules): Response
+    {
+        $id = (int) ($request->input('id') ?? 0);
+        $schedules->deleteSource($id);
+
+        return $this->back(
+            $request,
+            'The spreadsheet is disconnected. The dates it put on the calendar are still there — '
+            . 'they are as real as any typed by hand.'
+        );
+    }
+
+    /**
+     * Read the sheet and say what would happen, having written nothing.
+     *
+     * This is also the test-connection button. A separate "just check it works"
+     * action would be a second thing to keep working, and it would answer a
+     * narrower question than the one somebody actually has, which is "will this
+     * put the right people on the right days".
+     */
+    private function previewSource(
+        Request $request,
+        ScheduleRepository $schedules,
+        ?int $id = null
+    ): Response {
+        $id ??= (int) ($request->input('id') ?? 0);
+        $source = $schedules->source($id);
+
+        if ($source === null) {
+            return $this->back($request, 'There is no spreadsheet on this schedule yet.', 'error');
+        }
+
+        $preview = (new SheetSync($this->db(), $schedules))->preview($source);
+
+        $this->keepPreview($id, $preview);
+
+        return $this->redirect('/admin/schedules/' . $id);
+    }
+
+    private function syncSource(Request $request, ScheduleRepository $schedules): Response
+    {
+        $id = (int) ($request->input('id') ?? 0);
+        $source = $schedules->source($id);
+
+        if ($source === null) {
+            return $this->back($request, 'There is no spreadsheet on this schedule yet.', 'error');
+        }
+
+        $result = (new SheetSync($this->db(), $schedules))->run($source);
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'schedule.source.sync',
+            'schedule',
+            (string) $id,
+            $result['status']
+        );
+
+        return $this->back(
+            $request,
+            $result['message'],
+            $result['status'] === SheetSync::FAILED ? 'error' : 'success'
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $preview
+     */
+    private function keepPreview(int $scheduleId, array $preview): void
+    {
+        /*
+         * Only the counts and a handful of rows. The whole parse of a year's
+         * rota in a session row is a lot of bytes to carry around for one
+         * screen, and sessions live in the database here.
+         */
+        $preview['rows'] = array_slice($preview['rows'], 0, 20);
+        $preview['plan']['add'] = count($preview['plan']['add']);
+        $preview['plan']['remove'] = count($preview['plan']['remove']);
+
+        $this->session()->put('schedule_preview', ['id' => $scheduleId] + $preview);
+    }
+
+    /** @return array<string, mixed>|null */
+    private function takePreview(int $scheduleId): ?array
+    {
+        $held = $this->session()->get('schedule_preview');
+
+        if (!is_array($held) || ($held['id'] ?? 0) !== $scheduleId) {
+            return null;
+        }
+
+        // Taken rather than read: a preview is of a fetch that happened once,
+        // and leaving it to reappear on the next visit would show somebody a
+        // report of a sheet as it was last week.
+        $this->session()->forget('schedule_preview');
+
+        return $held;
+    }
+
+    private function session(): Session
+    {
+        return $this->container->get(Session::class);
     }
 
     // ---------------------------------------------------------------- wiring

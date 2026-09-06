@@ -275,8 +275,174 @@ final class AdminScheduleView
               <label>Note <input type="text" name="note"></label>
               <button class="btn" name="action" value="add-entry">Add</button>
             </form>
+
+            {$this->sheet($data, $token, $id)}
           </div>
         </div>
+        HTML;
+    }
+
+    /**
+     * The spreadsheet this schedule is fed from.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function sheet(array $data, string $token, int $id): string
+    {
+        $source = $data['source'] ?? null;
+
+        $url = is_array($source) ? e((string) $source['url']) : '';
+        $layout = is_array($source) ? (string) $source['layout'] : 'rows';
+        $order = is_array($source) ? (string) $source['date_order'] : 'auto';
+
+        $selected = static fn (string $a, string $b): string => $a === $b ? ' selected' : '';
+
+        $buttons = is_array($source)
+            ? sprintf(
+                '<button class="btn secondary" name="action" value="preview">Check it and show me</button>
+                 <button class="btn secondary" name="action" value="sync">Sync now</button>
+                 <button class="btn tiny secondary" name="action" value="forget-source"
+                         onclick="return confirm(\'Disconnect the spreadsheet? The dates stay.\')">Disconnect</button>'
+            )
+            : '';
+
+        return <<<HTML
+        <h2>From a spreadsheet</h2>
+
+        <p class="muted small">Paste the address from the bar with the sheet open, and in Google
+           Sheets set <strong>Share &rarr; Anyone with the link &rarr; Viewer</strong>. Nothing is
+           written until you have looked at what it found.</p>
+
+        <form method="post" action="/admin/schedules">
+          <input type="hidden" name="_token" value="{$token}">
+          <input type="hidden" name="id" value="{$id}">
+
+          <label>Sheet address
+            <input type="url" name="url" value="{$url}"
+                   placeholder="https://docs.google.com/spreadsheets/d/...">
+          </label>
+
+          <label>How it is laid out
+            <select name="layout">
+              <option value="rows"{$selected('rows', $layout)}>A line per person per date</option>
+              <option value="grid"{$selected('grid', $layout)}>A line per date, a column per job</option>
+            </select>
+          </label>
+
+          <label>Dates written as
+            <select name="date_order">
+              <option value="auto"{$selected('auto', $order)}>Ask me if it is unclear</option>
+              <option value="dmy"{$selected('dmy', $order)}>Day first — 5/9 is 5 September</option>
+              <option value="mdy"{$selected('mdy', $order)}>Month first — 5/9 is 9 May</option>
+            </select>
+          </label>
+
+          <p class="muted small">"5/9" is September to most of the world and May to the rest, and
+             reading it the wrong way puts somebody on a date four months from the one they agreed
+             to — nobody finds out until the day. So it is refused rather than guessed until you
+             say. Dates like "13/9" and "5 Sep" need none of this.</p>
+
+          <button class="btn" name="action" value="save-source">Save the sheet</button>
+          {$buttons}
+        </form>
+
+        {$this->lastRun($source)}
+        {$this->preview($data)}
+        HTML;
+    }
+
+    /** What happened last time, in the words the other end used. */
+    private function lastRun(mixed $source): string
+    {
+        if (!is_array($source) || empty($source['last_run_at'])) {
+            return '';
+        }
+
+        $failed = ($source['last_status'] ?? '') === 'failed';
+
+        return sprintf(
+            '<p class="notice %s"><strong>%s</strong><br>%s<br><span class="muted small">%s</span></p>',
+            $failed ? 'error' : 'ok',
+            $failed ? 'The last sync did not work' : 'Last sync',
+            e((string) ($source['last_message'] ?? '')),
+            e($this->day((string) $source['last_run_at']))
+        );
+    }
+
+    /**
+     * What a sync WOULD do.
+     *
+     * The whole point of this panel is that it is shown before anything is
+     * written — so the counts are what somebody is agreeing to, and the rows
+     * are how they check the parser read their sheet the way they read it.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function preview(array $data): string
+    {
+        $preview = $data['preview'] ?? null;
+
+        if (!is_array($preview)) {
+            return '';
+        }
+
+        if (($preview['status'] ?? '') !== 'ok') {
+            return sprintf(
+                '<p class="notice error"><strong>Could not read the sheet</strong><br>%s</p>',
+                e((string) ($preview['message'] ?? ''))
+            );
+        }
+
+        $plan = (array) ($preview['plan'] ?? []);
+
+        $rows = '';
+        foreach ((array) ($preview['rows'] ?? []) as $row) {
+            $rows .= sprintf(
+                '<tr><td>%s</td><td>%s</td><td>%s</td></tr>',
+                e($this->day((string) $row['date'])),
+                e((string) $row['name']),
+                e((string) $row['role'])
+            );
+        }
+
+        $problems = '';
+        foreach ((array) ($preview['problems'] ?? []) as $problem) {
+            $problems .= '<li>' . e((string) $problem) . '</li>';
+        }
+
+        if ($problems !== '') {
+            // Above the good news, because a sync that worked for most of a
+            // sheet and silently dropped the rest is the one nobody looks into.
+            $problems = '<div class="notice error"><strong>Rows this could not read</strong><ul>'
+                . $problems . '</ul></div>';
+        }
+
+        $people = (array) ($plan['newPeople'] ?? []);
+        $newPeople = $people === []
+            ? ''
+            : '<p class="muted small">New names: <strong>' . e(implode(', ', array_map(
+                static fn ($name): string => (string) $name,
+                $people
+            ))) . '</strong>. Check none of them is somebody already on the calendar spelled
+                 differently — the calendar will offer the pair afterwards, but it will not
+                 decide.</p>';
+
+        return <<<HTML
+        {$problems}
+        <div class="notice ok">
+          <strong>Nothing has been written yet.</strong>
+          <br>Would add {$plan['add']}, leave {$plan['keep']} alone, and remove
+          {$plan['remove']} that are no longer on the sheet.
+          <br><span class="muted small">Only rows this sheet put there, and only between
+          {$this->text($this->day((string) ($plan['from'] ?? '')))} and
+          {$this->text($this->day((string) ($plan['to'] ?? '')))} — dates outside what the
+          sheet covers, and anything typed here by hand, are left alone.</span>
+        </div>
+        {$newPeople}
+        <table>
+          <thead><tr><th>When</th><th>Who</th><th>Doing</th></tr></thead>
+          <tbody>{$rows}</tbody>
+        </table>
         HTML;
     }
 

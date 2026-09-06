@@ -12099,6 +12099,106 @@ check(
     'somebody with no account gets no reminder and nothing says so'
 );
 
+/*
+ * THE SPREADSHEET.
+ *
+ * There is no real sheet to point at here, so what is checked is the half that
+ * does not need one: the form exists, an address that is not a sheet is refused
+ * where somebody can see it, a real one is turned into an export URL, and a
+ * fetch that cannot work writes NOTHING. That last one is the rule this section
+ * exists for, and this environment can stage it honestly — the sheet id is made
+ * up, so the request either 404s or never leaves the building, and both must
+ * end the same way.
+ */
+$schedulePage = getWithJar($baseUrl . '/admin/schedules/' . $schedId, $jar);
+
+check(
+    'A schedule can be fed from a spreadsheet',
+    str_contains($schedulePage['body'], 'From a spreadsheet'),
+    'there is no way to connect one'
+);
+
+check(
+    'and the screen says which way round the dates are read',
+    str_contains($schedulePage['body'], '5 September'),
+    'a sheet writing 5/9 would be read as May with nothing warning anybody'
+);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'save-source',
+    'id'     => (string) $schedId,
+    'url'    => 'https://example.com/rota.csv',
+    'layout' => 'rows',
+], $jar);
+
+check(
+    'An address that is not a Google sheet is refused',
+    (int) $db->value('SELECT COUNT(*) FROM {schedule_sources}') === 0,
+    'ANY URL COULD BE FETCHED ON A SCHEDULE — that is an SSRF on a cron job'
+);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token'     => $schedToken,
+    'action'     => 'save-source',
+    'id'         => (string) $schedId,
+    'url'        => 'https://docs.google.com/spreadsheets/d/1SmokeTestSheetIdNotReal/edit#gid=42',
+    'layout'     => 'grid',
+    'date_order' => 'dmy',
+], $jar);
+
+$storedUrl = (string) $db->value('SELECT url FROM {schedule_sources} WHERE schedule_id = ?', [$schedId]);
+
+check(
+    'and a real one is turned into something fetchable',
+    str_contains($storedUrl, '/export?format=csv') && str_contains($storedUrl, 'gid=42'),
+    "stored {$storedUrl} — pasting the address from the bar has to be enough"
+);
+
+$entriesBefore = (int) $db->value('SELECT COUNT(*) FROM {schedule_entries} WHERE schedule_id = ?', [$schedId]);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'sync',
+    'id'     => (string) $schedId,
+], $jar);
+
+check(
+    'A sync that cannot read the sheet deletes nothing',
+    (int) $db->value('SELECT COUNT(*) FROM {schedule_entries} WHERE schedule_id = ?', [$schedId])
+        === $entriesBefore,
+    'A FAILED SYNC DESTROYED THE ROTA'
+);
+
+check(
+    'and says so rather than going quiet',
+    $db->value('SELECT last_status FROM {schedule_sources} WHERE schedule_id = ?', [$schedId]) !== null,
+    'a rota that stops updating has no symptom but a rota that stops updating'
+);
+
+$afterSync = getWithJar($baseUrl . '/admin/schedules/' . $schedId, $jar);
+
+check(
+    'and the screen shows what happened last time',
+    str_contains($afterSync['body'], 'Last sync')
+        || str_contains($afterSync['body'], 'last sync did not work'),
+    'the run is recorded and nobody can see it'
+);
+
+postWithJar($baseUrl . '/admin/schedules', [
+    '_token' => $schedToken,
+    'action' => 'forget-source',
+    'id'     => (string) $schedId,
+], $jar);
+
+check(
+    'Disconnecting the spreadsheet keeps the dates it put there',
+    (int) $db->value('SELECT COUNT(*) FROM {schedule_sources}') === 0
+        && (int) $db->value('SELECT COUNT(*) FROM {schedule_entries} WHERE schedule_id = ?', [$schedId])
+            === $entriesBefore,
+    'DISCONNECTING A SPREADSHEET DELETED THE ROTA IT HAD BUILT'
+);
+
 $db->execute('DELETE FROM {schedules} WHERE id = ?', [$schedId]);
 $db->execute('DELETE FROM {schedule_people}');
 
