@@ -61,7 +61,7 @@ final class AdminController extends Controller
                 'processing' => (int) $this->db()->value(
                     'SELECT COUNT(*) FROM {videos} WHERE deleted_at IS NULL AND status = "processing"'
                 ),
-                'categories' => (int) $this->db()->value('SELECT COUNT(*) FROM {categories}'),
+                'categories' => (int) $this->db()->value('SELECT COUNT(*) FROM {categories} WHERE deleted_at IS NULL'),
                 'users'      => (int) $this->db()->value('SELECT COUNT(*) FROM {users}'),
                 'pending'    => (int) $this->db()->value('SELECT COUNT(*) FROM {users} WHERE authorized = 0'),
             ];
@@ -399,6 +399,16 @@ final class AdminController extends Controller
             return $this->bulkVideos($request, $videos);
         }
 
+        /*
+         * An import, before the id lookup, because it CREATES a video and so
+         * carries no id — falling through would 404 on a missing video rather
+         * than doing what the button says. Same reason the bulk branch is
+         * above.
+         */
+        if (($request->input('action') ?? '') === 'import-link') {
+            return $this->importExternalVideo($request, $videos);
+        }
+
         $id = (int) ($request->input('id') ?? 0);
         $video = $videos->find($id);
 
@@ -613,6 +623,106 @@ final class AdminController extends Controller
         }
 
         return $this->back($request, $message, $failures === [] ? 'success' : 'error');
+    }
+
+    /**
+     * Bring in a video that lives on YouTube or Vimeo.
+     *
+     * MANAGE_VIDEOS site-wide, not scoped. A scoped grant says which videos
+     * somebody may EDIT, and this creates one that is in no category yet — so
+     * there is no scope for it to be inside, and asking a scoped question about
+     * a thing that does not exist would either refuse everybody or refuse
+     * nobody. The same reasoning as creating a top-level category.
+     *
+     * The lookup is best-effort and its failure is not the import's. A network
+     * error means a video with a typed title rather than no video: the id came
+     * from the address that was pasted, which is the only part that has to be
+     * right for it to play.
+     */
+    private function importExternalVideo(Request $request, VideoRepository $videos): Response
+    {
+        $this->require(Capability::MANAGE_VIDEOS);
+
+        $raw = trim((string) ($request->input('external_url') ?? ''));
+        $external = \Portal\Video\ExternalVideo::parse($raw);
+
+        if ($external === null) {
+            return $this->back(
+                $request,
+                'That does not look like a YouTube or Vimeo address. Paste the link from the address '
+                . 'bar or the Share button.',
+                'error'
+            );
+        }
+
+        $details = \Portal\Video\ExternalVideoDetails::fetch($external);
+        $typed = trim((string) ($request->input('external_title') ?? ''));
+
+        /*
+         * A typed title wins. Somebody who filled the box in meant it — and it
+         * is the only way to name a video whose lookup failed or whose title on
+         * the other site is "Sunday Service (1)".
+         */
+        $title = $typed !== '' ? $typed : $details->title;
+
+        if ($title === '') {
+            return $this->back(
+                $request,
+                'That video could not be described by ' . $external->source . ', so it needs a '
+                . 'title. Paste the link again with one filled in.',
+                'error'
+            );
+        }
+
+        try {
+            $video = $videos->importExternal(
+                $external->source,
+                $external->id,
+                $title,
+                $details->thumbnailUrl,
+                $details->duration
+            );
+        } catch (HttpException $e) {
+            return $this->back($request, $e->getMessage(), 'error');
+        }
+
+        Audit::log(
+            $this->db(),
+            $this->user()?->email,
+            'video.import',
+            'video',
+            (string) $video->id,
+            $video->title . ' (' . $external->source . ')'
+        );
+
+        /*
+         * Sent straight to the edit screen rather than back to the list.
+         *
+         * An imported video is unpublished, uncategorised, and — on YouTube —
+         * has no duration, so the next thing that has to happen is always the
+         * same. Returning to the list would leave it at the bottom of a page of
+         * videos with nothing saying which one is new.
+         */
+        $message = $details->answered
+            ? 'Imported. It is not published yet.'
+            : ucfirst($external->source) . ' did not answer, so only the title was set. '
+                . 'It is not published yet.';
+
+        if ($external->source === \Portal\Video\ExternalVideo::YOUTUBE && $video->duration === 0) {
+            // Said here rather than left to be noticed as a blank on a card.
+            $message .= ' YouTube does not report a runtime, so add one below if you want it shown.';
+        }
+
+        /*
+         * Put on the session directly, the way back() does. flash() is a
+         * GETTER that takes no arguments — handing it one would be silently
+         * ignored by PHP and the message would vanish, which is a bug this
+         * project has already paid for once.
+         */
+        $this->container->get(\Portal\Auth\Session::class)
+            ->put('flash', ['type' => 'success', 'message' => $message]);
+
+        return $this->redirect('/admin/videos/' . $video->id);
     }
 
     private function saveVideo(
@@ -3010,6 +3120,17 @@ final class AdminController extends Controller
         return $this->admin('categories', [
             'tree' => $categories->tree(true),
             'flat' => $categories->all(true),
+            /*
+             * The trash lives on this screen rather than on one of its own.
+             *
+             * Videos have a separate trash because it is a rare destination
+             * with a permanent-delete button on it. A deleted category is the
+             * opposite: you find out you wanted it back while you are looking
+             * at the tree it is missing from, and a bin you have to go and
+             * find is the same as no bin — which is how the video trash was
+             * unreachable for two phases.
+             */
+            'trashed' => $categories->trashed(),
         ]);
     }
 
@@ -3058,7 +3179,7 @@ final class AdminController extends Controller
          * parent to ask about and stays site-wide, and so does `import`, which
          * makes top-level categories in bulk.
          */
-        $named = ['delete', 'restore-revision', 'up', 'down', 'update'];
+        $named = ['delete', 'restore', 'purge', 'restore-revision', 'up', 'down', 'update'];
 
         if (in_array($action, $named, true) && $id > 0) {
             $this->require(Capability::MANAGE_CATEGORIES, 'category', $id);
@@ -3071,9 +3192,56 @@ final class AdminController extends Controller
         try {
             switch ($action) {
                 case 'delete':
-                    $categories->delete($id);
+                    /*
+                     * The count is read BEFORE the trashing and reported back,
+                     * because the old confirmation is what made this a bug
+                     * worth fixing rather than a limitation: "Videos in it are
+                     * kept" was true, said nothing about the subcategories,
+                     * and the subcategories were the thing being destroyed.
+                     *
+                     * Saying how many were left alone is the opposite habit —
+                     * name what you did not touch, so nobody has to trust that
+                     * the sentence covers everything.
+                     */
+                    $children = $categories->childCount($id);
+                    $categories->softDelete($id);
                     Audit::log($this->db(), $this->user()?->email, 'category.delete', 'category', (string) $id);
-                    return $this->back($request, 'Category deleted. Its videos were not removed.');
+
+                    return $this->back($request, $children === 0
+                        ? 'Moved to the trash. Its videos were not removed.'
+                        : sprintf(
+                            'Moved to the trash. Its videos and its %d subcategor%s were not removed — '
+                            . 'restoring it puts them back where they were.',
+                            $children,
+                            $children === 1 ? 'y' : 'ies'
+                        ));
+
+                case 'restore':
+                    if ($categories->findTrashed($id) === null) {
+                        return $this->back($request, 'That category is not in the trash.', 'error');
+                    }
+
+                    $categories->restore($id);
+                    Audit::log($this->db(), $this->user()?->email, 'category.restore', 'category', (string) $id);
+                    return $this->back($request, 'Category restored.');
+
+                case 'purge':
+                    /*
+                     * Only from the trash. Reaching this straight from the tree
+                     * would put an irreversible button beside the everyday
+                     * ones, which is the arrangement that lost people their
+                     * subcategories in the first place.
+                     *
+                     * forceDelete() refuses while children exist; the cascade
+                     * on fk_category_parent is still live and would take them.
+                     */
+                    if ($categories->findTrashed($id) === null) {
+                        return $this->back($request, 'That category is not in the trash.', 'error');
+                    }
+
+                    $categories->forceDelete($id);
+                    Audit::log($this->db(), $this->user()?->email, 'category.purge', 'category', (string) $id);
+                    return $this->back($request, 'Category deleted for good. Its videos were not removed.');
 
                 case 'restore-revision':
                     return $this->restoreRevision($request, RevisionRepository::CATEGORY, $id);
@@ -3980,6 +4148,11 @@ final class AdminController extends Controller
                 'timezone'  => $this->config()->setting('timezone', 'UTC'),
                 'members_thumbnail_default' => $this->config()->setting('members_thumbnail_default', '0'),
                 'downloads_enabled'   => $this->config()->setting('downloads_enabled', '0'),
+                // Default '0'. It makes the audio file reachable by anybody who
+                // can watch, which is a decision the site owner makes knowing
+                // what it means — never one that happens because a route
+                // shipped.
+                'audio_mode_enabled'  => $this->config()->setting('audio_mode_enabled', '0'),
                 'allow_indexing'      => $this->config()->setting('allow_indexing', '0'),
                 'podcast_author'      => $this->config()->setting('podcast_author', ''),
                 'podcast_owner_name'  => $this->config()->setting('podcast_owner_name', ''),
@@ -3990,6 +4163,10 @@ final class AdminController extends Controller
                 // Default '1': the box is opt-out, because a subscribe form
                 // that nobody switched on is a feature nobody knows exists.
                 'subscriptions_enabled' => $this->config()->setting('subscriptions_enabled', '1'),
+                // Default '1'. It only ever runs on a search that already
+                // found nothing, so the worst it can do is turn an empty page
+                // into a useful one.
+                'search_suggestions_enabled' => $this->config()->setting('search_suggestions_enabled', '1'),
                 // Default '0': enforcing this is a decision with real lockout
                 // risk, so it belongs to whoever owns the site.
                 'require_verified_email' => $this->config()->setting('require_verified_email', '0'),
@@ -4062,9 +4239,11 @@ final class AdminController extends Controller
 
             'members_thumbnail_default' => $checkbox('members_thumbnail_default', false),
             'downloads_enabled'         => $checkbox('downloads_enabled', false),
+            'audio_mode_enabled'        => $checkbox('audio_mode_enabled', false),
             'allow_indexing'            => $checkbox('allow_indexing', false),
             'podcast_explicit'          => $checkbox('podcast_explicit', false),
             'subscriptions_enabled'     => $checkbox('subscriptions_enabled', true),
+            'search_suggestions_enabled' => $checkbox('search_suggestions_enabled', true),
             'require_verified_email'    => $checkbox('require_verified_email', false),
             'allow_access_requests'     => $checkbox('allow_access_requests', true),
             'maintenance_mode'          => $checkbox('maintenance_mode', false),

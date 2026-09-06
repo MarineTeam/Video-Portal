@@ -8,6 +8,7 @@ use Portal\Auth\Capability;
 use Portal\Content\DownloadPolicy;
 use Portal\Content\Video;
 use Portal\Content\VideoRepository;
+use Portal\Content\WatchProgressRepository;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
@@ -25,6 +26,9 @@ final class WatchController extends Controller
 {
     /** Playback URLs last three hours — long enough for any single sitting. */
     private const EMBED_TTL = 10800;
+
+    /** @var array<int, \Portal\Content\Series|null> */
+    private array $seriesCache = [];
 
     /** @param array<string, string> $params */
     public function show(Request $request, array $params): Response
@@ -89,10 +93,20 @@ final class WatchController extends Controller
         $embedUrl = '';
 
         if ($canManage || (!$premiering && $locked === null)) {
-            $provider = $this->container->get(VideoProvider::class);
-
             try {
-                $embedUrl = $provider->embedUrl($video->providerId, self::EMBED_TTL);
+                /*
+                 * Through the resolver, which asks where THIS video lives
+                 * before asking the provider anything. An imported YouTube
+                 * video has no id bunny.net would recognise — signing one
+                 * produces a valid signature for a video that does not exist,
+                 * and the failure arrives as a player that will not load.
+                 *
+                 * The provider is resolved lazily inside, so a site with no
+                 * video service configured can still play an imported video.
+                 */
+                $embedUrl = (new \Portal\Video\EmbedResolver(
+                    fn (): VideoProvider => $this->container->get(VideoProvider::class)
+                ))->embedUrl($video, self::EMBED_TTL);
             } catch (Throwable $e) {
                 throw HttpException::upstream('The video service is not responding: ' . $e->getMessage());
             }
@@ -119,6 +133,13 @@ final class WatchController extends Controller
                     'series'      => $this->seriesLink($video),
                     'recordedAt'  => $this->formatDate($video->recordedAt),
                     'resumeAt'    => $this->resumePosition($video->id),
+                    /*
+                     * Whether this person has finished it, so the theme can
+                     * offer the mark or the unmark rather than a button whose
+                     * effect nobody can predict.
+                     */
+                    'watched'     => $this->user() !== null
+                        && $this->watchProgress()->isCompleted($this->user()->id, $video->id),
                     /*
                      * An explicit moment from a link, which beats resume.
                      *
@@ -205,7 +226,40 @@ final class WatchController extends Controller
                  * two come to disagree the first time the URL changes shape.
                  */
                 'downloadSlug' => $video->slug,
-                'pageMeta'     => $this->pageMeta($video),
+                /*
+                 * The audio player's source, or null when the setting is off.
+                 *
+                 * Only the switch is asked here. Whether a FILE exists is the
+                 * route's question, exactly as with downloads — asking it on a
+                 * page render would cost an API call on any video that has not
+                 * been synced, for a control most people will not press, and
+                 * the route answers with the specific reason if there is none.
+                 *
+                 * Not offered for a premiere: there is no embed URL for one on
+                 * purpose, and an audio player would be the hole in that.
+                 */
+                'listenUrl' => (!$premiering || $canManage)
+                    && $this->config()->settingBool('audio_mode_enabled', false)
+                        ? '/listen/' . rawurlencode($video->slug) . '.mp4'
+                        : null,
+                'pageMeta'     => $meta = $this->pageMeta($video),
+                /*
+                 * Artwork for the phone's lock screen while audio is playing.
+                 *
+                 * Reused from the preview card rather than minted again, which
+                 * means it inherits that card's rule: nothing is offered for a
+                 * video whose artwork is members-only. That is stricter than it
+                 * strictly needs to be — the card is built as an anonymous
+                 * unfurler, so a signed-in member gets no lock-screen image on
+                 * a site that withholds artwork by default — and it errs the
+                 * right way. No picture is a lock screen with the title on it;
+                 * the wrong rule here would be a withheld frame handed to the
+                 * operating system, which caches it.
+                 */
+                'lockScreenArtwork' => $meta->imageUrl ?? '',
+                // The same trail the JSON-LD carries, so what a reader sees and
+                // what a crawler is told cannot disagree.
+                'breadcrumbs'  => $meta->breadcrumbs,
                 'related' => $this->related($video),
                 'backUrl' => '/',
             ]
@@ -274,11 +328,100 @@ final class WatchController extends Controller
             $this->config()->url('/watch/' . $video->slug),
             $video->publishedAt,
             $video->duration,
-            [
-                ['name' => 'Library', 'url' => $this->config()->url('/')],
-                ['name' => $video->title, 'url' => $this->config()->url('/watch/' . $video->slug)],
-            ]
+            $this->crumbs()->forVideo($video, $this->seriesOf($video), $this->categoryOf($video))
         );
+    }
+
+    /**
+     * The one thing that builds a trail here, as in LibraryController.
+     *
+     * Handed this controller's own visibility answer rather than writing one:
+     * a members-only section must not be named in the trail of a video
+     * somebody is allowed to watch, and there must not be a second opinion
+     * about which sections those are. See Breadcrumbs.
+     */
+    private function crumbs(): \Portal\Content\Breadcrumbs
+    {
+        $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+        $user = $this->user();
+
+        return new \Portal\Content\Breadcrumbs(
+            $this->container->get(\Portal\Content\CategoryRepository::class),
+            fn (string $path): string => $this->config()->url($path),
+            static function (\Portal\Content\Category $category) use ($canManage, $user): bool {
+                if ($canManage) {
+                    return true;
+                }
+                if (!$category->isPublished || $category->hidden) {
+                    return false;
+                }
+                if (!$category->memberOnly) {
+                    return true;
+                }
+
+                return $user !== null && ($user->isAdmin() || $user->authorized);
+            },
+        );
+    }
+
+    /**
+     * The series this video is in, read once per request.
+     *
+     * Memoised because two things want it — the lock and the breadcrumb trail
+     * — and the docblock on lockState() has claimed since it was written that
+     * this is "one field read from a series row already needed for the
+     * breadcrumb". It was not, until now: adding the trail put the page over
+     * its query budget and the smoke suite said so.
+     */
+    private function seriesOf(Video $video): ?\Portal\Content\Series
+    {
+        if ($video->seriesId === null) {
+            return null;
+        }
+
+        if (array_key_exists($video->seriesId, $this->seriesCache)) {
+            return $this->seriesCache[$video->seriesId];
+        }
+
+        try {
+            $series = $this->container->get(\Portal\Content\SeriesRepository::class)->find($video->seriesId);
+        } catch (Throwable) {
+            $series = null;
+        }
+
+        return $this->seriesCache[$video->seriesId] = $series;
+    }
+
+    /**
+     * One category for the trail, when a video may be in several.
+     *
+     * The schema has no primary category, so SOME answer has to be chosen and
+     * every choice is arbitrary. Ordering by `path` makes it the shallowest and
+     * leftmost — the one nearest the top of the tree, which is the one a reader
+     * would call "where this lives" — and, more importantly, makes it stable:
+     * picking whichever row the join table returned first would change the
+     * trail when somebody edited an unrelated video.
+     *
+     * One query rather than a list of ids followed by a lookup. The watch page
+     * is the heaviest in the product and has a query budget with a smoke check
+     * on it, which this feature went over before it was written this way.
+     */
+    private function categoryOf(Video $video): ?\Portal\Content\Category
+    {
+        try {
+            $row = $this->db()->first(
+                'SELECT c.* FROM {video_categories} vc
+                   JOIN {categories} c ON c.id = vc.category_id
+                  WHERE vc.video_id = ? AND c.deleted_at IS NULL
+                  ORDER BY c.path, c.id
+                  LIMIT 1',
+                [$video->id]
+            );
+
+            return $row === null ? null : \Portal\Content\Category::fromRow($row);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
@@ -465,7 +608,9 @@ final class WatchController extends Controller
         }
 
         try {
-            $series = $this->container->get(\Portal\Content\SeriesRepository::class)->find($video->seriesId);
+            // Through the memo, so the trail and the lock read this row once
+            // between them rather than once each.
+            $series = $this->seriesOf($video);
 
             if ($series === null || !$series->sequential) {
                 return null;
@@ -709,24 +854,15 @@ final class WatchController extends Controller
 
         // Under ten seconds is not "watched" — it is someone clicking away.
         // Storing it would fill the continue-watching row with noise.
-        if ($position < 10) {
+        if ($position < WatchProgressRepository::MIN_SECONDS) {
             return $this->json(['saved' => false]);
         }
 
-        $completed = $position >= $duration * 0.95;
-
         try {
-            $this->db()->execute(
-                'INSERT INTO {watch_progress}
-                    (user_id, video_id, position_seconds, duration_seconds, completed_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, NOW())
-                 ON DUPLICATE KEY UPDATE
-                    position_seconds = VALUES(position_seconds),
-                    duration_seconds = VALUES(duration_seconds),
-                    completed_at = COALESCE({watch_progress}.completed_at, VALUES(completed_at)),
-                    updated_at = NOW()',
-                [$user->id, $videoId, $position, $duration, $completed ? date('Y-m-d H:i:s') : null]
-            );
+            // The rule that a heartbeat may finish a video and never unfinish
+            // one lives in the repository, so the manual mark cannot be
+            // written against a different one. See WatchProgressRepository.
+            $completed = $this->watchProgress()->record($user->id, $videoId, $position, $duration);
         } catch (Throwable $e) {
             error_log('Portal: could not save watch progress: ' . $e->getMessage());
             return $this->json(['saved' => false], 200);
@@ -735,6 +871,79 @@ final class WatchController extends Controller
         $this->countView($videoId, $completed);
 
         return $this->json(['saved' => true, 'completed' => $completed]);
+    }
+
+    /**
+     * Mark a video watched, or take the mark off.
+     *
+     * An ordinary form post, not an API call. The whole point is that this
+     * works when the player did not — the sermon listened to in the car, the
+     * one watched on somebody else's television, the one whose last two minutes
+     * are credits so the heartbeat never reached 95%. A control that itself
+     * needed JavaScript to run would be the same kind of promise.
+     *
+     * Behind auth.authorized, like every other watching route: the question
+     * "have I watched this" only exists for somebody allowed to watch it.
+     */
+    public function mark(Request $request): Response
+    {
+        $this->verifyCsrf($request);
+
+        $user = $this->user();
+        if ($user === null) {
+            throw HttpException::unauthorized();
+        }
+
+        /** @var VideoRepository $videos */
+        $videos = $this->container->get(VideoRepository::class);
+
+        $videoId = (int) ($request->input('video_id') ?? 0);
+        $video = $videoId > 0 ? $videos->find($videoId) : null;
+
+        if ($video === null) {
+            return $this->back($request, 'That video does not exist.', 'error');
+        }
+
+        /*
+         * The same three questions show() asks, calling the same three
+         * predicates rather than restating any of them. An id in a form is an
+         * id anybody can change, and without this the button is a way to mark
+         * a video somebody was never allowed to open — which on a site with
+         * sequential unlock is a way to unlock the next one.
+         *
+         * The lock is included deliberately, against its usual fail-open
+         * habit: failing open here would mean marking episode one from a form
+         * in order to reach episode two, which is the single thing the lock
+         * exists to prevent.
+         */
+        $canManage = $this->guard()->can(Capability::MANAGE_VIDEOS);
+
+        if (!$canManage) {
+            $refused = !$video->isVisible()
+                || !$videos->audienceAllows($video, $this->viewerGroupIds())
+                || $this->lockState($video) !== null;
+
+            if ($refused) {
+                // A 404, matching show(): telling somebody a video exists but
+                // is out of reach is the leak the 404 there exists to avoid.
+                throw HttpException::notFound('There is no video at that address.');
+            }
+        }
+
+        if (($request->input('action') ?? '') === 'unwatched') {
+            $this->watchProgress()->markUnwatched($user->id, $video->id);
+
+            return $this->back($request, 'Marked as not watched.');
+        }
+
+        $this->watchProgress()->markWatched($user->id, $video->id, $video->duration);
+
+        return $this->back($request, 'Marked as watched.');
+    }
+
+    private function watchProgress(): WatchProgressRepository
+    {
+        return new WatchProgressRepository($this->db());
     }
 
     /**

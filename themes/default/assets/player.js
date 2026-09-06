@@ -15,8 +15,13 @@
 
   var data = document.getElementById('portal-player-data');
   var frame = document.querySelector('.player iframe');
+  var audio = document.getElementById('portal-audio');
 
-  if (!data || !frame) {
+  /* Either source is enough. The audio panel exists on pages where the video
+     player does not — a premiere has no iframe — and the progress rules below
+     are the same whichever one is playing, which is the point: somebody can
+     start listening and finish watching. */
+  if (!data || (!frame && !audio)) {
     return;
   }
 
@@ -55,6 +60,9 @@
   var SAVE_INTERVAL = 10;
 
   function send(method, value) {
+    if (!frame) {
+      return;
+    }
     try {
       frame.contentWindow.postMessage(
         JSON.stringify({ context: 'player.js', method: method, value: value }),
@@ -222,4 +230,385 @@
       save(true);
     }
   });
+
+  /* ------------------------------------------------------------- audio mode
+   *
+   * The three things the iframe cannot do: change speed, keep playing with the
+   * screen off, and say what is playing on a lock screen. An <audio> element on
+   * this origin can do all of them.
+   *
+   * It shares save() with the video above rather than posting its own
+   * progress. That is the point of putting it in this file: the ten-second
+   * throttle, the ten-second floor and the sendBeacon-on-unload rule are the
+   * heartbeat contract, and a second implementation of it would drift from
+   * this one — which would show up as a position that depends on which player
+   * somebody happened to use.
+   */
+  if (!audio) {
+    return;
+  }
+
+  var controls = document.getElementById('portal-audio-controls');
+  var speed = document.getElementById('portal-audio-speed');
+  var sleep = document.getElementById('portal-audio-sleep');
+  var sleepState = document.getElementById('portal-audio-sleep-state');
+  var sleepTimer = null;
+  var stopAtEnd = false;
+
+  /* Revealed only now. With scripting off the audio still plays and only these
+     two are missing, which is the right thing to lose — a speed menu that does
+     nothing is worse than no speed menu. */
+  if (controls) {
+    controls.hidden = false;
+  }
+
+  /*
+   * Resume applies to audio too, and it is the same position.
+   *
+   * Set on `loadedmetadata` rather than immediately: currentTime before the
+   * duration is known is silently dropped by every browser, which reads as
+   * resume simply not working on audio.
+   */
+  audio.addEventListener('loadedmetadata', function () {
+    duration = audio.duration || duration;
+
+    if (hasResumed || !duration) {
+      return;
+    }
+
+    var wanted = startAt > 0
+      ? (startAt < duration ? startAt : 0)
+      : (resumeAt > 5 && resumeAt < duration * 0.95 ? resumeAt : 0);
+
+    if (wanted > 0) {
+      hasResumed = true;
+      audio.currentTime = wanted;
+    }
+  });
+
+  /*
+   * Starting the audio stops the video.
+   *
+   * Both can play at once otherwise — open the panel while the video is
+   * running and the same sermon comes out twice, a second or two apart, which
+   * sounds like the site is broken rather than like two players. The iframe
+   * cannot be read from here but it can be told, which is enough.
+   */
+  audio.addEventListener('play', function () {
+    send('pause');
+  });
+
+  audio.addEventListener('timeupdate', function () {
+    position = audio.currentTime || 0;
+    duration = audio.duration || duration;
+    save(false);
+  });
+
+  audio.addEventListener('pause', function () {
+    save(true);
+  });
+
+  audio.addEventListener('ended', function () {
+    position = duration;
+    save(true);
+  });
+
+  /*
+   * Speed.
+   *
+   * Applied on `ratechange` guard rather than trusting the select's value
+   * directly, because a browser that refuses a rate leaves the menu showing
+   * something that is not happening.
+   */
+  if (speed) {
+    speed.addEventListener('change', function () {
+      var rate = parseFloat(speed.value);
+
+      if (!(rate > 0)) {
+        return;
+      }
+
+      audio.playbackRate = rate;
+
+      /* Say what actually took effect. Safari clamps above 2× on some
+         versions, and a menu that reads 2 while playing at 1 is a control
+         that lies. */
+      if (Math.abs(audio.playbackRate - rate) > 0.01) {
+        speed.value = String(audio.playbackRate);
+      }
+    });
+  }
+
+  /*
+   * The sleep timer.
+   *
+   * It PAUSES rather than stopping and unloading, so the position is saved by
+   * the pause handler above and somebody who fell asleep finds themselves
+   * where they drifted off — which is the entire reason for the feature.
+   *
+   * "End of this" is a separate answer rather than a duration, because the
+   * length of what is playing is the one interval nobody can estimate and it
+   * is what people actually mean at bedtime.
+   */
+  function clearSleep() {
+    if (sleepTimer) {
+      clearTimeout(sleepTimer);
+      sleepTimer = null;
+    }
+    stopAtEnd = false;
+    if (sleepState) {
+      sleepState.hidden = true;
+      sleepState.textContent = '';
+    }
+  }
+
+  function announceSleep(text) {
+    if (sleepState) {
+      sleepState.textContent = text;
+      sleepState.hidden = false;
+    }
+  }
+
+  if (sleep) {
+    sleep.addEventListener('change', function () {
+      var seconds = parseInt(sleep.value, 10);
+
+      clearSleep();
+
+      if (seconds === -1) {
+        stopAtEnd = true;
+        announceSleep('Stopping at the end of this.');
+        return;
+      }
+
+      if (!(seconds > 0)) {
+        return;
+      }
+
+      /* An absolute wall-clock target, so the message stays true. A countdown
+         driven by setInterval drifts when the tab is backgrounded, which is
+         exactly where this timer spends its life. */
+      var endsAt = Date.now() + seconds * 1000;
+
+      sleepTimer = setTimeout(function () {
+        audio.pause();
+        clearSleep();
+        announceSleep('Paused. Press play to carry on.');
+      }, seconds * 1000);
+
+      announceSleep('Pausing at ' + new Date(endsAt).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }) + '.');
+    });
+  }
+
+  audio.addEventListener('ended', function () {
+    if (stopAtEnd) {
+      clearSleep();
+    }
+  });
+
+  /*
+   * The lock screen.
+   *
+   * Without this a phone shows the page URL, which tells somebody driving
+   * nothing about which sermon is playing. Guarded because Media Session is
+   * absent on desktop Safari and older Android, where the audio still plays —
+   * it is metadata, not playback.
+   */
+  if ('mediaSession' in navigator && window.MediaMetadata) {
+    audio.addEventListener('play', function () {
+      var artwork = [];
+      var image = data.dataset.artwork || '';
+
+      /* Only a real URL. An empty src handed to the operating system draws a
+         broken image on the lock screen, where the absence of one draws the
+         app's own icon. */
+      if (image) {
+        artwork.push({ src: image, sizes: '512x512', type: 'image/jpeg' });
+      }
+
+      try {
+        navigator.mediaSession.metadata = new window.MediaMetadata({
+          title: data.dataset.title || document.title,
+          artist: data.dataset.artist || '',
+          artwork: artwork
+        });
+      } catch (e) {
+        /* Metadata is a courtesy; playback is the feature. */
+      }
+    });
+
+    /* Skip buttons, because the hardware ones on headphones and car stereos
+       map to these and otherwise do nothing. Thirty and fifteen seconds are
+       the podcast conventions rather than a choice made here. */
+    try {
+      navigator.mediaSession.setActionHandler('seekbackward', function () {
+        audio.currentTime = Math.max(0, audio.currentTime - 15);
+      });
+      navigator.mediaSession.setActionHandler('seekforward', function () {
+        audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 30);
+      });
+    } catch (e) {
+      /* Not every browser accepts every action. */
+    }
+  }
+
+  /* ---------------------------------------------------------- cast to a TV
+   *
+   * The Remote Playback API, which is a browser standard and needs no SDK. The
+   * Google Cast library would work too and would mean loading a script from
+   * gstatic.com on every video page — a third-party request that has to
+   * succeed before a control appears, on a product whose whole distribution
+   * story is that it runs on shared hosting with nothing else needed.
+   *
+   * A <video>, not the <audio> above: a television showing a still frame and
+   * playing sound is not what anybody means by casting a sermon.
+   *
+   * THE BUTTON IS HIDDEN UNTIL A DEVICE IS FOUND. watchAvailability() answers
+   * that question, so there is no reason to draw a control whose only effect on
+   * most desktops is an empty picker.
+   */
+  var cast = document.getElementById('portal-cast');
+  var castButton = document.getElementById('portal-cast-button');
+  var castVideo = document.getElementById('portal-cast-video');
+  var castState = document.getElementById('portal-cast-state');
+  var castSlug = cast ? (cast.dataset.slug || '') : '';
+
+  if (!cast || !castButton || !castVideo || !castSlug) {
+    return;
+  }
+
+  function castSays(text) {
+    if (castState) {
+      castState.textContent = text;
+      castState.hidden = !text;
+    }
+  }
+
+  var remote = castVideo.remote;
+  var airplay = typeof castVideo.webkitShowPlaybackTargetPicker === 'function';
+
+  if (remote && typeof remote.watchAvailability === 'function') {
+    remote.watchAvailability(function (available) {
+      cast.hidden = !available;
+    }).catch(function () {
+      /* Some browsers expose `remote` and refuse to watch — a disabled
+         feature policy inside an embed, most often. Nothing to show. */
+    });
+  } else if (airplay) {
+    /* Safari answers the same question through an event instead. */
+    castVideo.addEventListener('webkitplaybacktargetavailabilitychanged', function (event) {
+      cast.hidden = event.availability !== 'available';
+    });
+  } else {
+    return;
+  }
+
+  /*
+   * The source is fetched, not written into the markup.
+   *
+   * A receiver is not this browser: it fetches the URL from its own network
+   * stack with no session, so /listen/{slug}.mp4 would hand it a sign-in page
+   * and the cast would fail with nothing to explain it. The signed CDN URL
+   * needs no session because the signature is the permission.
+   *
+   * Fetched on the press rather than on page load, so a page nobody casts from
+   * costs nothing — and so the signature is as young as possible when the
+   * television starts using it.
+   */
+  var castLoading = false;
+
+  castButton.addEventListener('click', function () {
+    if (castLoading) {
+      return;
+    }
+
+    if (castVideo.src) {
+      openPicker();
+      return;
+    }
+
+    castLoading = true;
+    castSays('Finding the file…');
+
+    fetch('/listen/' + encodeURIComponent(castSlug) + '.json', {
+      credentials: 'same-origin'
+    }).then(function (response) {
+      if (!response.ok) {
+        throw new Error('refused');
+      }
+      return response.json();
+    }).then(function (payload) {
+      if (!payload || !payload.url) {
+        throw new Error('no file');
+      }
+
+      castVideo.src = payload.url;
+      castLoading = false;
+      castSays('');
+      openPicker();
+    }).catch(function () {
+      castLoading = false;
+      /* Said rather than swallowed. A cast button that does nothing is the
+         hardest kind of failure to report, because there is no error anywhere
+         the person pressing it can see. */
+      castSays('Could not get the file to cast.');
+    });
+  });
+
+  function openPicker() {
+    /* The audio and the video must not both play. Whichever the person is
+       casting is the one they meant. */
+    audio.pause();
+    send('pause');
+
+    castVideo.hidden = false;
+
+    try {
+      if (remote && typeof remote.prompt === 'function') {
+        remote.prompt().catch(function () {
+          /* Cancelled, or no device chosen. Not an error worth reporting —
+             they closed a picker they opened. */
+        });
+      } else if (airplay) {
+        castVideo.webkitShowPlaybackTargetPicker();
+      }
+    } catch (e) {
+      castSays('This browser would not open the picker.');
+    }
+  }
+
+  /*
+   * Progress from the cast player, through the same save() as everything else.
+   *
+   * A sermon watched to the end on a television is watched, and the site
+   * should know it — otherwise casting is the one way of playing something
+   * that leaves no trace, and continue-watching keeps offering it.
+   */
+  castVideo.addEventListener('timeupdate', function () {
+    position = castVideo.currentTime || 0;
+    duration = castVideo.duration || duration;
+    save(false);
+  });
+
+  castVideo.addEventListener('pause', function () {
+    save(true);
+  });
+
+  castVideo.addEventListener('ended', function () {
+    position = duration;
+    save(true);
+  });
+
+  if (remote) {
+    remote.addEventListener('connect', function () {
+      castSays('Playing on ' + (remote.state === 'connected' ? 'your TV' : 'another device') + '.');
+    });
+    remote.addEventListener('disconnect', function () {
+      castSays('');
+      save(true);
+    });
+  }
 })();

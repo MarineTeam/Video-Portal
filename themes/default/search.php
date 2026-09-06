@@ -10,6 +10,8 @@
  * @var \Portal\Themes\TemplateLoader $template
  * @var list<array<string, mixed>> $videos
  * @var string $searchTerm
+ * @var string $correctedFrom what was typed, when the spelling was corrected
+ * @var string $exactUrl      the same search, uncorrected
  * @var list<array{title: string, url: string, count: int}> $matchedSeries
  * @var list<array{name: string, url: string, count: int}> $matchedSpeakers
  * @var list<array{id: int, label: string}> $seriesOptions
@@ -24,6 +26,8 @@ declare(strict_types=1);
 
 $videos ??= [];
 $searchTerm ??= '';
+$correctedFrom ??= '';
+$exactUrl ??= '';
 $matchedSeries ??= [];
 $matchedSpeakers ??= [];
 $seriesOptions ??= [];
@@ -98,6 +102,25 @@ echo $template->partial('header', get_defined_vars());
     <a class="btn secondary" href="/search">Clear</a>
   <?php endif ?>
 </form>
+
+<?php if ($correctedFrom !== ''): ?>
+  <?php
+  /*
+   * The correction is announced, not performed quietly.
+   *
+   * These are results for words nobody typed. Saying so — and keeping the
+   * typed words one click away rather than describing them in the past tense —
+   * is what separates a site that helps from one that argues: somebody who
+   * really did mean an unusual spelling gets it back without retyping.
+   */
+  ?>
+  <p class="page-subtitle">
+    Showing results for <strong><?= e($searchTerm) ?></strong>.
+    <?php if ($exactUrl !== ''): ?>
+      <a href="<?= e($exactUrl) ?>">Search instead for &ldquo;<?= e($correctedFrom) ?>&rdquo;</a>
+    <?php endif ?>
+  </p>
+<?php endif ?>
 
 <?php if ($matchedSeries !== [] || $matchedSpeakers !== []): ?>
   <?php

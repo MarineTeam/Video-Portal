@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Portal\Controllers;
 
 use Portal\Auth\Capability;
+use Portal\Content\Breadcrumbs;
+use Portal\Content\Category;
 use Portal\Content\CategoryRepository;
 use Portal\Content\HomeRowRepository;
 use Portal\Content\PlaylistRepository;
 use Portal\Content\SavedVideoRepository;
+use Portal\Content\SearchSuggester;
 use Portal\Content\SeriesRepository;
 use Portal\Content\SubscriptionRepository;
 use Portal\Content\SpeakerRepository;
@@ -97,13 +100,28 @@ final class LibraryController extends Controller
      */
     private function trail(array $crumbs): array
     {
-        $out = [['name' => 'Library', 'url' => $this->config()->url('/')]];
+        return $this->crumbs()->rootedAt($crumbs);
+    }
 
-        foreach ($crumbs as $crumb) {
-            $out[] = ['name' => $crumb['name'], 'url' => $this->config()->url($crumb['url'])];
-        }
-
-        return $out;
+    /**
+     * The one thing that builds a trail.
+     *
+     * It is handed this controller's own visibility predicate rather than
+     * writing its own, so a restricted ancestor is judged by exactly the rule
+     * that decided whether the page renders at all — see Breadcrumbs, where
+     * the leak this prevents is set out.
+     */
+    private function crumbs(): Breadcrumbs
+    {
+        return new Breadcrumbs(
+            $this->container->get(CategoryRepository::class),
+            fn (string $path): string => $this->config()->url($path),
+            fn (Category $category): bool => $this->canSee(
+                $category->isPublished,
+                $category->memberOnly,
+                $category->hidden
+            ),
+        );
     }
 
     /**
@@ -235,8 +253,13 @@ final class LibraryController extends Controller
                     $category->name,
                     (string) ($category->description ?? ''),
                     $this->config()->url('/category/' . $category->slug),
-                    $this->trail([['name' => $category->name, 'url' => '/category/' . $category->slug]])
+                    // The whole chain now, not just this node: "Library /
+                    // Sermons / 2019" rather than "Library / 2019", which on a
+                    // tree three deep was the difference between browsing and
+                    // guessing at URLs.
+                    $crumbs = $this->crumbs()->forCategory($category)
                 ),
+                'breadcrumbs'         => $crumbs,
                 'subscribeScope'      => SubscriptionRepository::CATEGORY,
                 'subscribeScopeId'    => $category->id,
                 'subscribeLabel'      => 'new videos in ' . $category->name,
@@ -285,8 +308,14 @@ final class LibraryController extends Controller
                     $series->title,
                     (string) ($series->description ?? ''),
                     $this->config()->url('/series/' . $series->slug),
-                    $this->trail([['name' => $series->title, 'url' => '/series/' . $series->slug]])
+                    $crumbs = $this->crumbs()->forSeries(
+                        $series,
+                        $series->categoryId === null
+                            ? null
+                            : $this->container->get(CategoryRepository::class)->find($series->categoryId)
+                    )
                 ),
+                'breadcrumbs'         => $crumbs,
                 'subscribeScope'      => SubscriptionRepository::SERIES,
                 'subscribeScopeId'    => $series->id,
                 'subscribeLabel'      => 'new episodes of ' . $series->title,
@@ -356,8 +385,11 @@ final class LibraryController extends Controller
                     $tag->name,
                     'Everything filed under ' . $tag->name . '.',
                     $this->config()->url('/tag/' . $tag->slug),
-                    $this->trail([['name' => $tag->name, 'url' => '/tag/' . $tag->slug]])
+                    // A tag is not part of the category tree, so there is no
+                    // chain to walk and nothing that could be hidden in one.
+                    $crumbs = $this->trail([['name' => $tag->name, 'url' => '/tag/' . $tag->slug]])
                 ),
+                'breadcrumbs'         => $crumbs,
                 'description'         => null,
                 'videos'              => $this->present($result['items']),
                 'children'            => [],
@@ -399,8 +431,9 @@ final class LibraryController extends Controller
                     $speaker->name,
                     (string) ($speaker->bio ?? ''),
                     $this->config()->url('/speaker/' . $speaker->slug),
-                    $this->trail([['name' => $speaker->name, 'url' => '/speaker/' . $speaker->slug]])
+                    $crumbs = $this->trail([['name' => $speaker->name, 'url' => '/speaker/' . $speaker->slug]])
                 ),
+                'breadcrumbs'         => $crumbs,
                 'subscribeScope'      => SubscriptionRepository::SPEAKER,
                 'subscribeScopeId'    => $speaker->id,
                 'subscribeLabel'      => 'new videos from ' . $speaker->name,
@@ -852,7 +885,8 @@ final class LibraryController extends Controller
 
     public function search(Request $request): Response
     {
-        $term = trim($request->query('q') ?? '');
+        $typed = trim($request->query('q') ?? '');
+        $term = $typed;
         $page = max(1, (int) ($request->query('page') ?? 1));
 
         $filters = $this->searchFilters($request);
@@ -862,6 +896,68 @@ final class LibraryController extends Controller
             $page,
             $this->perPage()
         );
+
+        /*
+         * Nothing matched. Before saying so, look for a close spelling.
+         *
+         * Only on zero results, deliberately. Correcting a search that already
+         * found something replaces an answer somebody can judge with one the
+         * site preferred, and the times that is right are not worth the times
+         * it is not.
+         *
+         * The corrected query is then RUN rather than merely offered, because
+         * "did you mean X" as a link asks somebody to click to find out whether
+         * the site was right. Their own words stay one click away and are named
+         * on the page — see $exactUrl.
+         */
+        $correctedFrom = '';
+        $exactUrl = '';
+
+        if (
+            $term !== ''
+            && $result['total'] === 0
+            && $request->query('exact') === null
+            && $this->config()->settingBool('search_suggestions_enabled', true)
+        ) {
+            $suggestion = (new SearchSuggester($this->db()))->suggest(
+                $term,
+                /*
+                 * The verification the suggester requires, answered through the
+                 * ordinary listing with this viewer's own filters — which is
+                 * what stops a suggestion naming a members-only title to
+                 * somebody who cannot open it.
+                 */
+                fn (string $candidate): int => $this->videos()->query(
+                    $this->visibilityFilters(['search' => $candidate] + $filters),
+                    1,
+                    1
+                )['total']
+            );
+
+            if ($suggestion !== null) {
+                $correctedFrom = $term;
+                $term = $suggestion;
+
+                $result = $this->videos()->query(
+                    $this->visibilityFilters(['search' => $term] + $filters),
+                    $page,
+                    $this->perPage()
+                );
+
+                /*
+                 * Built from the query string as it arrived, so every narrowing
+                 * control the visitor had set survives the escape hatch. A
+                 * "search instead for what I typed" that also silently cleared
+                 * the year and the speaker is a different search.
+                 */
+                $exact = $request->query;
+                $exact['q'] = $typed;
+                $exact['exact'] = '1';
+                unset($exact['page']);
+
+                $exactUrl = $request->path . '?' . http_build_query($exact);
+            }
+        }
 
         /** @var SeriesRepository $series */
         $series = $this->container->get(SeriesRepository::class);
@@ -876,6 +972,11 @@ final class LibraryController extends Controller
             'continueWatching'    => [],
             'categories'          => $this->categoryChips(),
             'searchTerm'          => $term,
+            // Empty unless a spelling was corrected. The template shows the
+            // banner on the strength of this, so a theme that ignores it
+            // silently loses the escape hatch rather than the results.
+            'correctedFrom'       => $correctedFrom,
+            'exactUrl'            => $exactUrl,
             'activeCategory'      => '',
             'matchedSeries'       => $term === '' ? [] : array_map(
                 static fn ($item): array => [

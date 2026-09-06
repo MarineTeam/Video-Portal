@@ -251,8 +251,11 @@ final class ShareController extends Controller
         }
 
         try {
-            $embedUrl = $this->container->get(VideoProvider::class)
-                ->embedUrl($video->providerId, self::EMBED_TTL);
+            // The same resolver the watch page uses, so a shared imported video
+            // plays rather than asking bunny.net to sign a YouTube id.
+            $embedUrl = (new \Portal\Video\EmbedResolver(
+                fn (): VideoProvider => $this->container->get(VideoProvider::class)
+            ))->embedUrl($video, self::EMBED_TTL);
         } catch (Throwable $e) {
             error_log('Portal: could not mint an embed URL for a share: ' . $e->getMessage());
             return Response::html(ShareView::unavailable($this->siteName()), 502)->private();

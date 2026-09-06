@@ -41,6 +41,15 @@ final class Video
         public readonly ?string $providerCollectionId = null,
         public readonly ?int $duration = null,
         public readonly ?string $thumbnailFile = null,
+        /**
+         * A complete, public thumbnail URL, for a video this site does not host.
+         *
+         * Separate from thumbnailFile because it means a different thing: that
+         * one is a filename this site signs, this one is already an address.
+         * Signing an address produces a URL that 404s at the CDN, which is
+         * indistinguishable from a rejected token.
+         */
+        public readonly ?string $externalThumbnailUrl = null,
         public readonly string $status = self::STATUS_PROCESSING,
         public readonly int $encodeProgress = 0,
         public readonly ?int $speakerId = null,
@@ -104,6 +113,7 @@ final class Video
             providerCollectionId: $nullableString('provider_collection_id'),
             duration:             $nullableInt('duration'),
             thumbnailFile:        $nullableString('thumbnail_file'),
+            externalThumbnailUrl: $nullableString('external_thumbnail_url'),
             status:               (string) ($row['status'] ?? self::STATUS_PROCESSING),
             encodeProgress:       (int) ($row['encode_progress'] ?? 0),
             speakerId:            $nullableInt('speaker_id'),

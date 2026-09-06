@@ -255,6 +255,8 @@ final class AdminView
             'link'   => '<path d="M8.6 11.4a3 3 0 0 0 4.3 0l2.3-2.3a3 3 0 0 0-4.3-4.3l-1 1"/>'
                       . '<path d="M11.4 8.6a3 3 0 0 0-4.3 0l-2.3 2.3a3 3 0 0 0 4.3 4.3l1-1"/>',
             'chart'  => '<path d="M3 17h14"/><path d="M6 17V9.5"/><path d="M10 17V4.5"/><path d="M14 17v-5"/>',
+            'calendar' => '<rect x="2.8" y="4.4" width="14.4" height="13" rx="1.6"/><path d="M2.8 8.4h14.4"/>'
+                        . '<path d="M6.8 2.8v3"/><path d="M13.2 2.8v3"/><path d="m7.6 12.8 1.7 1.7 3.3-3.4"/>',
             'people' => '<circle cx="7.4" cy="7" r="2.6"/><path d="M2.6 16.5c0-2.7 2.1-4.4 4.8-4.4s4.8 1.7 4.8 4.4"/>'
                       . '<path d="M13.2 4.8a2.6 2.6 0 0 1 0 4.4"/><path d="M14.4 12.4c1.8.5 3 2 3 4.1"/>',
             'brush'  => '<path d="M13.9 3.6a2.1 2.1 0 0 1 3 3L9.4 14 5.6 15.4 7 11.6z"/><path d="M11.8 5.7l2.5 2.5"/>',
@@ -630,7 +632,7 @@ final class AdminView
             );
 
         $total = (int) ($data['total'] ?? 0);
-        $upload = $this->uploader($data);
+        $upload = $this->uploader($data) . $this->linkImporter($data);
 
         $trashed = (int) ($data['trashed'] ?? 0);
         $trashLink = $trashed === 0
@@ -826,6 +828,56 @@ final class AdminView
         </fieldset>
 
         <script src="{$uploadScript}" defer></script>
+        HTML;
+    }
+
+    /**
+     * Bringing in a video that lives somewhere else.
+     *
+     * Beside the upload box rather than on a screen of its own: both answer
+     * "how does a video get into this library", and a second screen for the
+     * second answer is one nobody finds.
+     *
+     * Unlike the uploader, this is drawn whether or not a video service is
+     * configured — an imported link needs none, and a site that has not set one
+     * up yet is exactly the site most likely to want this.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function linkImporter(array $data): string
+    {
+        $token = e((string) $data['token']);
+
+        return <<<HTML
+        <fieldset>
+          <legend>Import a link</legend>
+
+          <form method="post">
+            <input type="hidden" name="_token" value="{$token}">
+            <label>YouTube or Vimeo address
+              <input type="url" name="external_url" placeholder="https://www.youtube.com/watch?v=…"
+                     required>
+            </label>
+            <label>Title <span class="muted small">— optional; leave empty to use theirs</span>
+              <input type="text" name="external_title" maxlength="190">
+            </label>
+            <button class="btn secondary" name="action" value="import-link">Import</button>
+          </form>
+
+          <p class="muted small">The video stays where it is and plays here in its own player, with
+             your categories, series and playlists around it. Nothing is copied.</p>
+
+          <!-- The one thing somebody will otherwise get wrong, said next to the
+               field rather than in documentation nobody opens. -->
+          <p class="muted small"><strong>It is still their video.</strong> Marking an imported video
+             members-only hides it <em>here</em> — it does not make it private on YouTube or Vimeo,
+             where anybody with the original link can still watch it. If a recording must be
+             restricted, upload it to your own video service instead.</p>
+
+          <p class="muted small">Titles and artwork are fetched from the public page, which needs no
+             account or key. Vimeo reports a runtime; YouTube does not, so an imported YouTube video
+             shows no length until you type one.</p>
+        </fieldset>
         HTML;
     }
 
@@ -1661,7 +1713,7 @@ final class AdminView
                        <button name="action" value="down" class="btn tiny secondary"
                                title="Move down among its siblings">&darr;</button>
                        <button name="action" value="delete" class="btn tiny danger"
-                               onclick="return confirm(\'Delete this category? Videos in it are kept.\')">Delete</button>
+                               onclick="return confirm(\'Move this category to the trash? Its videos and subcategories are kept.\')">Delete</button>
                      </form>
                    </td>
                  </tr>',
@@ -1680,6 +1732,8 @@ final class AdminView
         if ($rows === '') {
             $rows = '<tr><td colspan="2" class="muted">No categories yet.</td></tr>';
         }
+
+        $trash = $this->categoryTrash((array) ($data['trashed'] ?? []), $token);
 
         return <<<HTML
         <h1>Categories</h1>
@@ -1714,6 +1768,63 @@ final class AdminView
             </form>
           </div>
         </div>
+        {$trash}
+        HTML;
+    }
+
+    /**
+     * Categories in the trash, on the same screen as the tree.
+     *
+     * Hidden entirely when the trash is empty, for the reason the Failed tab
+     * on the video library is: a permanent "Trash (0)" is a spot people learn
+     * to skip, and this has to be noticed on the day the number changes.
+     *
+     * @param list<Category> $trashed
+     */
+    private function categoryTrash(array $trashed, string $token): string
+    {
+        if ($trashed === []) {
+            return '';
+        }
+
+        $rows = '';
+        foreach ($trashed as $category) {
+            $rows .= sprintf(
+                '<tr>
+                   <td><strong>%s</strong><br><span class="muted">/category/%s</span></td>
+                   <td class="right">
+                     <form method="post" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="id" value="%d">
+                       <button name="action" value="restore" class="btn tiny">Restore</button>
+                       <button name="action" value="purge" class="btn tiny danger"
+                               onclick="return confirm(\'%s\')">Delete for good</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($category->name),
+                e($category->slug),
+                $token,
+                $category->id,
+                e(sprintf(
+                    'Permanently delete "%s"? Its videos are kept and become uncategorised. '
+                    . 'This cannot be undone.',
+                    $category->name
+                ))
+            );
+        }
+
+        return <<<HTML
+        <h2>Trash</h2>
+        <p class="muted small">A deleted category is kept here, and so is everything that was in it:
+           its videos keep their other categories, and its subcategories keep their place and come
+           back with it. Nothing on the site lists a category while it is in the trash.</p>
+        <p class="muted small">Deleting one for good is refused while it still has subcategories,
+           because the database would take them with it. Empty it first.</p>
+        <table>
+          <thead><tr><th>Name</th><th></th></tr></thead>
+          <tbody>{$rows}</tbody>
+        </table>
         HTML;
     }
 
@@ -4549,9 +4660,11 @@ REG;
 
         $membersDefault = $checked('members_thumbnail_default');
         $downloadsEnabled = $checked('downloads_enabled');
+        $audioMode = $checked('audio_mode_enabled');
         $allowIndexing = $checked('allow_indexing');
         $podcastExplicit = $checked('podcast_explicit');
         $subscriptionsEnabled = $checked('subscriptions_enabled');
+        $searchSuggestions = $checked('search_suggestions_enabled');
         $requireVerified = $checked('require_verified_email');
         $allowRequests = $checked('allow_access_requests');
         $maintenance = $checked('maintenance_mode');
@@ -4589,6 +4702,60 @@ REG;
              but a file on somebody's phone is there for good. Turning this on is not enough on its own;
              a person also needs the "download content" permission, which nobody but administrators
              holds until you grant it.</p>
+
+          <fieldset>
+            <legend>Listening</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="audio_mode_enabled" value="1"{$audioMode}>
+              Offer an audio player alongside the video
+            </label>
+            <p class="muted small">Adds a "Listen" control to every video page: audio only, with a
+               speed control, a sleep timer, and proper track details on a phone's lock screen so it
+               keeps playing with the screen off. None of that is possible in the video player itself,
+               which runs on your video service's domain and cannot be reached from here.</p>
+            <p class="muted small">The same panel offers <strong>Play on a TV</strong> where a
+               Chromecast or AirPlay device is on the same network — and only there, so nobody is
+               shown a button that opens an empty list. It uses the browser's own casting, with no
+               script loaded from anywhere else.</p>
+
+            <!-- Said plainly rather than glossed. Somebody turning this on is
+                 widening access to a file, and they should be told so here
+                 rather than discover it. -->
+            <p class="muted small"><strong>What turning this on means.</strong> The audio player needs
+               a real audio file, so anybody who can watch a video can also fetch that file — on a
+               phone the player itself is one long press away from saving it. For public videos this
+               changes nothing: the same file is already published in your podcast feed. What it
+               widens is members-only content, to the people who are already allowed to watch it. If
+               that is not a trade you want, leave this off; the "download content" permission is the
+               narrower tool, and it is unaffected either way.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Search</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="search_suggestions_enabled" value="1"{$searchSuggestions}>
+              Look for a close spelling when a search finds nothing
+            </label>
+            <p class="muted small">Only ever on a search that already returned nothing, so the worst it
+               can do is turn an empty page into a useful one. The corrected search is run and the page
+               says which words it used, with a link back to the words as typed.</p>
+
+            <!-- The platform difference, stated rather than implied. A site
+                 owner comparing this against a Postgres install should be able
+                 to find out what is different here without reading the code. -->
+            <p class="muted small"><strong>What this can and cannot do.</strong> Your library lives in
+               MySQL, which has no trigram index — the Postgres feature (<code>pg_trgm</code>) that makes
+               "how similar are these two words" something a database can rank. There is no equivalent to
+               install on shared hosting, so suggestions are worked out here instead: each word you type
+               is compared against the words already in your titles, speakers, series, categories and
+               tags, and a spelling is accepted if it is within one letter for a short word, two for a
+               long one, or if it sounds the same — so <em>filip</em> finds <em>Philip</em>. That covers
+               ordinary typos exactly. It will not rescue a word typed very differently from the one
+               meant, and it cannot rank near-misses by how near they are.</p>
+            <p class="muted small">A suggestion is only shown after the corrected search has been run and
+               found something <em>that person</em> is allowed to see, so it can never name a
+               members-only title to somebody who cannot open it.</p>
+          </fieldset>
 
           <fieldset>
             <legend>Search engines</legend>

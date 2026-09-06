@@ -13,6 +13,7 @@ use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Support\Audit;
 use Portal\Support\RateLimit;
+use Portal\Support\SecretGuard;
 use Throwable;
 
 /**
@@ -156,6 +157,18 @@ final class AccountController extends Controller
             (string) $user->id
         );
 
+        /*
+         * Asserted here as well as at Response::json, because this exit does
+         * not go through it — the file is pretty-printed and sent as a
+         * download, so it builds its own body.
+         *
+         * That is exactly the kind of endpoint the guard exists for: it walks
+         * eight tables, several of which have columns nobody would put in an
+         * export on purpose, and it is the one payload guaranteed to be
+         * emailed onwards.
+         */
+        SecretGuard::assertClean($payload, 'member data export');
+
         return Response::text((string) json_encode(
             $payload,
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
@@ -272,6 +285,60 @@ final class AccountController extends Controller
     private function log(): \Portal\Content\NotificationLog
     {
         return new \Portal\Content\NotificationLog($this->db());
+    }
+
+    /**
+     * When to be reminded of a rota you are on.
+     *
+     * On its own screen rather than folded into the notifications list, because
+     * the two answer different questions: that one is "what was I told", this
+     * one is "what do I want to be told". And this one is reachable by
+     * somebody who has never been told anything, which is exactly who needs it.
+     */
+    public function reminders(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        $schedules = new \Portal\Schedules\ScheduleRepository($this->db());
+
+        if ($request->method === 'POST') {
+            $this->verifyCsrf($request);
+
+            $schedules->saveReminderPrefs(
+                $user->id,
+                $request->input('day_before') !== null,
+                $request->input('day_of') !== null,
+                (int) ($request->input('send_hour') ?? 18),
+                (string) ($request->input('timezone') ?? '')
+            );
+
+            return $this->back($request, 'Saved.');
+        }
+
+        $upcoming = $schedules->upcomingFor($user->id);
+
+        return $this->view(['account-reminders'], [
+            'title'    => 'Rota reminders',
+            'prefs'    => $schedules->reminderPrefs($user->id),
+            'upcoming' => $upcoming,
+            /*
+             * Whether this account is linked to a name at all. Without it the
+             * screen is a form that quietly does nothing — somebody sets an
+             * hour, saves, and is never reminded of anything, with no way to
+             * find out that the link is what was missing.
+             */
+            'linked'   => (int) $this->db()->value(
+                'SELECT COUNT(*) FROM {schedule_people} WHERE user_id = ?',
+                [$user->id]
+            ) > 0,
+            'siteZone' => $this->config()->setting('timezone', date_default_timezone_get()),
+            'token'    => $this->csrfToken(),
+            'flash'    => $this->flash(),
+        ]);
     }
 
     public function password(Request $request): Response

@@ -341,10 +341,14 @@ final class VideoRepository
                        . ' LEFT JOIN {series} se ON se.id = v.series_id'
                        . ' LEFT JOIN {transcripts} tr ON tr.video_id = v.id';
 
+                // A trashed category does not lend its name to the score. The
+                // video stays findable by its own words; what it loses is a
+                // boost from a heading nobody can see any more.
                 $categoryExists =
                     'EXISTS (SELECT 1 FROM {video_categories} vcs
                                JOIN {categories} cs ON cs.id = vcs.category_id
-                              WHERE vcs.video_id = v.id AND LOWER(cs.name) LIKE ?)';
+                              WHERE vcs.video_id = v.id AND cs.deleted_at IS NULL
+                                AND LOWER(cs.name) LIKE ?)';
 
                 $parts = [];
 
@@ -1316,6 +1320,76 @@ final class VideoRepository
         $video = $this->find($id);
         if ($video === null) {
             throw new \RuntimeException('The video record was created but could not be read back.');
+        }
+
+        return $video;
+    }
+
+    /**
+     * A video that lives on YouTube or Vimeo.
+     *
+     * READY on arrival, not PROCESSING. Every other row in this table starts as
+     * processing because bytes are still being encoded somewhere; an imported
+     * link is playable the moment it is pasted, and leaving it processing would
+     * hide it from the library behind a state nothing will ever advance.
+     *
+     * UNPUBLISHED on arrival, like every other import. Publishing is an
+     * editorial decision and importing is not — somebody pasting ten links is
+     * building a catalogue, not announcing ten videos.
+     *
+     * Refuses a duplicate rather than creating a second row, because the same
+     * sermon imported twice is two rows that then diverge: one gets the
+     * categories, the other gets found by search.
+     */
+    public function importExternal(
+        string $source,
+        string $externalId,
+        string $title,
+        string $thumbnailUrl = '',
+        int $duration = 0
+    ): Video {
+        $existing = $this->db->first(
+            'SELECT * FROM {videos} WHERE provider = ? AND provider_id = ? AND deleted_at IS NULL',
+            [$source, $externalId]
+        );
+
+        if ($existing !== null) {
+            throw HttpException::badRequest(sprintf(
+                'That video is already here, as “%s”.',
+                (string) $existing['title']
+            ));
+        }
+
+        $title = mb_substr(trim($title), 0, 190);
+        if ($title === '') {
+            $title = 'Untitled';
+        }
+
+        $now = date('Y-m-d H:i:s');
+
+        $id = $this->db->insert('videos', [
+            'provider'     => $source,
+            'provider_id'  => $externalId,
+            'slug'         => $this->uniqueSlug($title),
+            'title'        => $title,
+            /*
+             * The thumbnail is somebody else's URL, stored rather than signed.
+             * Nothing here can sign it and nothing needs to: it is already
+             * public at the source. What the members-only rule still governs is
+             * whether this site HANDS IT OUT, which is decided where every
+             * other thumbnail is decided.
+             */
+            'external_thumbnail_url' => mb_substr(trim($thumbnailUrl), 0, 500) ?: null,
+            'duration'      => max(0, $duration),
+            'status'        => Video::STATUS_READY,
+            'is_published'  => 0,
+            'created_at'    => $now,
+            'updated_at'    => $now,
+        ]);
+
+        $video = $this->find($id);
+        if ($video === null) {
+            throw new \RuntimeException('The video was imported but could not be read back.');
         }
 
         return $video;

@@ -27,6 +27,7 @@ $heading ??= $title ?? '';
 $showDuration = ($theme ?? null)?->setting('show-duration') !== '0';
 
 echo $template->partial('header', get_defined_vars());
+echo $template->partial('breadcrumbs', get_defined_vars());
 ?>
 
 <h1 class="page-title"><?= e($heading) ?></h1>

@@ -71,6 +71,21 @@ echo $template->partial('header', get_defined_vars());
           </td>
           <td class="muted small"><?= e((string) $row['updated_at']) ?></td>
           <td class="right">
+            <?php
+            /*
+             * Marking, and forgetting, are two different requests and are two
+             * different buttons on purpose. Taking the mark off leaves the row
+             * — somebody undoing a mis-click has not asked to be forgotten —
+             * where Forget deletes it and the video starts from the beginning.
+             */
+            $done = !empty($row['completed_at']);
+            ?>
+            <form method="post" action="/watch/mark" style="display:inline">
+              <input type="hidden" name="_token" value="<?= e($token) ?>">
+              <input type="hidden" name="video_id" value="<?= (int) $row['video_id'] ?>">
+              <input type="hidden" name="action" value="<?= $done ? 'unwatched' : 'watched' ?>">
+              <button class="btn small secondary"><?= $done ? 'Not watched' : 'Watched' ?></button>
+            </form>
             <form method="post" style="display:inline">
               <input type="hidden" name="_token" value="<?= e($token) ?>">
               <input type="hidden" name="video_id" value="<?= (int) $row['video_id'] ?>">

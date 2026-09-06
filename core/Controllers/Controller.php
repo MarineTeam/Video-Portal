@@ -428,9 +428,38 @@ abstract class Controller
          * visitor — and, worse, in front of accounts that are signed in but not
          * yet approved, for whom it would bounce with no explanation.
          */
+        /*
+         * What is on. Offered only when there is something on it, like Live
+         * above — and to EVERYBODY rather than only to members, because the
+         * whole point of the section is the people who never made an account.
+         *
+         * The count is of what THIS visitor may see, so a site whose only
+         * events are members-only shows a stranger no link rather than one to
+         * an empty page.
+         */
+        if ($this->visibleEvents() > 0) {
+            $items[] = ['label' => 'What\'s on', 'href' => '/events'];
+        }
+
         $user = $this->user();
         if ($user !== null && ($user->isAdmin() || $user->authorized)) {
             $items[] = ['label' => 'Saved', 'href' => '/saved'];
+
+            /*
+             * Offered only when there is something on it, the same rule Live
+             * follows just above — and for a stronger reason. On a site that
+             * does not use the rota at all this link would be permanent and
+             * always empty; on one that does, somebody with nothing to answer
+             * does not need reminding of that every time they visit.
+             *
+             * Counted rather than guessed. This is one indexed query on a page
+             * that is already doing several, and the alternative is either a
+             * link nobody wants or a feature nobody finds — which is how the
+             * trash stayed unreachable for two phases.
+             */
+            if ($this->rotaAwaiting($user->id) > 0) {
+                $items[] = ['label' => 'Your rota', 'href' => '/rota'];
+            }
         }
 
         /*
@@ -556,6 +585,65 @@ abstract class Controller
      *     children: list<array{label: string, path: string, key: string, screens: list<string>}>
      * }>
      */
+    /**
+     * How many upcoming events this visitor may see.
+     *
+     * Members-only ones are excluded for a stranger, so the link never leads to
+     * a page that says nothing is on — which would be worse than no link,
+     * because it is a promise the site does not keep.
+     *
+     * Fails to zero, like the rota count and the unread badge: this runs on
+     * every page, and the migration creating the table has one request during
+     * which it does not exist.
+     */
+    private function visibleEvents(): int
+    {
+        $user = $this->user();
+        $member = $user !== null && ($user->isAdmin() || $user->authorized);
+
+        try {
+            return (int) $this->db()->value(
+                'SELECT COUNT(*) FROM {events}
+                  WHERE is_published = 1 AND starts_at >= NOW()'
+                . ($member ? '' : ' AND member_only = 0')
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
+    /**
+     * How much of the rota is this person's problem right now.
+     *
+     * Unanswered asks and slots going spare, on published services still ahead.
+     * Both, because either is a reason to open the page — and a link that
+     * appeared only for unanswered asks would hide the cover list from exactly
+     * the people who could clear it.
+     *
+     * Fails to zero. This runs on every page in the product, and the migration
+     * that creates these tables has one request during which they do not exist
+     * — the same reason the unread-notification count swallows its errors.
+     */
+    private function rotaAwaiting(int $userId): int
+    {
+        try {
+            return (int) $this->db()->value(
+                'SELECT
+                    (SELECT COUNT(*) FROM {rota_assignments} a
+                       INNER JOIN {rota_services} s ON s.id = a.service_id
+                      WHERE a.user_id = ? AND a.state = "invited"
+                        AND s.is_published = 1 AND s.starts_at >= NOW())
+                  + (SELECT COUNT(*) FROM {rota_assignments} c
+                       INNER JOIN {rota_services} cs ON cs.id = c.service_id
+                      WHERE c.cover_requested_at IS NOT NULL AND c.user_id <> ?
+                        AND cs.is_published = 1 AND cs.starts_at >= NOW())',
+                [$userId, $userId]
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
     protected function adminNav(): array
     {
         $sections = [
@@ -592,6 +680,26 @@ abstract class Controller
                     ['label' => 'Tags',       'path' => '/admin/tags',          'key' => 'tags',          'cap' => Capability::MANAGE_CATEGORIES, 'screens' => ['tags'], 'siteWide' => true],
                     ['label' => 'Live',       'path' => '/admin/live',          'key' => 'live',          'cap' => Capability::MANAGE_VIDEOS,     'screens' => ['live'], 'siteWide' => true],
                     ['label' => 'Notices',    'path' => '/admin/announcements', 'key' => 'announcements', 'cap' => Capability::MANAGE_SETTINGS,   'screens' => ['announcements']],
+                ],
+            ],
+            /*
+             * A section of its own rather than a link under Content, because a
+             * rota is not content: it is about people and a week, and the
+             * person who builds it is often not the person who edits videos.
+             *
+             * `siteWide` on every child — manage_rota is site-only, since
+             * grants.scope_type is a category, a series or a video and a
+             * service is none of those. Without the flag the navigation would
+             * ask canAnywhere and offer the link to somebody whose only grant
+             * is on a category, landing them on a 403.
+             */
+            [
+                'label' => 'Church life', 'path' => '/admin/rota', 'key' => 'rota', 'icon' => 'calendar',
+                'cap' => null, 'screens' => [],
+                'children' => [
+                    ['label' => 'Services & teams', 'path' => '/admin/rota', 'key' => 'rota', 'cap' => Capability::MANAGE_ROTA, 'screens' => ['rota', 'rota-service', 'rota-team'], 'siteWide' => true],
+                    ['label' => 'Events', 'path' => '/admin/events', 'key' => 'events', 'cap' => Capability::MANAGE_EVENTS, 'screens' => ['events', 'event', 'event-series'], 'siteWide' => true],
+                    ['label' => 'Calendar', 'path' => '/admin/schedules', 'key' => 'schedules', 'cap' => Capability::MANAGE_SCHEDULES, 'screens' => ['schedules', 'schedule'], 'siteWide' => true],
                 ],
             ],
             [

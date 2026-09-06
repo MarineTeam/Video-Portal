@@ -6,17 +6,23 @@ namespace Portal;
 
 use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
+use Portal\Controllers\AdminEventController;
+use Portal\Controllers\AdminRotaController;
+use Portal\Controllers\AdminScheduleController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
+use Portal\Controllers\CalendarController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\DownloadController;
+use Portal\Controllers\EventController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
 use Portal\Controllers\MemberShareController;
 use Portal\Controllers\PwaController;
 use Portal\Controllers\RegistrationCheckController;
+use Portal\Controllers\RotaController;
 use Portal\Controllers\ShareController;
 use Portal\Controllers\SubscriptionController;
 use Portal\Controllers\UploadController;
@@ -207,6 +213,21 @@ final class Routes
         );
 
         /*
+         * When to be reminded of a rota you are on.
+         *
+         * auth.user rather than auth.authorized, like the rest of the account
+         * area: somebody waiting for approval still owns their settings, and a
+         * rota is one of the things a church puts people on before the website
+         * catches up with them.
+         */
+        $router->any(
+            ['GET', 'POST'],
+            '/account/reminders',
+            [AccountController::class, 'reminders'],
+            ['auth.user']
+        );
+
+        /*
          * Asking for access.
          *
          * Guarded by `auth.user` and NOT by `auth.authorized`, which is the
@@ -249,8 +270,108 @@ final class Routes
          * Both run the same four gates, in the same method.
          */
         $router->get('/download/{slug}.json', [DownloadController::class, 'meta'], ['auth.authorized']);
+
+        /*
+         * Audio mode. The same file as the download route and the same first
+         * and last gates, differing only in the middle: a site-wide switch that
+         * is off until somebody turns it on, rather than a capability.
+         *
+         * It exists because the video player is a cross-origin iframe — this
+         * site cannot change its speed, put anything on a lock screen, or keep
+         * it playing while the phone is locked. An <audio> element on this
+         * origin can do all three.
+         *
+         * Behind auth.authorized like /watch: listening to something is
+         * watching it, and the same approval decides both.
+         */
+        $router->get('/listen/{slug}.mp4', [DownloadController::class, 'listen'], ['auth.authorized']);
+
+        /*
+         * The same decision as JSON, for casting to a television.
+         *
+         * A receiver fetches the URL itself, with no session, so the redirect
+         * above would hand it the sign-in page. It gets the signed CDN URL
+         * instead, where the signature is the permission — the same reason the
+         * offline-save code cannot use the download redirect either.
+         */
+        $router->get('/listen/{slug}.json', [DownloadController::class, 'listenMeta'], ['auth.authorized']);
         $router->post('/api/progress', [WatchController::class, 'saveProgress'], ['auth.authorized']);
         $router->get('/api/progress', [WatchController::class, 'getProgress'], ['auth.authorized']);
+
+        /*
+         * Marking by hand. A plain form post rather than an API route, because
+         * the case for it is precisely the one where the player did not
+         * report: listened to in the car, watched on somebody else's
+         * television, or a recording whose last two minutes are credits so the
+         * heartbeat never reached the end.
+         */
+        $router->post('/watch/mark', [WatchController::class, 'mark'], ['auth.authorized']);
+
+        /*
+         * The rota, as the person serving sees it.
+         *
+         * No capability: answering an ask, saying which days you cannot serve,
+         * asking for cover and taking a slot are all things somebody does about
+         * themselves, and every one of those writes is keyed to the person in
+         * its WHERE clause. A permission for them would be a switch that,
+         * turned off, stops somebody answering a question they were asked.
+         *
+         * Approved-only rather than merely signed in: an account waiting for
+         * approval is on no team and has nothing to answer, so the page would
+         * be an empty screen implying they had been forgotten.
+         */
+        /*
+         * Events. OPEN, with no guard at all, which is the point of the
+         * section: the people a church most wants at an event are the ones who
+         * never made an account.
+         *
+         * A members-only event is invisible rather than refused — absent from
+         * the list and a 404 at its own address — because "you may not see this
+         * event" tells somebody there is an event.
+         *
+         * The token route is GET and POST: the GET shows what would happen and
+         * the POST does it. A cancellation on the GET would fire the first time
+         * anything fetched the link — a mail preview, a scanner, an unfurler.
+         */
+        /*
+         * The schedules calendar. OPEN, like events and for a stronger reason:
+         * the people ON these rotas do not have accounts either, so a guard
+         * would hide the page from everybody it is about.
+         */
+        $router->get('/calendar', [CalendarController::class, 'index']);
+        $router->post('/calendar/me', [CalendarController::class, 'choose']);
+
+        /*
+         * What has changed since a device last asked.
+         *
+         * Registered after /calendar/me so the literal path cannot be shadowed,
+         * and open for the same reason the page is: everything in the payload
+         * is already in that page's HTML.
+         */
+        $router->get('/calendar/sync', [CalendarController::class, 'sync']);
+
+        $router->get('/events', [EventController::class, 'index']);
+        $router->post('/events/signup', [EventController::class, 'signUp']);
+        $router->post('/events/cancel', [EventController::class, 'cancel']);
+        $router->any(
+            ['GET', 'POST'],
+            '/events/cancel/{token}',
+            [EventController::class, 'cancelByToken']
+        );
+        $router->get('/events/{slug}', [EventController::class, 'show']);
+
+        $router->get('/rota', [RotaController::class, 'mine'], ['auth.authorized']);
+        $router->post('/rota', [RotaController::class, 'update'], ['auth.authorized']);
+
+        /*
+         * One service: the running order, and who said yes. Laid out to be
+         * printed — the sheet somebody holds on a Sunday morning.
+         *
+         * Behind the same guard as the rest. A public "what is on" page is a
+         * later section with its own rules about naming people; until then, a
+         * page listing who is serving is for the people serving.
+         */
+        $router->get('/services/{id:\d+}', [RotaController::class, 'service'], ['auth.authorized']);
 
         // Saved videos. Approved-only for the same reason /watch is: the pages
         // list content, and an unapproved account cannot see the library either.
@@ -265,6 +386,38 @@ final class Routes
         // handler; admin.area only decides who gets through the front door, so
         // a category editor is not met with a 403 on /admin itself.
         $router->get('/admin', [AdminController::class, 'dashboard'], ['admin.area']);
+        /*
+         * Building the rota. Registered before /admin/videos only for
+         * readability; the paths do not overlap.
+         *
+         * The service and team screens are GET-only and every write goes to
+         * /admin/rota, so there is one place the capability is checked for a
+         * write and one CSRF check covering all of them.
+         */
+        /*
+         * Events, as the organiser sees them.
+         *
+         * The .csv route is registered BEFORE /admin/events/{id}, or "12.csv"
+         * would be swallowed as an id and cast to 12 — the same collision that
+         * once sent /comments/report to /comments/{video}. The id pattern
+         * constrains it to digits too, so the ordering is belt and braces
+         * rather than the only thing standing between them.
+         */
+        $router->get('/admin/events', [AdminEventController::class, 'index'], ['admin.area']);
+        $router->post('/admin/events', [AdminEventController::class, 'update'], ['admin.area']);
+        $router->get('/admin/events/series/{id:\d+}', [AdminEventController::class, 'series'], ['admin.area']);
+        $router->get('/admin/events/{id:\d+}.csv', [AdminEventController::class, 'export'], ['admin.area']);
+        $router->get('/admin/events/{id:\d+}', [AdminEventController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/schedules', [AdminScheduleController::class, 'index'], ['admin.area']);
+        $router->post('/admin/schedules', [AdminScheduleController::class, 'update'], ['admin.area']);
+        $router->get('/admin/schedules/{id:\d+}', [AdminScheduleController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/rota', [AdminRotaController::class, 'index'], ['admin.area']);
+        $router->post('/admin/rota', [AdminRotaController::class, 'update'], ['admin.area']);
+        $router->get('/admin/rota/services/{id:\d+}', [AdminRotaController::class, 'service'], ['admin.area']);
+        $router->get('/admin/rota/teams/{id:\d+}', [AdminRotaController::class, 'team'], ['admin.area']);
+
         $router->get('/admin/videos', [AdminController::class, 'videos'], ['admin.area']);
         $router->post('/admin/videos', [AdminController::class, 'updateVideo'], ['admin.area']);
         // Registered before {id} so "trash" is not swallowed as a video id.
