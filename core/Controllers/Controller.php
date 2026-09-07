@@ -700,6 +700,12 @@ abstract class Controller
                     ['label' => 'Services & teams', 'path' => '/admin/rota', 'key' => 'rota', 'cap' => Capability::MANAGE_ROTA, 'screens' => ['rota', 'rota-service', 'rota-team'], 'siteWide' => true],
                     ['label' => 'Events', 'path' => '/admin/events', 'key' => 'events', 'cap' => Capability::MANAGE_EVENTS, 'screens' => ['events', 'event', 'event-series'], 'siteWide' => true],
                     ['label' => 'Calendar', 'path' => '/admin/schedules', 'key' => 'schedules', 'cap' => Capability::MANAGE_SCHEDULES, 'screens' => ['schedules', 'schedule'], 'siteWide' => true],
+                    ['label' => 'Forms', 'path' => '/admin/forms', 'key' => 'forms', 'cap' => Capability::MANAGE_FORMS, 'screens' => ['forms', 'form'], 'siteWide' => true],
+                    ['label' => 'Prayer', 'path' => '/admin/prayer', 'key' => 'prayer', 'cap' => Capability::MODERATE_PRAYER, 'screens' => ['prayer'], 'siteWide' => true],
+                    ['label' => 'Small groups', 'path' => '/admin/groups', 'key' => 'groups', 'cap' => Capability::MANAGE_GROUPS, 'screens' => ['groups', 'group'], 'siteWide' => true],
+                    ['label' => 'Books & hymnals', 'path' => '/admin/books', 'key' => 'books', 'cap' => Capability::MANAGE_BOOKS, 'screens' => ['books', 'book'], 'siteWide' => true],
+                    ['label' => 'What we sang', 'path' => '/admin/books/songs', 'key' => 'songs', 'cap' => Capability::MANAGE_BOOKS, 'screens' => ['songs'], 'siteWide' => true],
+                    ['label' => 'Broadcasts', 'path' => '/admin/broadcasts', 'key' => 'broadcasts', 'cap' => Capability::SEND_BROADCASTS, 'screens' => ['broadcasts', 'broadcast'], 'siteWide' => true],
                 ],
             ],
             [

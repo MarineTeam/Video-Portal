@@ -90,6 +90,58 @@ final class Capability
      */
     public const MANAGE_SCHEDULES = 'manage_schedules';
 
+    /**
+     * Building forms, and reading what people send back.
+     *
+     * One capability for both, deliberately, and it is the more consequential
+     * half that decides: a connect card carries a phone number, an address and
+     * often a good deal more, so this is the permission that reads personal
+     * details a stranger typed into a public page — not merely the permission
+     * to arrange some fields.
+     */
+    public const MANAGE_FORMS = 'manage_forms';
+
+    /**
+     * Reading the prayer queue and deciding what goes on the wall.
+     *
+     * Site-wide, and it does NOT come with the ability to see who asked. An
+     * anonymous request is anonymous to whoever holds this too — see
+     * PortalPrayerPrayerName. Holding it also means seeing leaders-only
+     * requests, because somebody has to read those before they appear.
+     */
+    public const MODERATE_PRAYER = 'moderate_prayer';
+
+    /**
+     * Keeping the small-group directory.
+     *
+     * Site-wide. This is the person who makes groups and appoints leaders —
+     * NOT the leaders, who answer requests for their own group on that group's
+     * own page. LEADING IS A ROW, NOT A CAPABILITY: granting one would make
+     * every leader of every group a moderator of all of them, and would hand
+     * them every group's address with it.
+     */
+    public const MANAGE_GROUPS = 'manage_groups';
+
+    /**
+     * Writing and sending a broadcast.
+     *
+     * Site-wide, and the most consequential permission in this product after
+     * the administrative ones: it reaches every member's inbox, and — where a
+     * gateway is configured — their phone, at whatever hour it is pressed. It
+     * also spends money.
+     */
+    public const SEND_BROADCASTS = 'send_broadcasts';
+
+    /**
+     * Adding books and hymnals, indexing them, and correcting the numbering.
+     *
+     * Site-wide. The consequential half is the OFFSET: getting it wrong
+     * relabels every page number in a book at once, which is exactly why the
+     * page is what gets stored — but it still means a congregation looking up
+     * the wrong hymn on a Sunday until somebody fixes it.
+     */
+    public const MANAGE_BOOKS = 'manage_books';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -141,6 +193,11 @@ final class Capability
             self::MANAGE_ROTA         => 'Build the rota: teams, services, and who is asked to serve',
             self::MANAGE_EVENTS       => 'Create events and see who has signed up',
             self::MANAGE_SCHEDULES    => 'Keep the schedules calendar and the list of people on it',
+            self::MANAGE_FORMS        => 'Build forms and connect cards, and read what people send',
+            self::MODERATE_PRAYER     => 'Read the prayer queue and decide what goes on the wall',
+            self::MANAGE_GROUPS       => 'Keep the small-group directory and appoint leaders',
+            self::SEND_BROADCASTS     => 'Write and send broadcasts by email, text and push',
+            self::MANAGE_BOOKS        => 'Add books and hymnals, index them, and correct their page numbering',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -175,6 +232,11 @@ final class Capability
             self::MANAGE_ROTA,
             self::MANAGE_EVENTS,
             self::MANAGE_SCHEDULES,
+            self::MANAGE_FORMS,
+            self::MODERATE_PRAYER,
+            self::MANAGE_GROUPS,
+            self::SEND_BROADCASTS,
+            self::MANAGE_BOOKS,
         ];
     }
 

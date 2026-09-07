@@ -11,6 +11,7 @@ use Portal\Content\VideoRepository;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
+use Portal\Support\FileStream;
 
 /**
  * Serving an attachment.
@@ -104,50 +105,9 @@ final class AssetDownloadController extends Controller
      */
     private function stream(string $path, array $asset): Response
     {
-        $name = AssetPolicy::displayName((string) $asset['original_name']);
-
-        /*
-         * Read into memory rather than streamed, because Response is a value
-         * object that carries a body. The size limit on upload is what makes
-         * that acceptable — 25MB is inside the memory limit of every host this
-         * targets. A larger limit would need a streaming response, and that is
-         * the change to make if this ever holds video files.
-         */
-        $body = file_get_contents($path);
-
-        if ($body === false) {
-            throw HttpException::notFound('There is no file at that address.');
-        }
-
-        return (new Response($body))
-            /*
-             * The type comes from the extension allowlist, never from what the
-             * uploader's browser claimed.
-             */
-            ->header('Content-Type', (string) $asset['content_type'])
-            ->header('Content-Length', (string) strlen($body))
-
-            /*
-             * attachment, not inline. Even for types a browser would happily
-             * render, downloading is the behaviour that cannot surprise
-             * anybody — and the filename is quoted after every quote and
-             * newline has been stripped out of it.
-             */
-            ->header('Content-Disposition', 'attachment; filename="' . $name . '"')
-
-            /*
-             * The browser must not second-guess the type. Without this, a file
-             * served as text/plain that happens to look like HTML is rendered
-             * as HTML by some browsers — in this site's origin.
-             */
-            ->header('X-Content-Type-Options', 'nosniff')
-
-            /*
-             * Private, because the answer depends on who asked. A shared cache
-             * holding one viewer's copy of a members-only handout and serving
-             * it to a stranger is the failure this whole route exists to
-             * prevent.
-             */
-            ->private();
+        // Through the one place that knows every header this needs. See
+        // Portal\Support\FileStream — a second copy of that list eventually
+        // drifts, and the way it shows is a missing nosniff.
+        return FileStream::send($path, $asset);
     }
 }

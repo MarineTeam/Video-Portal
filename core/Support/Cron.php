@@ -346,6 +346,53 @@ final class Cron
         };
 
         /*
+         * Keep working through whatever broadcast is mid-flight.
+         *
+         * Every minute, because a broadcast somebody pressed send on is
+         * something they are watching — and because each run is bounded by
+         * both a count and a clock, so "often" costs one indexed query when
+         * there is nothing to do.
+         *
+         * ONE BROADCAST AT A TIME. Two in flight would share the per-run
+         * budget, and the second would crawl while the first looked normal.
+         */
+        $this->handlers['broadcasts.send'] = static function (App $app): string {
+            $db = $app->container()->get(\Portal\Db::class);
+            $config = $app->container()->get(\Portal\Config::class);
+
+            $broadcasts = new \Portal\Broadcast\BroadcastRepository(
+                $db,
+                (string) ($config->setting('sms_country_code') ?? '')
+            );
+
+            $inFlight = $broadcasts->sending(1);
+
+            if ($inFlight === []) {
+                return 'Nothing to send.';
+            }
+
+            $sender = new \Portal\Broadcast\Sender(
+                $db,
+                $config,
+                $broadcasts,
+                $app->container()->get(\Portal\Mail\MailProvider::class)
+            );
+
+            $result = $sender->run($inFlight[0]);
+
+            return sprintf(
+                '%d sent, %d failed, %d left%s.',
+                $result['sent'],
+                $result['failed'],
+                $result['remaining'],
+                // Said, because "we stopped early" and "we finished" are
+                // different answers and only one of them means anything is
+                // wrong with the pace.
+                $result['ranOut'] ? ' (stopped on the clock)' : ''
+            );
+        };
+
+        /*
          * Forget cancellations older than a device could plausibly be away.
          *
          * The tombstones exist so a phone can find out about a date that was
@@ -461,6 +508,7 @@ final class Cron
             'schedules.sync'     => 900,
             'schedules.reminders' => 900,
             'schedules.prune'    => 86400,
+            'broadcasts.send'    => 60,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

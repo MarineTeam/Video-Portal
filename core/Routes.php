@@ -8,12 +8,21 @@ use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
+use Portal\Controllers\AdminBookController;
+use Portal\Controllers\AdminBroadcastController;
+use Portal\Controllers\AdminFormController;
+use Portal\Controllers\AdminGroupController;
+use Portal\Controllers\AdminPrayerController;
 use Portal\Controllers\AdminScheduleController;
 use Portal\Controllers\AdminShareController;
 use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CalendarController;
+use Portal\Controllers\FormController;
+use Portal\Controllers\ReaderController;
+use Portal\Controllers\GroupController;
+use Portal\Controllers\PrayerController;
 use Portal\Controllers\CronController;
 use Portal\Controllers\DownloadController;
 use Portal\Controllers\EventController;
@@ -228,6 +237,20 @@ final class Routes
         );
 
         /*
+         * What this site may send you, and how.
+         *
+         * The three consent rules are only real if somebody can exercise them:
+         * an opt-out nobody can reach is not an opt-out, and an SMS opt-in only
+         * an administrator can tick is not consent.
+         */
+        $router->any(
+            ['GET', 'POST'],
+            '/account/messages',
+            [AccountController::class, 'messages'],
+            ['auth.user']
+        );
+
+        /*
          * Asking for access.
          *
          * Guarded by `auth.user` and NOT by `auth.authorized`, which is the
@@ -350,6 +373,66 @@ final class Routes
          */
         $router->get('/calendar/sync', [CalendarController::class, 'sync']);
 
+        /*
+         * Forms and connect cards. OPEN, and that is the whole point: the
+         * people a connect card is for are the ones who have never made an
+         * account, and a sign-in wall on a card asking "how did you find us"
+         * is the card answering its own question.
+         *
+         * A members-only form is INVISIBLE rather than refused — decided in
+         * one place in the controller, because a refusal announces that there
+         * is something there to be refused.
+         */
+        $router->get('/forms', [FormController::class, 'index']);
+        $router->get('/forms/{slug}', [FormController::class, 'show']);
+        $router->post('/forms/{slug}', [FormController::class, 'submit']);
+
+        /*
+         * The prayer wall. Open, because the public requests are public and a
+         * sign-in wall over them means the only people who can read them are
+         * the ones who already know.
+         *
+         * Nothing on these routes can put a request on the wall — the
+         * repository has no way to do it, so the moderation rule does not
+         * depend on a controller remembering.
+         */
+        /*
+         * Small groups. The directory is open — a directory nobody can read is
+         * not a directory — but JOINING needs an account, because a group has
+         * to be able to answer somebody and because membership is what the
+         * address travels with.
+         *
+         * The literal paths come before /groups/{slug} so they cannot be
+         * shadowed by a group whose slug happens to be "ask".
+         */
+        $router->get('/groups', [GroupController::class, 'index']);
+        $router->post('/groups/ask', [GroupController::class, 'ask'], ['auth.user']);
+        $router->post('/groups/leave', [GroupController::class, 'leave'], ['auth.user']);
+        $router->post('/groups/answer', [GroupController::class, 'answer'], ['auth.user']);
+        $router->get('/groups/{slug}', [GroupController::class, 'show']);
+
+        $router->get('/prayer', [PrayerController::class, 'index']);
+        $router->post('/prayer', [PrayerController::class, 'add']);
+        $router->post('/prayer/pray', [PrayerController::class, 'pray']);
+        $router->post('/prayer/withdraw', [PrayerController::class, 'withdraw']);
+
+        /*
+         * Books and hymnals.
+         *
+         * The literal paths come before /books/{slug} so a book cannot be
+         * shadowed by one of them, and every one re-asks who is reading — a
+         * cached book revalidates before it opens, which is what keeps the
+         * access check immediate. See ReaderController; it is a deliberate
+         * difference from a downloaded video and not a bug.
+         */
+        $router->get('/books', [ReaderController::class, 'index']);
+        $router->get('/books/search', [ReaderController::class, 'search']);
+        $router->get('/books/{slug}', [ReaderController::class, 'read']);
+        $router->get('/books/{slug}/open', [ReaderController::class, 'open']);
+        $router->get('/books/{slug}/file', [ReaderController::class, 'file']);
+        $router->get('/books/{slug}/search', [ReaderController::class, 'search']);
+        $router->post('/books/{slug}/position', [ReaderController::class, 'savePosition']);
+
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);
         $router->post('/events/cancel', [EventController::class, 'cancel']);
@@ -412,6 +495,43 @@ final class Routes
         $router->get('/admin/schedules', [AdminScheduleController::class, 'index'], ['admin.area']);
         $router->post('/admin/schedules', [AdminScheduleController::class, 'update'], ['admin.area']);
         $router->get('/admin/schedules/{id:\d+}', [AdminScheduleController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/prayer', [AdminPrayerController::class, 'index'], ['admin.area']);
+        $router->post('/admin/prayer', [AdminPrayerController::class, 'update'], ['admin.area']);
+
+        $router->get('/admin/books', [AdminBookController::class, 'index'], ['admin.area']);
+        $router->post('/admin/books', [AdminBookController::class, 'update'], ['admin.area']);
+        /*
+         * The literal paths come before /admin/books/{id}, or a book with the
+         * id "songs" would shadow them — the collision that once made
+         * /comments/report a comment on video 0.
+         */
+        $router->get('/admin/books/songs', [AdminBookController::class, 'songs'], ['admin.area']);
+        $router->get('/admin/books/songs.csv', [AdminBookController::class, 'songsCsv'], ['admin.area']);
+        $router->get('/admin/books/{id:\d+}', [AdminBookController::class, 'show'], ['admin.area']);
+        /*
+         * Where an admin's browser posts what it read out of a book. Digits
+         * only, so it cannot be shadowed by the id route — the collision that
+         * once made /comments/report a comment on video 0.
+         */
+        $router->post('/admin/books/{id:\d+}/index', [AdminBookController::class, 'receiveIndex'], ['admin.area']);
+
+        $router->get('/admin/broadcasts', [AdminBroadcastController::class, 'index'], ['admin.area']);
+        $router->post('/admin/broadcasts', [AdminBroadcastController::class, 'update'], ['admin.area']);
+        $router->get('/admin/broadcasts/{id:\d+}', [AdminBroadcastController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/groups', [AdminGroupController::class, 'index'], ['admin.area']);
+        $router->post('/admin/groups', [AdminGroupController::class, 'update'], ['admin.area']);
+        $router->get('/admin/groups/{id:\d+}', [AdminGroupController::class, 'show'], ['admin.area']);
+
+        $router->get('/admin/forms', [AdminFormController::class, 'index'], ['admin.area']);
+        $router->post('/admin/forms', [AdminFormController::class, 'update'], ['admin.area']);
+        $router->get('/admin/forms/{id:\d+}', [AdminFormController::class, 'show'], ['admin.area']);
+        /*
+         * Constrained to digits so it cannot be shadowed by the id route, the
+         * collision that once made /comments/report a comment on video 0.
+         */
+        $router->get('/admin/forms/{id:\d+}/export.csv', [AdminFormController::class, 'export'], ['admin.area']);
 
         $router->get('/admin/rota', [AdminRotaController::class, 'index'], ['admin.area']);
         $router->post('/admin/rota', [AdminRotaController::class, 'update'], ['admin.area']);

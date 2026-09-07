@@ -295,6 +295,62 @@ final class AccountController extends Controller
      * one is "what do I want to be told". And this one is reachable by
      * somebody who has never been told anything, which is exactly who needs it.
      */
+    /**
+     * What this site may send you, and how.
+     *
+     * The three consent rules are only real if somebody can exercise them: an
+     * opt-out nobody can reach is not an opt-out, and an SMS opt-in that only
+     * an administrator can tick is not consent.
+     */
+    public function messages(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        $country = (string) ($this->config()->setting('sms_country_code') ?? '');
+        $broadcasts = new \Portal\Broadcast\BroadcastRepository($this->db(), $country);
+
+        if ($request->method === 'POST') {
+            $this->verifyCsrf($request);
+
+            $broadcasts->savePrefs(
+                $user->id,
+                /*
+                 * The box on the screen reads "email me", so an UNTICKED box is
+                 * an opt-out. Stored as the negative it is, because a missing
+                 * row has to mean "not opted out" — a positively named column
+                 * defaulting to zero would silence everybody who has never
+                 * visited this page.
+                 */
+                $request->input('by_email') === null,
+                $request->input('by_sms') !== null,
+                (string) ($request->input('phone') ?? '')
+            );
+
+            return $this->back($request, 'Saved.');
+        }
+
+        $prefs = $broadcasts->prefs($user->id);
+
+        return $this->view(['account-messages'], [
+            'title' => 'What we send you',
+            'prefs' => $prefs,
+            /*
+             * Whether the number can actually be texted. An opt-in with a
+             * number this cannot read is a message the gateway charges for and
+             * nobody receives, and the person who typed it is the only one who
+             * can fix it — so they are the one who has to be told.
+             */
+            'phoneReadable' => $prefs['phone'] === null
+                || \Portal\Broadcast\PhoneNumber::isSendable((string) $prefs['phone'], $country),
+            'token' => $this->csrfToken(),
+            'flash' => $this->flash(),
+        ]);
+    }
+
     public function reminders(Request $request): Response
     {
         $user = $this->user();
