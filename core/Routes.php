@@ -501,6 +501,13 @@ final class Routes
 
         $router->get('/admin/books', [AdminBookController::class, 'index'], ['admin.area']);
         $router->post('/admin/books', [AdminBookController::class, 'update'], ['admin.area']);
+        /*
+         * The literal paths come before /admin/books/{id}, or a book with the
+         * id "songs" would shadow them — the collision that once made
+         * /comments/report a comment on video 0.
+         */
+        $router->get('/admin/books/songs', [AdminBookController::class, 'songs'], ['admin.area']);
+        $router->get('/admin/books/songs.csv', [AdminBookController::class, 'songsCsv'], ['admin.area']);
         $router->get('/admin/books/{id:\d+}', [AdminBookController::class, 'show'], ['admin.area']);
         /*
          * Where an admin's browser posts what it read out of a book. Digits

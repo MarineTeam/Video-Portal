@@ -704,6 +704,7 @@ abstract class Controller
                     ['label' => 'Prayer', 'path' => '/admin/prayer', 'key' => 'prayer', 'cap' => Capability::MODERATE_PRAYER, 'screens' => ['prayer'], 'siteWide' => true],
                     ['label' => 'Small groups', 'path' => '/admin/groups', 'key' => 'groups', 'cap' => Capability::MANAGE_GROUPS, 'screens' => ['groups', 'group'], 'siteWide' => true],
                     ['label' => 'Books & hymnals', 'path' => '/admin/books', 'key' => 'books', 'cap' => Capability::MANAGE_BOOKS, 'screens' => ['books', 'book'], 'siteWide' => true],
+                    ['label' => 'What we sang', 'path' => '/admin/books/songs', 'key' => 'songs', 'cap' => Capability::MANAGE_BOOKS, 'screens' => ['songs'], 'siteWide' => true],
                     ['label' => 'Broadcasts', 'path' => '/admin/broadcasts', 'key' => 'broadcasts', 'cap' => Capability::SEND_BROADCASTS, 'screens' => ['broadcasts', 'broadcast'], 'siteWide' => true],
                 ],
             ],

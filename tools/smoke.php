@@ -13058,6 +13058,89 @@ check(
     'the members-only rule locked out members too'
 );
 
+/*
+ * WHAT A LICENCE RETURN MAY SAY.
+ *
+ * The rule is that it counts songs recorded as SUNG and never lookups — a
+ * return is a legal document with money attached, and one that overstates is
+ * worse than one that is late.
+ */
+postWithJar($baseUrl . '/admin/books', [
+    '_token'      => $bookToken,
+    'action'      => 'save-song',
+    'id'          => (string) $bookId,
+    'number'      => '27',
+    'author'      => 'H F Lyte',
+    'ccli_number' => '43190',
+], $jar);
+
+postWithJar($baseUrl . '/admin/books', [
+    '_token'  => $bookToken,
+    'action'  => 'record-sung',
+    'id'      => (string) $bookId,
+    'number'  => '27',
+    'on_date' => date('Y-m-d'),
+], $jar);
+
+/* Somebody looks up a different hymn twenty times and nobody sings it. */
+for ($i = 0; $i < 20; $i++) {
+    $db->execute(
+        'INSERT INTO {hymn_lookups} (book_id, number, on_date, lookups) VALUES (?, ?, CURDATE(), 1)
+         ON DUPLICATE KEY UPDATE lookups = lookups + 1',
+        [$bookId, 28]
+    );
+}
+
+$sang = getWithJar(
+    $baseUrl . '/admin/books/songs?from=' . date('Y-m-d', strtotime('-7 days')) . '&to=' . date('Y-m-d'),
+    $jar
+);
+
+check('The licence return opens', $sang['status'] === 200, "got {$sang['status']}");
+
+check(
+    'and counts what was sung',
+    str_contains($sang['body'], '43190') && str_contains($sang['body'], 'Abide with me'),
+    'a song recorded as sung is missing from the return'
+);
+
+check(
+    'and does NOT count what was merely looked up',
+    !str_contains($sang['body'], 'And can it be'),
+    'A LOOKUP WAS COUNTED AS A PERFORMANCE — the return overstates'
+);
+
+check(
+    'and says so on its face',
+    str_contains($sang['body'], 'not</strong> count hymn lookups')
+        || str_contains($sang['body'], 'not count hymn lookups'),
+    'somebody signing this cannot tell what its evidence is'
+);
+
+$sangCsv = getWithJar($baseUrl . '/admin/books/songs.csv?from='
+    . date('Y-m-d', strtotime('-7 days')) . '&to=' . date('Y-m-d'), $jar);
+
+check(
+    'and downloads as a spreadsheet',
+    $sangCsv['status'] === 200 && str_contains($sangCsv['body'], '43190'),
+    "got {$sangCsv['status']}"
+);
+
+/*
+ * THE OTHER RULE: metadata is keyed to the hymn number, not to a contents row,
+ * so re-indexing a book does not silently lose every CCLI number in it.
+ */
+$db->execute('DELETE FROM {book_contents} WHERE book_id = ?', [$bookId]);
+
+check(
+    'Re-indexing a book keeps its CCLI numbers',
+    (string) $db->value(
+        'SELECT ccli_number FROM {book_songs} WHERE book_id = ? AND number = ?',
+        [$bookId, 27]
+    ) === '43190',
+    'RE-INDEXING A HYMNAL WOULD LOSE EVERY CCLI NUMBER IN IT'
+);
+
 echo "\nBroadcasts\n";
 
 $bcToken = csrfFrom(getWithJar($baseUrl . '/admin/broadcasts', $jar)['body']);

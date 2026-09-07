@@ -22,6 +22,7 @@ final class AdminBookView
         $body = match ($screen) {
             'books' => $this->overview($data),
             'book'  => $this->book($data),
+            'songs' => $this->songs($data),
             default => '<p>Unknown screen.</p>',
         };
 
@@ -300,6 +301,87 @@ final class AdminBookView
         <p class="muted small">Replacing the file clears this. Page 40 of a new scan is not page
            40 of the old one, and keeping the text would leave search confidently pointing at the
            wrong pages.</p>
+        HTML;
+    }
+
+    /**
+     * What we sang, for a licence return.
+     *
+     * The screen says what its evidence is, because the number on it goes on a
+     * document somebody signs. Lookups are not on it and the page says why.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function songs(array $data): string
+    {
+        $report = (array) $data['report'];
+        $from = e((string) $report['from']);
+        $to = e((string) $report['to']);
+
+        $rows = '';
+        foreach ((array) $report['songs'] as $song) {
+            $ccli = trim((string) ($song['ccli_number'] ?? ''));
+
+            $rows .= sprintf(
+                '<tr>
+                   <td>%d</td>
+                   <td>%s<div class="muted small">%s</div></td>
+                   <td>%s</td>
+                   <td>%s</td>
+                   <td class="right">%d</td>
+                   <td class="muted small">%s</td>
+                 </tr>',
+                (int) $song['number'],
+                e((string) ($song['song_title'] ?? '')),
+                e((string) $song['book_title']),
+                e((string) ($song['author'] ?? '')),
+                // Named rather than left blank: this is the field that decides
+                // whether the row can go on the return at all.
+                $ccli === '' ? '<span class="pill warn">no number</span>' : e($ccli),
+                (int) $song['times'],
+                e((string) $song['first_used']) . ' – ' . e((string) $song['last_used'])
+            );
+        }
+
+        if ($rows === '') {
+            $rows = '<tr><td colspan="6" class="muted">Nothing recorded as sung in that period.</td></tr>';
+        }
+
+        $missing = (int) $report['withoutCcli'];
+        $warning = $missing === 0
+            ? ''
+            : sprintf(
+                '<div class="notice error"><strong>%d of these have no CCLI number.</strong>
+                 <p class="muted small">A song without one cannot go on a return. They are listed
+                    here rather than left out, because a return that quietly omits them looks
+                    complete and is not.</p></div>',
+                $missing
+            );
+
+        return <<<HTML
+        <h1>What we sang</h1>
+
+        <p class="muted">For a licence return. This counts songs <strong>recorded as sung</strong>
+           — from a service plan, from present mode, or entered by hand. It does
+           <strong>not</strong> count hymn lookups: somebody opening a hymn on their phone is not
+           a performance, and a return that counted it would overstate.</p>
+
+        <form method="get" action="/admin/books/songs" class="inline-form">
+          <label>From <input type="date" name="from" value="{$from}"></label>
+          <label>To <input type="date" name="to" value="{$to}"></label>
+          <button class="btn tiny">Show</button>
+          <a class="btn tiny secondary"
+             href="/admin/books/songs.csv?from={$from}&amp;to={$to}">Download as a spreadsheet</a>
+        </form>
+
+        {$warning}
+
+        <table>
+          <thead>
+            <tr><th>No.</th><th>Song</th><th>Author</th><th>CCLI</th><th>Times</th><th>Between</th></tr>
+          </thead>
+          <tbody>{$rows}</tbody>
+        </table>
         HTML;
     }
 
