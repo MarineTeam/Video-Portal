@@ -8,6 +8,7 @@ use Portal\Controllers\AccountController;
 use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
+use Portal\Controllers\AdminBookController;
 use Portal\Controllers\AdminBroadcastController;
 use Portal\Controllers\AdminFormController;
 use Portal\Controllers\AdminGroupController;
@@ -19,6 +20,7 @@ use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CalendarController;
 use Portal\Controllers\FormController;
+use Portal\Controllers\ReaderController;
 use Portal\Controllers\GroupController;
 use Portal\Controllers\PrayerController;
 use Portal\Controllers\CronController;
@@ -414,6 +416,23 @@ final class Routes
         $router->post('/prayer/pray', [PrayerController::class, 'pray']);
         $router->post('/prayer/withdraw', [PrayerController::class, 'withdraw']);
 
+        /*
+         * Books and hymnals.
+         *
+         * The literal paths come before /books/{slug} so a book cannot be
+         * shadowed by one of them, and every one re-asks who is reading — a
+         * cached book revalidates before it opens, which is what keeps the
+         * access check immediate. See ReaderController; it is a deliberate
+         * difference from a downloaded video and not a bug.
+         */
+        $router->get('/books', [ReaderController::class, 'index']);
+        $router->get('/books/search', [ReaderController::class, 'search']);
+        $router->get('/books/{slug}', [ReaderController::class, 'read']);
+        $router->get('/books/{slug}/open', [ReaderController::class, 'open']);
+        $router->get('/books/{slug}/file', [ReaderController::class, 'file']);
+        $router->get('/books/{slug}/search', [ReaderController::class, 'search']);
+        $router->post('/books/{slug}/position', [ReaderController::class, 'savePosition']);
+
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);
         $router->post('/events/cancel', [EventController::class, 'cancel']);
@@ -479,6 +498,16 @@ final class Routes
 
         $router->get('/admin/prayer', [AdminPrayerController::class, 'index'], ['admin.area']);
         $router->post('/admin/prayer', [AdminPrayerController::class, 'update'], ['admin.area']);
+
+        $router->get('/admin/books', [AdminBookController::class, 'index'], ['admin.area']);
+        $router->post('/admin/books', [AdminBookController::class, 'update'], ['admin.area']);
+        $router->get('/admin/books/{id:\d+}', [AdminBookController::class, 'show'], ['admin.area']);
+        /*
+         * Where an admin's browser posts what it read out of a book. Digits
+         * only, so it cannot be shadowed by the id route — the collision that
+         * once made /comments/report a comment on video 0.
+         */
+        $router->post('/admin/books/{id:\d+}/index', [AdminBookController::class, 'receiveIndex'], ['admin.area']);
 
         $router->get('/admin/broadcasts', [AdminBroadcastController::class, 'index'], ['admin.area']);
         $router->post('/admin/broadcasts', [AdminBroadcastController::class, 'update'], ['admin.area']);

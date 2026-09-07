@@ -132,6 +132,16 @@ final class Capability
      */
     public const SEND_BROADCASTS = 'send_broadcasts';
 
+    /**
+     * Adding books and hymnals, indexing them, and correcting the numbering.
+     *
+     * Site-wide. The consequential half is the OFFSET: getting it wrong
+     * relabels every page number in a book at once, which is exactly why the
+     * page is what gets stored — but it still means a congregation looking up
+     * the wrong hymn on a Sunday until somebody fixes it.
+     */
+    public const MANAGE_BOOKS = 'manage_books';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -187,6 +197,7 @@ final class Capability
             self::MODERATE_PRAYER     => 'Read the prayer queue and decide what goes on the wall',
             self::MANAGE_GROUPS       => 'Keep the small-group directory and appoint leaders',
             self::SEND_BROADCASTS     => 'Write and send broadcasts by email, text and push',
+            self::MANAGE_BOOKS        => 'Add books and hymnals, index them, and correct their page numbering',
             self::MANAGE_USERS        => 'Create and edit user accounts',
             self::MANAGE_PERMISSIONS  => 'Assign roles, groups, and permission grants',
             self::MANAGE_PLUGINS      => 'Activate, configure, and remove plugins',
@@ -225,6 +236,7 @@ final class Capability
             self::MODERATE_PRAYER,
             self::MANAGE_GROUPS,
             self::SEND_BROADCASTS,
+            self::MANAGE_BOOKS,
         ];
     }
 

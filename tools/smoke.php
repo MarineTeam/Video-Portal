@@ -12902,6 +12902,162 @@ check(
     'A HOME ADDRESS WAS PUBLISHED'
 );
 
+echo "\nBooks and hymnals\n";
+
+$bookToken = csrfFrom(getWithJar($baseUrl . '/admin/books', $jar)['body']);
+
+postWithJar($baseUrl . '/admin/books', [
+    '_token' => $bookToken,
+    'action' => 'create',
+    'title'  => 'Hymns Ancient and Modern',
+    'kind'   => 'pdf',
+], $jar);
+
+$bookId = (int) $db->value('SELECT id FROM {books} WHERE title = ?', ['Hymns Ancient and Modern']);
+
+check('A book can be added', $bookId > 0, 'the form wrote nothing');
+
+postWithJar($baseUrl . '/admin/books', [
+    '_token'       => $bookToken,
+    'action'       => 'save',
+    'id'           => (string) $bookId,
+    '_whole_form'  => '1',
+    'title'        => 'Hymns Ancient and Modern',
+    'page_offset'  => '3',
+    'page_count'   => '400',
+    'is_hymnal'    => '1',
+    'is_published' => '1',
+], $jar);
+
+/* Hymn 27 is on file page 30 — printed page 27 with three leaves of front matter. */
+postWithJar($baseUrl . '/admin/books', [
+    '_token'   => $bookToken,
+    'action'   => 'add-entry',
+    'id'       => (string) $bookId,
+    'number'   => '27',
+    'title'    => 'Abide with me',
+    'pdf_page' => '30',
+], $jar);
+
+$bookAdmin = getWithJar($baseUrl . '/admin/books/' . $bookId, $jar);
+
+/*
+ * The WORKED EXAMPLE, not merely the words "printed page 1" — the field's own
+ * label contains those, so a looser check would pass against an example that
+ * was never computed. With three leaves of front matter, file page 4 is
+ * printed page 1.
+ */
+check(
+    'and the offset screen shows what it does',
+    str_contains($bookAdmin['body'], 'page 4 of the file shows printed page 1'),
+    'the one field that decides every page number is invisible in its effect'
+);
+
+/*
+ * THE RULE. Correcting the offset relabels the whole book and rewrites nothing.
+ */
+$pagesBefore = $db->all('SELECT pdf_page FROM {book_contents} WHERE book_id = ? ORDER BY id', [$bookId]);
+
+postWithJar($baseUrl . '/admin/books', [
+    '_token'      => $bookToken,
+    'action'      => 'save',
+    'id'          => (string) $bookId,
+    'page_offset' => '5',
+], $jar);
+
+check(
+    'Correcting the offset rewrites no stored position',
+    $db->all('SELECT pdf_page FROM {book_contents} WHERE book_id = ? ORDER BY id', [$bookId])
+        == $pagesBefore,
+    'CORRECTING AN OFFSET REWROTE THE CONTENTS — every correction is now a migration'
+);
+
+check(
+    'and the screen says so, because the surprising half is what did not change',
+    str_contains(getWithJar($baseUrl . '/admin/books/' . $bookId, $jar)['body'], 'printed 25'),
+    'the entry did not relabel'
+);
+
+/* Put it back so the reader checks read what a person would expect. */
+postWithJar($baseUrl . '/admin/books', [
+    '_token'      => $bookToken,
+    'action'      => 'save',
+    'id'          => (string) $bookId,
+    'page_offset' => '3',
+], $jar);
+
+$shelf = get($baseUrl . '/books');
+
+check('The shelf renders with no account', $shelf['status'] === 200, "got {$shelf['status']}");
+check(
+    'and lists a published book',
+    str_contains($shelf['body'], 'Hymns Ancient and Modern'),
+    'a published book is not on the shelf'
+);
+
+$reader = get($baseUrl . '/books/hymns-ancient-and-modern');
+
+check('A book opens', $reader['status'] === 200, "got {$reader['status']}");
+check(
+    'and offers to go straight to a hymn',
+    str_contains($reader['body'], 'data-reader-goto') && str_contains($reader['body'], 'Hymn'),
+    'a hymnal cannot be opened at a hymn'
+);
+
+check(
+    'and says plainly that it needs a connection to open',
+    str_contains($reader['body'], 'checks you can still read it each time'),
+    'a reader that will not open offline has to say why — it is deliberate, not a fault'
+);
+
+$openCheck = get($baseUrl . '/books/hymns-ancient-and-modern/open');
+$openInfo = json_decode($openCheck['body'], true);
+
+check(
+    'The reader revalidates before opening anything',
+    $openCheck['status'] === 200 && is_array($openInfo) && isset($openInfo['revision']),
+    'there is no check for a cached copy to make'
+);
+
+/* A members-only book is INVISIBLE, not refused. */
+postWithJar($baseUrl . '/admin/books', [
+    '_token'       => $bookToken,
+    'action'       => 'save',
+    'id'           => (string) $bookId,
+    '_whole_form'  => '1',
+    'is_published' => '1',
+    'member_only'  => '1',
+    'is_hymnal'    => '1',
+], $jar);
+
+$strangerShelf = get($baseUrl . '/books');
+$strangerBook = get($baseUrl . '/books/hymns-ancient-and-modern');
+$strangerFile = get($baseUrl . '/books/hymns-ancient-and-modern/file');
+
+check(
+    'A members-only book is absent from a stranger\'s shelf',
+    !str_contains($strangerShelf['body'], 'Hymns Ancient and Modern'),
+    'THE TITLE OF A MEMBERS-ONLY BOOK LEAKED'
+);
+
+check(
+    'and answers 404 rather than 403',
+    $strangerBook['status'] === 404,
+    "got {$strangerBook['status']} — a refusal announces there is something to be refused"
+);
+
+check(
+    'and its file is not served either',
+    $strangerFile['status'] === 404,
+    "got {$strangerFile['status']} — THE FILE WAS SERVED PAST THE ACCESS CHECK"
+);
+
+check(
+    'while a member can still read it',
+    getWithJar($baseUrl . '/books/hymns-ancient-and-modern', $jar)['status'] === 200,
+    'the members-only rule locked out members too'
+);
+
 echo "\nBroadcasts\n";
 
 $bcToken = csrfFrom(getWithJar($baseUrl . '/admin/broadcasts', $jar)['body']);
