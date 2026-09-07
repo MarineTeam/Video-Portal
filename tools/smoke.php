@@ -13172,6 +13172,64 @@ check(
     'somebody would save a hymnal for a hall with no signal and find it will not open'
 );
 
+/*
+ * The renderer is ours, which is what makes selection, read-aloud and the
+ * search index possible at all — a browser's built-in viewer is a black box.
+ */
+check(
+    'The reader loads a renderer it can read the text out of',
+    str_contains($readerPage['body'], '/assets/vendor/pdfjs/pdf.min.js'),
+    'with the browser\'s own viewer there is no text to select, speak or index'
+);
+
+$pdfLib = get($baseUrl . '/assets/vendor/pdfjs/pdf.min.js');
+$pdfWorker = get($baseUrl . '/assets/vendor/pdfjs/pdf.worker.min.js');
+
+check(
+    'and the vendored library is actually served',
+    $pdfLib['status'] === 200 && str_contains($pdfLib['body'], 'pdfjsLib'),
+    "got {$pdfLib['status']} — a vendored file that 404s is a reader that silently falls back"
+);
+
+check(
+    'and so is its worker',
+    $pdfWorker['status'] === 200,
+    "got {$pdfWorker['status']} — without the worker nothing renders"
+);
+
+check(
+    'and the reader offers to read a page aloud and resize it',
+    str_contains($readerPage['body'], 'data-reader-aloud')
+        && str_contains($readerPage['body'], 'data-reader-bigger'),
+    'the things the text layer exists for are not reachable'
+);
+
+/*
+ * Both branches, because the useful half is the refusal: offering "read this
+ * book" against a book with no file behind it produces an error that reads as
+ * the feature being broken.
+ */
+check(
+    'A book with no file says so rather than offering to read it',
+    str_contains(getWithJar($baseUrl . '/admin/books/' . $bookId, $jar)['body'], 'Attach a file first'),
+    'the indexer would be offered against nothing and fail confusingly'
+);
+
+$bookAssetId = (int) $db->insert('file_assets', [
+    'path'          => 'books/smoke-hymnal.pdf',
+    'original_name' => 'hymnal.pdf',
+    'content_type'  => 'application/pdf',
+    'size_bytes'    => 1024,
+    'created_at'    => date('Y-m-d H:i:s'),
+]);
+$db->execute('UPDATE {books} SET asset_id = ? WHERE id = ?', [$bookAssetId, $bookId]);
+
+check(
+    'and once it has one, an admin can start the browser reading it out',
+    str_contains(getWithJar($baseUrl . '/admin/books/' . $bookId, $jar)['body'], 'data-book-index'),
+    'nothing produces the text that search depends on'
+);
+
 $offlinePage = getWithJar($baseUrl . '/account/downloads', $jar);
 
 check(

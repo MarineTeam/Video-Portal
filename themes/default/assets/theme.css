@@ -1041,3 +1041,21 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 .book-search { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; }
 .book-hits { list-style: none; padding: 0; }
 .book-hits li { padding: .5rem 0; border-bottom: 1px solid var(--line, #2a2a2a); }
+
+/* The page we draw ourselves, and the invisible text sitting exactly on it.
+ *
+ * The text layer is what makes selection, highlighting and read-aloud possible:
+ * PDF.js positions transparent spans over the picture, and the browser's own
+ * selection then works as it does anywhere else. It must line up to the pixel,
+ * which is why both are absolutely positioned in a wrapper sized to the canvas.
+ */
+.reader-canvas-wrap { position: relative; margin: 0 auto; }
+.reader-canvas { display: block; width: 100%; height: auto; }
+.reader-text {
+  position: absolute; inset: 0; overflow: hidden; line-height: 1;
+  opacity: .01;                 /* not 0: some browsers stop selecting at zero */
+  transform-origin: 0 0;
+}
+.reader-text span { position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+.reader-text ::selection { background: rgba(56, 189, 248, .4); }
+.reader-stage { overflow: auto; }

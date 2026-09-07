@@ -64,6 +64,19 @@ echo $template->partial('header', get_defined_vars());
       <button class="btn tiny">Go</button>
     </form>
 
+    <button class="btn tiny secondary" data-reader-smaller title="Smaller">&minus;</button>
+    <button class="btn tiny secondary" data-reader-bigger title="Bigger">+</button>
+
+    <?php
+    /*
+     * Reading aloud needs the text layer, which only our own renderer produces
+     * — with the browser's built-in viewer there is nothing to read. The button
+     * is here regardless and does nothing where there is no text, which is
+     * quieter than a control that appears and disappears.
+     */
+    ?>
+    <button class="btn tiny secondary" data-reader-aloud title="Read this page aloud">Read aloud</button>
+
     <button class="btn tiny secondary" data-reader-present title="Full screen for the front">Present</button>
 
     <?php
@@ -153,6 +166,14 @@ echo $template->partial('header', get_defined_vars());
   </script>
 </div>
 
+<?php
+/*
+ * The renderer. Loaded before the reader, which checks for it and falls back
+ * to the browser's own viewer when it is absent — a reader that pages is worth
+ * much more than a broken one, and vendored files do go missing.
+ */
+?>
+<script src="<?= e(asset_url('/assets/vendor/pdfjs/pdf.min.js')) ?>" defer></script>
 <script src="<?= e(asset_url('/assets/offline.js')) ?>" defer></script>
 <script src="<?= e(isset($themeAsset)
     ? $themeAsset('book-reader.js')

@@ -301,6 +301,47 @@ final class AdminBookView
         <p class="muted small">Replacing the file clears this. Page 40 of a new scan is not page
            40 of the old one, and keeping the text would leave search confidently pointing at the
            wrong pages.</p>
+
+        {$this->indexer($book, $data)}
+        HTML;
+    }
+
+    /**
+     * The button that starts the browser reading.
+     *
+     * Only where there is a file. Offering it against a book with nothing
+     * behind it produces an error that reads as the feature being broken.
+     *
+     * @param array<string, mixed> $book
+     * @param array<string, mixed> $data
+     */
+    private function indexer(array $book, array $data): string
+    {
+        if (empty($book['asset_id'])) {
+            return '<p class="muted small">Attach a file first — there is nothing to read yet.</p>';
+        }
+
+        $token = e((string) $data['token']);
+        $id = (int) $book['id'];
+        $slug = e((string) $book['slug']);
+
+        return <<<HTML
+        <div data-book-index data-book="{$id}" data-token="{$token}" data-file="/books/{$slug}/file">
+          <label class="check">
+            <input type="checkbox" data-index-ocr>
+            Also read scanned pages with OCR
+          </label>
+          <p class="muted small">Slow — seconds per page — and only worth it for a book with no
+             text in it at all. Leave it off first: the pages that have text are read in moments,
+             and the screen then tells you how many had none.</p>
+
+          <p><button class="btn" data-index-start>Read this book</button></p>
+          <p class="muted small" data-index-status>Keep this tab open while it works. It stores as
+             it goes, so closing it early keeps everything read so far.</p>
+        </div>
+
+        <script src="/assets/vendor/pdfjs/pdf.min.js" defer></script>
+        <script src="/theme-asset/default/book-index.js" defer></script>
         HTML;
     }
 

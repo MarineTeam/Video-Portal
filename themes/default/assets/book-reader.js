@@ -36,7 +36,11 @@
   }
 
   var slug = root.getAttribute('data-slug');
+  var kind = root.getAttribute('data-kind') || 'pdf';
   var offset = parseInt(root.getAttribute('data-offset'), 10) || 0;
+
+  /** The open PDF, once there is one. Read-aloud and indexing both need it. */
+  var pdfDocument = null;
   var pageCount = parseInt(root.getAttribute('data-pages'), 10) || 0;
   var token = root.getAttribute('data-token') || '';
   var page = parseInt(root.getAttribute('data-page'), 10) || 1;
@@ -210,18 +214,118 @@
   }
 
   /**
-   * Render with whatever the browser has.
+   * Render the pages ourselves, with PDF.js.
    *
-   * An <iframe> at the file, which every browser with a built-in PDF viewer
-   * handles, and which needs no library committed to the release branch. A
-   * richer renderer — text selection, highlights, OCR — is a drop-in
-   * replacement for this function and nothing else here changes.
+   * The alternative — an <iframe> at the file — renders and pages perfectly
+   * well and needs no vendored library. What it cannot do is give this
+   * application the TEXT: a browser's built-in viewer is a black box, so there
+   * is no selection to highlight, nothing to read aloud, and nothing to extract
+   * for the search index. Every one of those is a feature of this section, so
+   * the renderer has to be ours.
+   *
+   * Falls back to the iframe when the library is missing. A reader that pages
+   * is worth a great deal more than a broken one, and vendored files do go
+   * missing — a pruned deploy, a host that will not serve .js from a nested
+   * directory, a proxy that eats it.
    */
   function mount(info) {
     if (!stage) {
       return;
     }
 
+    stage.innerHTML = '';
+
+    if (!window.pdfjsLib || kind === 'epub') {
+      return mountFrame(info);
+    }
+
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/vendor/pdfjs/pdf.worker.min.js';
+
+    var canvas = document.createElement('canvas');
+    canvas.className = 'reader-canvas';
+
+    // Sits exactly over the canvas, holding invisible positioned text so the
+    // browser's own selection works. This is what makes highlighting and
+    // read-aloud possible at all.
+    var textLayer = document.createElement('div');
+    textLayer.className = 'reader-text';
+
+    var wrap = document.createElement('div');
+    wrap.className = 'reader-canvas-wrap';
+    wrap.appendChild(canvas);
+    wrap.appendChild(textLayer);
+    stage.appendChild(wrap);
+
+    var pending = null;
+
+    window.pdfjsLib.getDocument({ url: info.file, withCredentials: true }).promise
+      .then(function (pdf) {
+        pdfDocument = pdf;
+        pageCount = pdf.numPages || pageCount;
+
+        rendered = function (pdfPage) {
+          /*
+           * One render at a time. Flicking through with the arrow keys queues
+           * renders faster than they finish, and two writing to one canvas
+           * leaves half of each page on screen.
+           */
+          if (pending) {
+            pending.cancelled = true;
+          }
+
+          var job = { cancelled: false };
+          pending = job;
+
+          pdf.getPage(Math.max(1, Math.min(pdfPage, pdf.numPages))).then(function (pageObject) {
+            if (job.cancelled) { return; }
+
+            // The reading size multiplies the fit-to-width scale, so bigger
+            // text means a bigger page rather than a different layout — a PDF
+            // page is a picture and there is no reflow to be had.
+            var fit = (stage.clientWidth || 800) / pageObject.getViewport({ scale: 1 }).width;
+            var viewport = pageObject.getViewport({ scale: Math.max(0.2, fit * zoom()) });
+
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            wrap.style.width = canvas.width + 'px';
+            wrap.style.height = canvas.height + 'px';
+
+            return pageObject.render({
+              canvasContext: canvas.getContext('2d'),
+              viewport: viewport
+            }).promise.then(function () {
+              if (job.cancelled) { return; }
+
+              return pageObject.getTextContent().then(function (text) {
+                if (job.cancelled) { return; }
+
+                textLayer.innerHTML = '';
+                textLayer.style.width = canvas.width + 'px';
+                textLayer.style.height = canvas.height + 'px';
+
+                window.pdfjsLib.renderTextLayer({
+                  textContentSource: text,
+                  container: textLayer,
+                  viewport: viewport
+                });
+              });
+            });
+          }).catch(function () {
+            // A page that will not render is one page, not the book.
+          });
+        };
+
+        rendered(page);
+      })
+      .catch(function () {
+        // A file PDF.js cannot open still opens in the browser's own viewer
+        // often enough to be worth trying.
+        mountFrame(info);
+      });
+  }
+
+  /** The fallback: the browser's own viewer, which cannot be read from. */
+  function mountFrame(info) {
     stage.innerHTML = '';
 
     var frame = document.createElement('iframe');
@@ -374,6 +478,110 @@
         });
     });
   }
+
+  /* ------------------------------------------------------- reading aloud
+   *
+   * ONE VERSE AT A TIME, not the whole page in one utterance.
+   *
+   * Speech synthesis gives no reliable way to seek inside a long utterance, so
+   * a whole page read as one is a thing somebody can only stop and restart. Cut
+   * into blank-line-separated blocks, "pause" lands between verses, which is
+   * where somebody following along actually wants it.
+   *
+   * The text comes from the layer PDF.js built, so this needs the real renderer
+   * — with the iframe fallback there is nothing to read.
+   */
+  var speaking = false;
+
+  function readAloud() {
+    if (!window.speechSynthesis) {
+      return;
+    }
+
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      speaking = false;
+
+      return;
+    }
+
+    var layer = root.querySelector('.reader-text');
+    var text = layer ? layer.textContent : '';
+
+    if (!text || !text.trim()) {
+      return;
+    }
+
+    // Blank lines where the page had them; failing that, sentences. A hymn's
+    // verses are the unit somebody means.
+    var blocks = text.split(/\n\s*\n/).filter(function (block) {
+      return block.trim() !== '';
+    });
+
+    if (blocks.length < 2) {
+      blocks = text.split(/(?<=[.!?])\s+/);
+    }
+
+    speaking = true;
+
+    blocks.forEach(function (block) {
+      var utterance = new SpeechSynthesisUtterance(block.trim());
+      utterance.onend = function () {
+        // Only the last one clears the flag, so pressing the button mid-way
+        // through stops the rest rather than restarting.
+        if (window.speechSynthesis.pending === false && window.speechSynthesis.speaking === false) {
+          speaking = false;
+        }
+      };
+      window.speechSynthesis.speak(utterance);
+    });
+  }
+
+  on('[data-reader-aloud]', 'click', readAloud);
+
+  // Never leave a voice talking to an empty room.
+  window.addEventListener('pagehide', function () {
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+  });
+
+  /* ------------------------------------------------------------ text size
+   *
+   * Per device, in localStorage. A reading size is a fact about the screen and
+   * the eyes in front of it, not about an account — and somebody who sets it
+   * large on a phone does not mean it on the projector.
+   *
+   * It scales the RENDER rather than a font, because a PDF page is a picture:
+   * there is no text to enlarge, only a page to draw bigger.
+   */
+  var SIZE_KEY = 'portal_reader_zoom';
+
+  function zoom(value) {
+    try {
+      if (value === undefined) {
+        return parseFloat(window.localStorage.getItem(SIZE_KEY)) || 1;
+      }
+
+      window.localStorage.setItem(SIZE_KEY, String(value));
+    } catch (e) {
+      /* Storage refused. The size still applies for this visit. */
+    }
+
+    return value;
+  }
+
+  on('[data-reader-bigger]', 'click', function () {
+    root.style.setProperty('--reader-zoom', String(zoom(Math.min(3, zoom() + 0.15))));
+    show(page);
+  });
+
+  on('[data-reader-smaller]', 'click', function () {
+    root.style.setProperty('--reader-zoom', String(zoom(Math.max(0.5, zoom() - 0.15))));
+    show(page);
+  });
+
+  root.style.setProperty('--reader-zoom', String(zoom()));
 
   on('[data-reader-present]', 'click', function () {
     if (root.requestFullscreen) {
