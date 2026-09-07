@@ -247,6 +247,62 @@ final class BookTest extends DatabaseTestCase
         self::assertSame([], $this->books->marks($this->bookId, $mine));
     }
 
+    /**
+     * A highlight's anchor is rectangles in fractions of the page, not pixels.
+     *
+     * Pixels would land somewhere else on a phone, on a wider window, or at a
+     * different reading size — and reading size is a control this reader has.
+     * Fractions describe where on the PAGE the words are, which is the same
+     * reasoning as storing the page rather than the printed number.
+     */
+    public function testAHighlightIsStoredAgainstThePageRatherThanTheScreen(): void
+    {
+        $userId = $this->reader();
+
+        $boxes = [['x' => 0.1, 'y' => 0.2, 'w' => 0.35, 'h' => 0.02]];
+
+        $this->books->addMark($this->bookId, $userId, [
+            'kind'     => 'highlight',
+            'pdf_page' => 30,
+            'anchor'   => (string) json_encode($boxes),
+            'quote'    => 'Abide with me',
+            'colour'   => '#ffd54f',
+        ]);
+
+        $mark = $this->books->marks($this->bookId, $userId)[0];
+
+        self::assertSame($boxes, json_decode((string) $mark['anchor'], true));
+        self::assertSame('#ffd54f', (string) $mark['colour']);
+        self::assertSame(30, (int) $mark['pdf_page']);
+    }
+
+    /**
+     * A colour goes into a style attribute, so it is validated rather than
+     * escaped — escaping is not a defence inside CSS.
+     */
+    public function testAColourThatIsNotOneBecomesNothing(): void
+    {
+        $userId = $this->reader();
+
+        $this->books->addMark($this->bookId, $userId, [
+            'kind'     => 'highlight',
+            'pdf_page' => 30,
+            'colour'   => 'yellow; background: url(evil)',
+        ]);
+
+        self::assertNull($this->books->marks($this->bookId, $userId)[0]['colour']);
+    }
+
+    /** A kind nobody offered becomes a bookmark rather than being stored. */
+    public function testAnInventedKindOfMarkIsNotStoredAsItself(): void
+    {
+        $userId = $this->reader();
+
+        $this->books->addMark($this->bookId, $userId, ['kind' => 'wingding', 'pdf_page' => 3]);
+
+        self::assertSame('bookmark', (string) $this->books->marks($this->bookId, $userId)[0]['kind']);
+    }
+
     // --------------------------------------------------------- the counting
 
     /**

@@ -64,6 +64,26 @@ echo $template->partial('header', get_defined_vars());
       <button class="btn tiny">Go</button>
     </form>
 
+    <?php
+    /*
+     * MARKS NEED AN ACCOUNT, and a highlight needs a PDF.
+     *
+     * Both are decided here as well as on the server, because a button that
+     * always refuses is worse than no button: somebody presses it, nothing
+     * happens, and they conclude the reader is broken rather than that the
+     * feature is not for them. An EPUB's text lives inside an iframe its own
+     * renderer owns, so there is no selection this application can see.
+     */
+    ?>
+    <?php if (($currentUser ?? null) !== null): ?>
+      <button class="btn tiny secondary" data-reader-bookmark>Bookmark</button>
+
+      <?php if ((string) $book['kind'] === 'pdf'): ?>
+        <button class="btn tiny secondary" data-reader-highlight
+                title="Select some words first">Highlight</button>
+      <?php endif ?>
+    <?php endif ?>
+
     <button class="btn tiny secondary" data-reader-smaller title="Smaller">&minus;</button>
     <button class="btn tiny secondary" data-reader-bigger title="Bigger">+</button>
 

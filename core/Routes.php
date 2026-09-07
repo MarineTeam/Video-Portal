@@ -432,6 +432,8 @@ final class Routes
         $router->get('/books/{slug}/file', [ReaderController::class, 'file']);
         $router->get('/books/{slug}/search', [ReaderController::class, 'search']);
         $router->post('/books/{slug}/position', [ReaderController::class, 'savePosition']);
+        $router->post('/books/{slug}/marks', [ReaderController::class, 'addMark']);
+        $router->post('/books/{slug}/marks/remove', [ReaderController::class, 'removeMark']);
 
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);

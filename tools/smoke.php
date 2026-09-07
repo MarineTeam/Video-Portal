@@ -13230,6 +13230,90 @@ check(
     'nothing produces the text that search depends on'
 );
 
+/*
+ * MARKS. The repository has had addMark/marks/removeMark since the book work
+ * landed and nothing called them — the defect this project keeps finding, so
+ * these checks drive the real routes.
+ */
+/*
+ * The reader carries its token in data-token rather than a hidden input,
+ * because its posts are made by fetch() rather than by submitting a form.
+ * csrfFrom() looks for the input and would hand back an empty string — which
+ * arrives as a 419 and reads as the application refusing a legitimate request.
+ */
+$readerToken = preg_match('/data-token="([^"]+)"/', $readerPage['body'], $m) === 1 ? $m[1] : '';
+
+check(
+    'The reader page carries a token its own requests can use',
+    $readerToken !== '',
+    'every mark would answer 419 and look like a broken feature'
+);
+
+$markResponse = postWithJar($baseUrl . '/books/hymns-ancient-and-modern/marks', [
+    '_token' => $readerToken,
+    'kind'   => 'highlight',
+    'page'   => '30',
+    'anchor' => '[{"x":0.1,"y":0.2,"w":0.3,"h":0.02}]',
+    'quote'  => 'Abide with me',
+    'colour' => '#ffd54f',
+], $jar);
+
+check(
+    'A highlight can be made',
+    $markResponse['status'] === 200
+        && (int) $db->value('SELECT COUNT(*) FROM {book_marks} WHERE kind = ?', ['highlight']) === 1,
+    "got {$markResponse['status']}"
+);
+
+check(
+    'and it is stored against the page rather than the screen',
+    str_contains(
+        (string) $db->value('SELECT anchor FROM {book_marks} WHERE kind = ?', ['highlight']),
+        '0.1'
+    ),
+    'a pixel anchor would land elsewhere at another window width or reading size'
+);
+
+/*
+ * The ownership rule, driven over HTTP: ids are sequential, so a delete taking
+ * only an id would let anybody destroy a stranger's notes by counting.
+ */
+$victimMark = (int) $db->value('SELECT id FROM {book_marks} ORDER BY id DESC LIMIT 1');
+
+$strangerDelete = postWithJar($baseUrl . '/books/hymns-ancient-and-modern/marks/remove', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/books/hymns-ancient-and-modern', $memberJar)['body']),
+    'mark'   => (string) $victimMark,
+], $memberJar);
+
+check(
+    'and somebody else cannot delete it',
+    (int) $db->value('SELECT COUNT(*) FROM {book_marks} WHERE id = ?', [$victimMark]) === 1,
+    'A STRANGER DELETED SOMEBODY\'S HIGHLIGHT — ids are sequential and guessable'
+);
+
+/*
+ * Staged so it cannot pass vacuously. Deleting a row that was never created
+ * also leaves a count of zero, so the row is confirmed present FIRST — this
+ * check passed for exactly that wrong reason on its first run.
+ */
+$ownerCanDelete = false;
+
+if ((int) $db->value('SELECT COUNT(*) FROM {book_marks} WHERE id = ?', [$victimMark]) === 1) {
+    postWithJar($baseUrl . '/books/hymns-ancient-and-modern/marks/remove', [
+        '_token' => $readerToken,
+        'mark'   => (string) $victimMark,
+    ], $jar);
+
+    $ownerCanDelete =
+        (int) $db->value('SELECT COUNT(*) FROM {book_marks} WHERE id = ?', [$victimMark]) === 0;
+}
+
+check(
+    'while its owner can',
+    $ownerCanDelete,
+    'the ownership rule locked out the owner too — or there was no mark to delete'
+);
+
 $offlinePage = getWithJar($baseUrl . '/account/downloads', $jar);
 
 check(

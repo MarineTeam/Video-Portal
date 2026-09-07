@@ -139,6 +139,7 @@
       rendered(page);
     }
 
+    showBookmarked();
     savePosition();
     history.replaceState(null, '', locationFor(page));
   }
@@ -308,6 +309,11 @@
                   container: textLayer,
                   viewport: viewport
                 });
+
+                // After the page is drawn, not before: the highlight layer is
+                // sized as a fraction of the wrapper, which has no size until
+                // the canvas has one.
+                drawMarks();
               });
             });
           }).catch(function () {
@@ -477,6 +483,194 @@
           saveButton.textContent = error && error.message ? error.message : 'That did not save';
         });
     });
+  }
+
+  /* ---------------------------------------------------------- the marks
+   *
+   * A HIGHLIGHT IS A RECTANGLE IN THE PAGE'S OWN COORDINATES, stored as a
+   * fraction of the page rather than in pixels.
+   *
+   * Pixels would be a highlight that lands somewhere else on a phone, on a
+   * wider window, or at a different reading size — and reading size is a
+   * control this reader has. Fractions survive all three, because they describe
+   * where on the PAGE the words are rather than where on the screen they were
+   * when somebody dragged.
+   *
+   * Which is the same reasoning as storing the PDF page rather than the printed
+   * number: keep what is true about the book, derive what is true about this
+   * screen.
+   */
+  var marks = (data.marks || []).slice();
+
+  function markLayer() {
+    var wrap = root.querySelector('.reader-canvas-wrap');
+
+    if (!wrap) { return null; }
+
+    var layer = wrap.querySelector('.reader-marks');
+
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.className = 'reader-marks';
+      // Behind the text layer so selection still works over a highlight.
+      wrap.insertBefore(layer, wrap.querySelector('.reader-text'));
+    }
+
+    return layer;
+  }
+
+  /** Draw this page's highlights. */
+  function drawMarks() {
+    var layer = markLayer();
+
+    if (!layer) { return; }
+
+    layer.innerHTML = '';
+
+    marks.forEach(function (mark) {
+      if (mark.page !== page || mark.kind !== 'highlight' || !mark.anchor) {
+        return;
+      }
+
+      var boxes;
+
+      try {
+        boxes = JSON.parse(mark.anchor);
+      } catch (e) {
+        // An anchor this cannot read draws nothing rather than throwing —
+        // one unreadable mark must not cost the page.
+        return;
+      }
+
+      (boxes || []).forEach(function (box) {
+        var el = document.createElement('span');
+        el.className = 'reader-mark';
+        el.style.left = (box.x * 100) + '%';
+        el.style.top = (box.y * 100) + '%';
+        el.style.width = (box.w * 100) + '%';
+        el.style.height = (box.h * 100) + '%';
+
+        if (mark.colour) {
+          el.style.background = mark.colour;
+        }
+
+        el.title = mark.body || mark.quote || 'Highlighted';
+        layer.appendChild(el);
+      });
+    });
+  }
+
+  /**
+   * Turn what is selected into fractions of the page.
+   *
+   * getClientRects rather than one bounding box, so a selection spanning three
+   * lines is three rectangles rather than one covering the paragraph between
+   * them.
+   */
+  function selectionBoxes() {
+    var selection = window.getSelection();
+
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return null;
+    }
+
+    var wrap = root.querySelector('.reader-canvas-wrap');
+
+    if (!wrap) { return null; }
+
+    var frame = wrap.getBoundingClientRect();
+
+    if (!frame.width || !frame.height) { return null; }
+
+    var rects = selection.getRangeAt(0).getClientRects();
+    var boxes = [];
+
+    for (var i = 0; i < rects.length; i++) {
+      var rect = rects[i];
+
+      if (rect.width < 1 || rect.height < 1) { continue; }
+
+      boxes.push({
+        x: (rect.left - frame.left) / frame.width,
+        y: (rect.top - frame.top) / frame.height,
+        w: rect.width / frame.width,
+        h: rect.height / frame.height
+      });
+    }
+
+    return boxes.length ? { boxes: boxes, text: selection.toString() } : null;
+  }
+
+  function postMark(fields) {
+    var body = new FormData();
+    body.append('_token', token);
+
+    Object.keys(fields).forEach(function (key) {
+      body.append(key, fields[key]);
+    });
+
+    return fetch('/books/' + encodeURIComponent(slug) + '/marks', {
+      method: 'POST',
+      body: body,
+      credentials: 'same-origin'
+    }).then(function (response) {
+      if (!response.ok) {
+        throw new Error('That could not be saved.');
+      }
+
+      return response.json();
+    });
+  }
+
+  on('[data-reader-highlight]', 'click', function () {
+    var chosen = selectionBoxes();
+
+    if (!chosen) {
+      return;
+    }
+
+    var fields = {
+      kind: 'highlight',
+      page: String(page),
+      anchor: JSON.stringify(chosen.boxes),
+      quote: chosen.text.slice(0, 1000),
+      colour: '#ffd54f'
+    };
+
+    postMark(fields).then(function (saved) {
+      marks.push({
+        id: saved.id,
+        page: page,
+        kind: 'highlight',
+        anchor: fields.anchor,
+        quote: fields.quote,
+        colour: fields.colour
+      });
+
+      window.getSelection().removeAllRanges();
+      drawMarks();
+    }).catch(function () {
+      /* Refused — an EPUB, or no account. The button is hidden in both. */
+    });
+  });
+
+  on('[data-reader-bookmark]', 'click', function () {
+    postMark({ kind: 'bookmark', page: String(page) }).then(function (saved) {
+      marks.push({ id: saved.id, page: page, kind: 'bookmark' });
+      showBookmarked();
+    }).catch(function () {});
+  });
+
+  function showBookmarked() {
+    var button = root.querySelector('[data-reader-bookmark]');
+
+    if (!button) { return; }
+
+    var here = marks.some(function (mark) {
+      return mark.kind === 'bookmark' && mark.page === page;
+    });
+
+    button.textContent = here ? 'Bookmarked' : 'Bookmark';
   }
 
   /* ------------------------------------------------------- reading aloud

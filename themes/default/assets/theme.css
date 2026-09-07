@@ -1059,3 +1059,14 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 .reader-text span { position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
 .reader-text ::selection { background: rgba(56, 189, 248, .4); }
 .reader-stage { overflow: auto; }
+
+/* Highlights, positioned as a fraction of the page rather than in pixels — so
+ * they land on the same words at any window width and any reading size. */
+.reader-marks { position: absolute; inset: 0; pointer-events: none; }
+.reader-mark {
+  position: absolute;
+  background: rgba(255, 213, 79, .45);
+  border-radius: 2px;
+  mix-blend-mode: multiply;   /* the words stay readable through the colour */
+  pointer-events: auto;
+}
