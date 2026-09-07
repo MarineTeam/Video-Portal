@@ -13141,6 +13141,57 @@ check(
     'RE-INDEXING A HYMNAL WOULD LOSE EVERY CCLI NUMBER IN IT'
 );
 
+/*
+ * SAVING A BOOK BUYS SPEED, NOT AVAILABILITY.
+ *
+ * A saved video plays with the network off; a saved book still asks the site
+ * whether you may read it. Somebody who saves a hymnal for a hall with no
+ * signal and finds it will not open has been let down by the screen, not the
+ * reader — so both screens have to say which is which.
+ */
+postWithJar($baseUrl . '/admin/books', [
+    '_token'       => $bookToken,
+    'action'       => 'save',
+    'id'           => (string) $bookId,
+    '_whole_form'  => '1',
+    'is_published' => '1',
+    'is_hymnal'    => '1',
+], $jar);
+
+$readerPage = getWithJar($baseUrl . '/books/hymns-ancient-and-modern', $jar);
+
+check(
+    'A book offers to save itself to the device',
+    str_contains($readerPage['body'], 'data-reader-save'),
+    'there is no way to save a book'
+);
+
+check(
+    'and the button says it still checks with the site',
+    str_contains($readerPage['body'], 'still checks with the site before opening'),
+    'somebody would save a hymnal for a hall with no signal and find it will not open'
+);
+
+$offlinePage = getWithJar($baseUrl . '/account/downloads', $jar);
+
+check(
+    'The offline screen lists books apart from videos',
+    str_contains($offlinePage['body'], 'Books saved here'),
+    'a single list would imply the two behave the same with no signal'
+);
+
+check(
+    'and states the difference where it is read',
+    str_contains($offlinePage['body'], 'saved book still needs a connection to open'),
+    'THE DIFFERENCE BETWEEN A SAVED BOOK AND A SAVED VIDEO IS UNSTATED'
+);
+
+check(
+    'and offers the wi-fi-only preference',
+    str_contains($offlinePage['body'], 'offline-wifi'),
+    'there is no download manager'
+);
+
 echo "\nBroadcasts\n";
 
 $bcToken = csrfFrom(getWithJar($baseUrl . '/admin/broadcasts', $jar)['body']);

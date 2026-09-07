@@ -338,6 +338,43 @@
     }
   }, { passive: true });
 
+  /*
+   * Saving the file to this device.
+   *
+   * Shown only where the browser can do it. What it buys is SPEED and DATA,
+   * not availability: the reader still asks the site on every open, so a saved
+   * book will not open with no signal. The button's title says so, the offline
+   * screen says so, and that is deliberate rather than a limitation to be
+   * worked around.
+   */
+  var saveButton = root.querySelector('[data-reader-save]');
+
+  if (saveButton && window.PortalOffline && window.PortalOffline.supported()) {
+    saveButton.hidden = false;
+
+    saveButton.addEventListener('click', function () {
+      if (!window.PortalOffline.mayDownloadNow()) {
+        saveButton.textContent = 'Not on mobile data — change it in your account';
+
+        return;
+      }
+
+      saveButton.disabled = true;
+      saveButton.textContent = 'Saving…';
+
+      window.PortalOffline.saveBook(slug)
+        .then(function () {
+          saveButton.textContent = 'Saved to this device';
+        })
+        .catch(function (error) {
+          // The reason, not a category. Four things produce a failed save and
+          // each needs a different fix.
+          saveButton.disabled = false;
+          saveButton.textContent = error && error.message ? error.message : 'That did not save';
+        });
+    });
+  }
+
   on('[data-reader-present]', 'click', function () {
     if (root.requestFullscreen) {
       root.requestFullscreen().catch(function () {});

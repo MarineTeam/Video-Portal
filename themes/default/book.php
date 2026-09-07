@@ -65,6 +65,18 @@ echo $template->partial('header', get_defined_vars());
     </form>
 
     <button class="btn tiny secondary" data-reader-present title="Full screen for the front">Present</button>
+
+    <?php
+    /*
+     * Saving buys speed and bandwidth, NOT availability — the book still asks
+     * the site on every open. The button says so rather than leaving somebody
+     * to find out in a hall with no signal.
+     */
+    ?>
+    <button class="btn tiny secondary" data-reader-save hidden
+            title="Keeps the file on this device. It still checks with the site before opening.">
+      Save this book
+    </button>
   </header>
 
   <?php
@@ -141,6 +153,7 @@ echo $template->partial('header', get_defined_vars());
   </script>
 </div>
 
+<script src="<?= e(asset_url('/assets/offline.js')) ?>" defer></script>
 <script src="<?= e(isset($themeAsset)
     ? $themeAsset('book-reader.js')
     : ($assetsUrl ?? '/theme-asset/default') . '/book-reader.js') ?>" defer></script>
