@@ -303,6 +303,38 @@ final class BookTest extends DatabaseTestCase
         self::assertSame('bookmark', (string) $this->books->marks($this->bookId, $userId)[0]['kind']);
     }
 
+    /**
+     * An EPUB's position is a string kept BESIDE the page, not instead of it.
+     *
+     * An EPUB reflows, so it has no pages — "page 40" depends on the window and
+     * the type size. What it has is a CFI, which only its own renderer
+     * understands, and nothing on this side could turn one into a page or a
+     * percentage. So both are stored as sent.
+     */
+    public function testAnEpubPositionIsKeptBesideThePageRatherThanInsteadOfIt(): void
+    {
+        $userId = $this->reader();
+        $cfi = 'epubcfi(/6/14[chap05ref]!/4[body01]/10[para05]/3:10)';
+
+        $this->books->savePosition($this->bookId, $userId, 1, 42, $cfi);
+
+        $position = (array) $this->books->positionFor($this->bookId, $userId);
+
+        self::assertSame($cfi, (string) $position['epub_cfi']);
+        self::assertSame(42, (int) $position['percent'], 'the percentage was recomputed from a page');
+        self::assertSame(1, (int) $position['pdf_page']);
+    }
+
+    /** And a PDF's stays a page with no string at all. */
+    public function testAPdfPositionCarriesNoOpaqueString(): void
+    {
+        $userId = $this->reader();
+
+        $this->books->savePosition($this->bookId, $userId, 30, 8);
+
+        self::assertNull(((array) $this->books->positionFor($this->bookId, $userId))['epub_cfi']);
+    }
+
     // --------------------------------------------------------- the counting
 
     /**

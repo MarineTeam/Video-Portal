@@ -174,11 +174,21 @@ final class ReaderController extends Controller
 
         $page = max(1, (int) ($request->input('page') ?? 1));
 
+        /*
+         * An EPUB sends its own percentage, because nothing here could work one
+         * out: its position is a CFI, an opaque pointer into a document that
+         * reflows, and there is no page count to divide by. A PDF sends none
+         * and the page is enough.
+         */
+        $percent = $request->input('percent') !== null
+            ? (int) $request->input('percent')
+            : Locator::percent($page, (int) $book['page_count']);
+
         $this->books()->savePosition(
             (int) $book['id'],
             $user->id,
             $page,
-            Locator::percent($page, (int) $book['page_count']),
+            $percent,
             (string) ($request->input('cfi') ?? '')
         );
 

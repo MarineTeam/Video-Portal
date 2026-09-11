@@ -13197,6 +13197,34 @@ check(
     "got {$pdfWorker['status']} — without the worker nothing renders"
 );
 
+/*
+ * An EPUB is a zip file and epub.js expects the unzipper on the window rather
+ * than bundling one. Shipping one without the other is a working directory
+ * listing and a book that fails with an error naming neither library.
+ */
+$epubLib = get($baseUrl . '/assets/vendor/epubjs/epub.min.js');
+$zipLib = get($baseUrl . '/assets/vendor/epubjs/jszip.min.js');
+
+check(
+    'The EPUB renderer is served with its unzipper',
+    $epubLib['status'] === 200 && $zipLib['status'] === 200,
+    "got {$epubLib['status']} and {$zipLib['status']} — an EPUB needs both or neither works"
+);
+
+check(
+    'and offers to find a line inside the book',
+    str_contains($readerPage['body'], 'data-reader-find'),
+    'the search index has no consumer in the reader'
+);
+
+$bookHits = getWithJar($baseUrl . '/books/hymns-ancient-and-modern/search?q=eventide', $jar);
+
+check(
+    'and the search inside a book answers',
+    $bookHits['status'] === 200 && str_contains($bookHits['body'], 'results'),
+    "got {$bookHits['status']}"
+);
+
 check(
     'and the reader offers to read a page aloud and resize it',
     str_contains($readerPage['body'], 'data-reader-aloud')

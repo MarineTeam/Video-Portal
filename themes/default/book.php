@@ -39,6 +39,14 @@ echo $template->partial('header', get_defined_vars());
      data-offset="<?= $offset ?>"
      data-pages="<?= (int) $book['page_count'] ?>"
      data-revision="<?= (int) $book['file_revision'] ?>"
+     <?php
+     /*
+      * Where an EPUB reader had got to. An opaque string only epub.js
+      * understands — kept beside the page rather than instead of it, because
+      * nothing here could turn one into the other.
+      */
+     ?>
+     data-cfi="<?= e((string) ($position['epub_cfi'] ?? '')) ?>"
      data-token="<?= e($token) ?>">
 
   <header class="reader-bar">
@@ -57,6 +65,18 @@ echo $template->partial('header', get_defined_vars());
        * moves every one of these at once.
        */
     ?>
+    <?php
+    /*
+     * Searching inside this book, against the text an admin's browser read out
+     * of it. Nothing is found in a book nobody has indexed, and the answer says
+     * so rather than looking like an empty result.
+     */
+    ?>
+    <form class="reader-find" data-reader-find>
+      <label>Find <input type="search" data-reader-query placeholder="a line you remember"></label>
+      <button class="btn tiny secondary">Find</button>
+    </form>
+
     <form class="reader-goto" data-reader-goto>
       <label><?= $isHymnal ? 'Hymn' : 'Page' ?>
         <input type="number" min="1" inputmode="numeric" data-reader-number>
@@ -122,6 +142,8 @@ echo $template->partial('header', get_defined_vars());
   <p class="notice reader-offline" data-reader-offline hidden>
     This needs a connection to open — the site checks you can still read it each time.
   </p>
+
+  <div class="reader-hits" data-reader-hits hidden></div>
 
   <div class="reader-stage" data-reader-stage>
     <div class="reader-loading">Opening…</div>
@@ -193,7 +215,19 @@ echo $template->partial('header', get_defined_vars());
  * much more than a broken one, and vendored files do go missing.
  */
 ?>
-<script src="<?= e(asset_url('/assets/vendor/pdfjs/pdf.min.js')) ?>" defer></script>
+<?php if ((string) $book['kind'] === 'epub'): ?>
+  <?php
+  /*
+   * JSZip first: an EPUB is a zip file and epub.js expects the unzipper on the
+   * window rather than bundling one. Without it a book fails with an error
+   * naming neither library.
+   */
+  ?>
+  <script src="<?= e(asset_url('/assets/vendor/epubjs/jszip.min.js')) ?>" defer></script>
+  <script src="<?= e(asset_url('/assets/vendor/epubjs/epub.min.js')) ?>" defer></script>
+<?php else: ?>
+  <script src="<?= e(asset_url('/assets/vendor/pdfjs/pdf.min.js')) ?>" defer></script>
+<?php endif ?>
 <script src="<?= e(asset_url('/assets/offline.js')) ?>" defer></script>
 <script src="<?= e(isset($themeAsset)
     ? $themeAsset('book-reader.js')

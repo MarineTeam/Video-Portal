@@ -41,6 +41,14 @@
 
   /** The open PDF, once there is one. Read-aloud and indexing both need it. */
   var pdfDocument = null;
+
+  /*
+   * How an EPUB moves. Null for a PDF, where next and back are page numbers —
+   * an EPUB reflows, so a screenful is the only unit its renderer knows and
+   * this code does not get to choose one.
+   */
+  var epubNext = null;
+  var epubPrevious = null;
   var pageCount = parseInt(root.getAttribute('data-pages'), 10) || 0;
   var token = root.getAttribute('data-token') || '';
   var page = parseInt(root.getAttribute('data-page'), 10) || 1;
@@ -162,7 +170,22 @@
 
   var saving = null;
 
+  /**
+   * Where somebody had got to.
+   *
+   * DOES NOTHING FOR AN EPUB, whose own 'relocated' handler saves the CFI. This
+   * one sends a page and no CFI, so letting it run would null the saved string
+   * the moment the book opened — the position wiped by the act of restoring it.
+   */
   function savePosition() {
+    if (epubNext) {
+      return;
+    }
+
+    savePdfPosition();
+  }
+
+  function savePdfPosition() {
     // Coalesced: page turns come in bursts when somebody flicks through, and a
     // request per turn is a request per turn.
     window.clearTimeout(saving);
@@ -236,7 +259,11 @@
 
     stage.innerHTML = '';
 
-    if (!window.pdfjsLib || kind === 'epub') {
+    if (kind === 'epub') {
+      return mountEpub(info);
+    }
+
+    if (!window.pdfjsLib) {
       return mountFrame(info);
     }
 
@@ -330,6 +357,77 @@
       });
   }
 
+  /**
+   * An EPUB, rendered by epub.js.
+   *
+   * # ITS POSITION IS A STRING, NOT A PAGE
+   *
+   * An EPUB has no pages — it reflows, so "page 40" depends on the window and
+   * the type size. What it has is a CFI: an opaque pointer into the document
+   * that only this renderer understands. That is why {reading_positions} keeps
+   * `epub_cfi` BESIDE `pdf_page` rather than instead of it, and why the
+   * percentage is stored rather than derived — nothing on the server could work
+   * one out of a CFI.
+   *
+   * Highlighting stays unavailable here and is refused on the server too. The
+   * text lives inside an iframe epub.js owns; a mark anchored into it could
+   * never be drawn again.
+   */
+  function mountEpub(info) {
+    if (!window.ePub || !window.JSZip) {
+      // Missing either one and epub.js fails with an error naming neither. The
+      // browser's own handling is a poor book but a clear one.
+      return mountFrame(info);
+    }
+
+    var host = document.createElement('div');
+    host.className = 'reader-epub';
+    stage.appendChild(host);
+
+    var book = window.ePub(info.file, { openAs: 'epub' });
+    var view = book.renderTo(host, { width: '100%', height: '100%', flow: 'paginated' });
+
+    var startAt = root.getAttribute('data-cfi') || null;
+    view.display(startAt || undefined);
+
+    /*
+     * Next and back move through the BOOK, not through our page numbers. The
+     * contents still step by entry — an EPUB's chapters are entries like any
+     * other — but between them the unit is a screenful, which is what epub.js
+     * knows and this code does not.
+     */
+    rendered = function () {};
+
+    epubNext = function () { view.next(); };
+    epubPrevious = function () { view.prev(); };
+
+    view.on('relocated', function (location) {
+      if (!location || !location.start) { return; }
+
+      // Saved as the opaque string plus a percentage, which is all a progress
+      // bar needs and all this can honestly compute.
+      var percent = location.start.percentage
+        ? Math.round(location.start.percentage * 100)
+        : 0;
+
+      var body = new FormData();
+      body.append('_token', token);
+      body.append('page', '1');
+      body.append('cfi', location.start.cfi || '');
+      body.append('percent', String(percent));
+
+      fetch('/books/' + encodeURIComponent(slug) + '/position', {
+        method: 'POST',
+        body: body,
+        credentials: 'same-origin'
+      }).catch(function () {});
+    });
+
+    book.ready.catch(function () {
+      mountFrame(info);
+    });
+  }
+
   /** The fallback: the browser's own viewer, which cannot be read from. */
   function mountFrame(info) {
     stage.innerHTML = '';
@@ -361,11 +459,19 @@
 
   on('[data-reader-next]', 'click', function () {
     var entry = nextEntry(page);
+
+    // In an EPUB, past the contents entries the unit is a screenful and only
+    // its renderer knows where one ends.
+    if (!entry && epubNext) { return epubNext(); }
+
     show(entry ? entry.page : page + 1);
   });
 
   on('[data-reader-prev]', 'click', function () {
     var entry = previousEntry(page);
+
+    if (!entry && epubPrevious) { return epubPrevious(); }
+
     show(entry ? entry.page : page - 1);
   });
 
@@ -484,6 +590,84 @@
         });
     });
   }
+
+  /* ------------------------------------------------------ finding a line
+   *
+   * Against the text an admin's browser read out of this book, not against the
+   * page on screen — so it finds a line four hundred pages away rather than
+   * only what is currently drawn.
+   *
+   * A book nobody has indexed finds nothing, and the answer SAYS SO. An empty
+   * result and an unindexed book look identical otherwise, and the second is
+   * something an administrator can fix in a minute.
+   */
+  var hits = root.querySelector('[data-reader-hits]');
+
+  function escapeText(value) {
+    var node = document.createElement('span');
+    node.textContent = String(value == null ? '' : value);
+
+    return node.innerHTML;
+  }
+
+  on('[data-reader-find]', 'submit', function (event) {
+    event.preventDefault();
+
+    var input = root.querySelector('[data-reader-query]');
+    var query = (input && input.value || '').trim();
+
+    if (!hits) { return; }
+
+    if (query === '') {
+      hits.hidden = true;
+
+      return;
+    }
+
+    hits.hidden = false;
+    hits.innerHTML = '<p class="muted small">Looking…</p>';
+
+    fetch('/books/' + encodeURIComponent(slug) + '/search?q=' + encodeURIComponent(query), {
+      credentials: 'same-origin'
+    })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (answer) {
+        if (!answer || !answer.results || answer.results.length === 0) {
+          hits.innerHTML = '<p class="muted small">Nothing found. Only a book somebody has '
+            + 'indexed can be searched from here.</p>';
+
+          return;
+        }
+
+        var html = '<ul>';
+
+        answer.results.forEach(function (hit) {
+          var number = printed(hit.pdf_page);
+
+          html += '<li><a href="#" data-reader-jump="' + Number(hit.pdf_page) + '">'
+            + (number === null ? 'front matter' : 'page ' + number)
+            + '</a> '
+            // Said, because OCR text is good enough to search and not good
+            // enough to quote — a snippet may be visibly wrong.
+            + (hit.source === 'ocr' ? '<span class="muted small">(read by OCR)</span> ' : '')
+            + '<span class="muted small">' + escapeText(hit.snippet) + '</span></li>';
+        });
+
+        hits.innerHTML = html + '</ul>';
+
+        hits.querySelectorAll('[data-reader-jump]').forEach(function (link) {
+          link.addEventListener('click', function (jumpEvent) {
+            jumpEvent.preventDefault();
+            show(parseInt(link.getAttribute('data-reader-jump'), 10) || 1);
+          });
+        });
+      })
+      .catch(function () {
+        hits.innerHTML = '<p class="muted small">The search did not answer.</p>';
+      });
+  });
 
   /* ---------------------------------------------------------- the marks
    *
