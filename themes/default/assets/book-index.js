@@ -149,6 +149,36 @@
    * honest: an empty result and a page nobody could read are the same to a
    * search box, and the screen says how many were skipped.
    */
+  /**
+   * One recogniser, reused.
+   *
+   * Creating a worker per page reloads four megabytes of engine each time and
+   * is how a four-hundred-page book takes an afternoon instead of an hour.
+   */
+  var recogniser = null;
+
+  function ocrWorker() {
+    if (recogniser) {
+      return recogniser;
+    }
+
+    /*
+     * Every path is local. tesseract.js defaults to jsdelivr for the core AND
+     * the language data — left alone, OCR stops working whenever that CDN is
+     * blocked, and it tells a browser somewhere else which books this site is
+     * indexing.
+     */
+    recogniser = window.Tesseract.createWorker('eng', 1, {
+      workerPath: '/assets/vendor/tesseract/worker.min.js',
+      corePath: '/assets/vendor/tesseract',
+      langPath: '/assets/vendor/tesseract/lang',
+      // The data is committed gzipped, which is how it comes.
+      gzip: true
+    });
+
+    return recogniser;
+  }
+
   function ocrPage(pdf, number) {
     if (!window.Tesseract) {
       return Promise.resolve('');
@@ -164,11 +194,15 @@
         canvasContext: canvas.getContext('2d'),
         viewport: viewport
       }).promise.then(function () {
-        return window.Tesseract.recognize(canvas, 'eng');
+        return ocrWorker();
+      }).then(function (worker) {
+        return worker.recognize(canvas);
       }).then(function (result) {
         return ((result && result.data && result.data.text) || '').replace(/\s+/g, ' ').trim();
       });
     }).catch(function () {
+      // A page the engine cannot read is one page, not the book. It is counted
+      // as blank and reported with the rest.
       return '';
     });
   }
@@ -263,6 +297,13 @@
 
         return chain.then(flush).then(function () {
           return post({ done: true });
+        }).then(function () {
+          // Four megabytes of engine held open after the last page is four
+          // megabytes doing nothing.
+          if (recogniser) {
+            recogniser.then(function (worker) { worker.terminate(); }).catch(function () {});
+            recogniser = null;
+          }
         }).then(function () {
           say(
             'Done. ' + stored + ' page(s) stored'

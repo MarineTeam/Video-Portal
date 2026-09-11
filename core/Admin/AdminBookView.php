@@ -312,6 +312,10 @@ final class AdminBookView
      * Only where there is a file. Offering it against a book with nothing
      * behind it produces an error that reads as the feature being broken.
      *
+     * tesseract.min.js is 63KB and loads with the screen; the four megabytes
+     * of engine and language data behind it load lazily, and only once
+     * somebody ticks the OCR box. No visitor ever fetches any of it.
+     *
      * @param array<string, mixed> $book
      * @param array<string, mixed> $data
      */
@@ -334,6 +338,10 @@ final class AdminBookView
           <p class="muted small">Slow — seconds per page — and only worth it for a book with no
              text in it at all. Leave it off first: the pages that have text are read in moments,
              and the screen then tells you how many had none.</p>
+          <p class="muted small">The recogniser is about four megabytes and loads the first time
+             you tick this. It is served from this site rather than from anybody else's, so it
+             works on a network that blocks outside scripts and nothing is told which books you
+             are indexing.</p>
 
           <p><button class="btn" data-index-start>Read this book</button></p>
           <p class="muted small" data-index-status>Keep this tab open while it works. It stores as
@@ -341,6 +349,7 @@ final class AdminBookView
         </div>
 
         <script src="/assets/vendor/pdfjs/pdf.min.js" defer></script>
+        <script src="/assets/vendor/tesseract/tesseract.min.js" defer></script>
         <script src="/theme-asset/default/book-index.js" defer></script>
         HTML;
     }

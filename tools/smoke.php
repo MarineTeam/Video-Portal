@@ -13205,6 +13205,29 @@ check(
 $epubLib = get($baseUrl . '/assets/vendor/epubjs/epub.min.js');
 $zipLib = get($baseUrl . '/assets/vendor/epubjs/jszip.min.js');
 
+/*
+ * OCR is served from this site, not from a CDN. tesseract.js defaults to
+ * jsdelivr for both the engine and the language data — left alone, OCR stops
+ * working on a network that blocks it and tells a browser somewhere else which
+ * books this site is indexing.
+ */
+$ocrApi = get($baseUrl . '/assets/vendor/tesseract/tesseract.min.js');
+$ocrCore = get($baseUrl . '/assets/vendor/tesseract/tesseract-core-simd-lstm.wasm.js');
+$ocrLang = get($baseUrl . '/assets/vendor/tesseract/lang/eng.traineddata.gz');
+
+check(
+    'The recogniser and its language data are served from this site',
+    $ocrApi['status'] === 200 && $ocrCore['status'] === 200 && $ocrLang['status'] === 200,
+    "got {$ocrApi['status']}, {$ocrCore['status']}, {$ocrLang['status']} — OCR would fall back to a CDN"
+);
+
+check(
+    'and the language data is the real thing rather than an error page',
+    strlen($ocrLang['body']) > 1000000
+        && substr($ocrLang['body'], 0, 2) === "\x1f\x8b",
+    'a 2MB gzip was expected; a CDN error page also answers 200'
+);
+
 check(
     'The EPUB renderer is served with its unzipper',
     $epubLib['status'] === 200 && $zipLib['status'] === 200,
