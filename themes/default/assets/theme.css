@@ -1081,3 +1081,63 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
  * highlighted, and why it needs a real box rather than growing to fit. */
 .reader-epub { width: 100%; height: 70vh; }
 .reader-presenting .reader-epub { height: 100vh; }
+
+/* ---------------------------------------------------------------- live chat
+ *
+ * A room beside a stream, and the layout has one job the CSS has to get right:
+ * NEW MESSAGES MUST NOT MOVE THE PLAYER. So the log is a fixed-height scroller
+ * rather than a growing list — otherwise every message during a service nudges
+ * the video down the page, which on a phone means the thing you are watching
+ * walks off the screen while people talk about it.
+ */
+.chat { margin: 2rem 0; max-width: 44rem; }
+
+.chat-log {
+  height: 22rem;
+  overflow-y: auto;
+  /* overscroll-behavior so reaching the top of the log does not start
+     scrolling the page underneath — on a touch screen that is how somebody
+     loses the player while trying to read back. */
+  overscroll-behavior: contain;
+  padding: .5rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-muted) 6%, transparent);
+}
+
+.chat-message { padding: .3rem 0; line-height: 1.45; }
+.chat-message + .chat-message { border-top: 1px solid var(--border); }
+
+.chat-author { font-weight: 600; margin-right: .4rem; }
+
+/* Long words wrap rather than widening the box. A single 400-character "word"
+ * is the cheapest way to break a chat layout, and `maxlength` does not stop
+ * it. */
+.chat-body { overflow-wrap: anywhere; }
+
+/* Your own messages are marked by more than colour — a left edge — so the
+ * distinction survives a high-contrast rendering and colour blindness. */
+.chat-mine { border-left: 3px solid var(--accent); padding-left: .5rem; }
+
+.chat-notice { min-height: 1.25rem; margin: .4rem 0; font-size: .8125rem; }
+.chat-notice.warn { color: #fbbf24; }
+.chat-notice.ok { color: #4ade80; }
+.chat-notice.muted { color: var(--text-muted); }
+
+.chat form { display: flex; gap: .5rem; align-items: center; margin: 0; }
+.chat form input[type="text"] { flex: 1; }
+
+/* The moderator controls are inline forms so they work with no script, and
+ * small so they do not compete with what somebody said. */
+.chat-moderate { display: inline-flex; gap: .25rem; margin-left: .4rem; }
+.chat-hide, .chat-mute {
+  font: inherit;
+  font-size: .75rem;
+  padding: 0 .35rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.chat-hide:hover, .chat-mute:hover { color: inherit; border-color: var(--text-muted); }

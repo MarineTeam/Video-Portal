@@ -5621,6 +5621,430 @@ check(
     str_contains(getWithJar($baseUrl . '/live', $jar)['body'], 'Sunday Service')
 );
 
+/* -------------------------------------------------------------- live chat
+ *
+ * Driven over real HTTP, because three of the four rules in this feature are
+ * only visible from two different people making two different requests — and
+ * that is exactly what a unit test staging its own rows cannot do.
+ */
+echo "\nLive chat\n";
+
+/*
+ * The stream is put back to LIVE and public first. The section above leaves it
+ * members-only with its start 48 hours ago, which the safety net has already
+ * ended — so every check below would pass with the chat entirely broken,
+ * because a closed room legitimately has no box.
+ */
+$db->execute(
+    'UPDATE {live_streams}
+        SET member_only = 0, video_id = NULL, ended_at = NULL, ends_at = NULL,
+            starts_at = DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+      WHERE id = ?',
+    [$streamId]
+);
+
+/* A second stream, so "a mute is per stream" has somewhere to be per. */
+$otherStreamId = (int) $db->insert('live_streams', [
+    'slug'        => 'smoke-evening',
+    'title'       => 'Smoke Evening Service',
+    'embed_url'   => 'https://www.youtube.com/embed/smoke-evening',
+    'starts_at'   => date('Y-m-d H:i:s', time() - 300),
+    'is_published' => 1,
+    'member_only' => 0,
+    'created_at'  => date('Y-m-d H:i:s'),
+    'updated_at'  => date('Y-m-d H:i:s'),
+]);
+
+/* Somebody in the room who is NOT a moderator. */
+$chatterJar = sys_get_temp_dir() . '/portal-smoke-chatter-' . getmypid() . '.txt';
+@unlink($chatterJar);
+
+$db->insert('users', [
+    'email' => 'chatter@smoke.test', 'name' => 'Chatty Pat',
+    'authorized' => 1,
+    'password_hash' => password_hash('chatter-password-1234', PASSWORD_DEFAULT),
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+clearLoginThrottle($db);
+$chatterLogin = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'chatter@smoke.test',
+    'password' => 'chatter-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $chatterJar)['body']),
+], $chatterJar);
+
+check('Somebody signs in to talk', $chatterLogin['status'] === 302, "got {$chatterLogin['status']}");
+
+$streamUrl = $baseUrl . '/live/' . $streamSlug;
+$roomPage = getWithJar($streamUrl, $chatterJar);
+
+check('A live stream has a chat', str_contains($roomPage['body'], 'data-chat'), 'no room at all');
+check(
+    'and somebody signed in gets a box to type in',
+    str_contains($roomPage['body'], 'data-chat-input'),
+    'the room is read-only for everybody'
+);
+
+/*
+ * The token comes out of the page and is asserted non-empty before it is used.
+ *
+ * A token read from a page that 404'd is '', the POST then answers 419, and the
+ * check reports the application refusing a message when the real fault was the
+ * address — which this project has now paid for twice, once on the reader page
+ * and once on the scoped-editor screens.
+ */
+$chatToken = csrfFrom($roomPage['body']);
+check('and the room carries a CSRF token', $chatToken !== '', 'every check below would 419');
+
+$said = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+    '_token' => $chatToken,
+    'body'   => 'Morning everyone',
+], $chatterJar);
+
+$saidJson = json_decode($said['body'], true);
+
+check(
+    'Saying something works',
+    $said['status'] === 200 && ($saidJson['ok'] ?? false) === true,
+    "got {$said['status']} — " . substr($said['body'], 0, 120)
+);
+
+$firstPoll = getWithJar($baseUrl . '/live/' . $streamSlug . '/chat', $chatterJar);
+$firstJson = json_decode($firstPoll['body'], true);
+
+check(
+    'and it comes back through the poll',
+    $firstPoll['status'] === 200
+        && str_contains($firstPoll['body'], 'Morning everyone')
+        && str_contains($firstPoll['body'], 'Chatty Pat'),
+    "got {$firstPoll['status']}"
+);
+
+/*
+ * THE CURSOR. A second poll from where the first finished carries nothing,
+ * which is what stops a client redrawing the room every four seconds.
+ */
+$cursor = (int) ($firstJson['cursor'] ?? 0);
+check('and the poll hands back a cursor', $cursor > 0, 'a client cannot ask for what is next');
+
+$secondPoll = getWithJar(
+    $baseUrl . '/live/' . $streamSlug . '/chat?after=' . $cursor,
+    $chatterJar
+);
+
+check(
+    'and asking again from it repeats nothing',
+    ($json = json_decode($secondPoll['body'], true)) !== null && ($json['messages'] ?? null) === [],
+    'A POLL REPEATED EVERY MESSAGE — a hundred people redrawing the room every four seconds'
+);
+
+/* ---------------------------------------------- slow mode is PER PERSON */
+
+$tooSoon = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+    '_token' => $chatToken,
+    'body'   => 'And another thing',
+], $chatterJar);
+
+check(
+    'The same person is asked to wait',
+    ($json = json_decode($tooSoon['body'], true)) !== null
+        && ($json['ok'] ?? true) === false
+        && (int) ($json['wait'] ?? 0) > 0,
+    'slow mode did nothing: ' . substr($tooSoon['body'], 0, 120)
+);
+
+/*
+ * THE RULE, and the only place it can be seen. A different person in the same
+ * room at the same moment is not slowed down at all.
+ *
+ * The mutation this kills is lastPostedAt() losing its `AND user_id = ?`, which
+ * is the whole of a per-chat slow mode and passes every unit test — same
+ * arithmetic, different row. What it would do to a real service: the fastest
+ * typist holds the floor, and it gets worse the more people arrive.
+ */
+$adminRoom = getWithJar($streamUrl, $jar);
+$adminToken = csrfFrom($adminRoom['body']);
+
+check('A moderator is in the room too', $adminToken !== '', 'the rest proves nothing');
+
+$otherPerson = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+    '_token' => $adminToken,
+    'body'   => 'Good morning',
+], $jar);
+
+check(
+    'while somebody else may post immediately',
+    ($json = json_decode($otherPerson['body'], true)) !== null && ($json['ok'] ?? false) === true,
+    'SLOW MODE IS PER ROOM — one person typing refused everybody else: '
+        . substr($otherPerson['body'], 0, 120)
+);
+
+/* ------------------------------------------- hiding keeps the message */
+
+$messageId = (int) $db->value(
+    'SELECT id FROM {live_chat_messages} WHERE stream_id = ? AND body = ?',
+    [$streamId, 'Morning everyone']
+);
+
+check('The message is a real row', $messageId > 0, 'nothing was stored');
+
+$hidden = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat/moderate', [
+    '_token'  => $adminToken,
+    'action'  => 'hide',
+    'message' => (string) $messageId,
+], $jar);
+
+check(
+    'A moderator can take a message out of the room',
+    ($json = json_decode($hidden['body'], true)) !== null && ($json['ok'] ?? false) === true,
+    "got {$hidden['status']} — " . substr($hidden['body'], 0, 120)
+);
+
+check(
+    'and the message survives, with who decided',
+    (string) $db->value('SELECT body FROM {live_chat_messages} WHERE id = ?', [$messageId])
+        === 'Morning everyone'
+        && $db->value('SELECT hidden_by FROM {live_chat_messages} WHERE id = ?', [$messageId])
+            === 'admin@smoke.test',
+    'THE MESSAGE WAS DELETED — the evidence went with it, and so did the decision'
+);
+
+/*
+ * Both directions, and the second half is the one that matters.
+ *
+ * "The hidden message is absent" passes just as happily when the poll returns
+ * NOTHING — which is what happened on the first run of these checks, where a
+ * fatal meant no message had ever been stored and this check reported the
+ * takedown working. So the moderator's own message, sent a moment ago and not
+ * hidden, has to still be there.
+ */
+$afterHiding = getWithJar($baseUrl . '/live/' . $streamSlug . '/chat', $chatterJar)['body'];
+
+check(
+    'and stops being served, while everything else stays',
+    !str_contains($afterHiding, 'Morning everyone')
+        && str_contains($afterHiding, 'Good morning'),
+    'A HIDDEN MESSAGE WAS STILL IN THE ROOM, or hiding one emptied it'
+);
+
+/*
+ * THE REASON hiding keeps it. Slow mode is turned off for this one, because
+ * otherwise the refusal could be the wait rather than the resend guard — and
+ * "refused" for the wrong reason is a check that proves nothing.
+ */
+postWithJar($baseUrl . '/admin/live', [
+    '_token'            => csrfFrom(getWithJar($baseUrl . '/admin/live', $jar)['body']),
+    'action'            => 'chat',
+    'chat_slow_seconds' => '0',
+], $jar);
+
+$resent = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+    '_token' => $chatToken,
+    // Different spacing and case, which is what retyping produces.
+    'body'   => '  MORNING   Everyone ',
+], $chatterJar);
+
+check(
+    'and the same words cannot be sent straight back',
+    ($json = json_decode($resent['body'], true)) !== null && ($json['ok'] ?? true) === false,
+    'A TAKEDOWN MEANT NOTHING — the moderator is the only one doing any work'
+);
+
+/* But it is about a person, not a phrase: the moderator may still say it. */
+$notAFilter = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+    '_token' => $adminToken,
+    'body'   => 'Morning everyone',
+], $jar);
+
+check(
+    'while somebody else saying it is not refused',
+    ($json = json_decode($notAFilter['body'], true)) !== null && ($json['ok'] ?? false) === true,
+    'ONE TAKEDOWN BANNED A PHRASE FOR EVERYBODY'
+);
+
+/* ------------------------------------------------ a mute is per stream */
+
+$muteTarget = (int) $db->value(
+    'SELECT id FROM {live_chat_messages} WHERE stream_id = ? AND user_id = (
+         SELECT id FROM {users} WHERE email = ?
+     ) ORDER BY id DESC LIMIT 1',
+    [$streamId, 'chatter@smoke.test']
+);
+
+$muted = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat/moderate', [
+    '_token'  => $adminToken,
+    'action'  => 'mute',
+    'message' => (string) $muteTarget,
+    'reason'  => 'shouting',
+], $jar);
+
+check(
+    'A moderator can stop somebody posting',
+    ($json = json_decode($muted['body'], true)) !== null && ($json['ok'] ?? false) === true,
+    "got {$muted['status']} — " . substr($muted['body'], 0, 120)
+);
+
+$whileMuted = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+    '_token' => $chatToken,
+    'body'   => 'Let me back in',
+], $chatterJar);
+
+check(
+    'and they cannot',
+    ($json = json_decode($whileMuted['body'], true)) !== null && ($json['ok'] ?? true) === false,
+    'THE MUTE DID NOTHING'
+);
+
+/*
+ * THE RULE. The same person, the same moment, a different stream.
+ *
+ * A mute is a decision about tonight made by whoever is watching the room. A
+ * site-wide ban is a different decision made by somebody else, and a DELETE or
+ * a SELECT missing its stream_id turns one into the other silently.
+ */
+$otherSlug = (string) $db->value('SELECT slug FROM {live_streams} WHERE id = ?', [$otherStreamId]);
+$otherRoom = getWithJar($baseUrl . '/live/' . $otherSlug, $chatterJar);
+$otherToken = csrfFrom($otherRoom['body']);
+
+check('The other stream has a room as well', $otherToken !== '', 'the next check proves nothing');
+
+$elsewhere = postWithJar($baseUrl . '/live/' . $otherSlug . '/chat', [
+    '_token' => $otherToken,
+    'body'   => 'Evening all',
+], $chatterJar);
+
+check(
+    'while in another stream they are not muted at all',
+    ($json = json_decode($elsewhere['body'], true)) !== null && ($json['ok'] ?? false) === true,
+    'A MUTE ON ONE SERVICE LOCKED SOMEBODY OUT OF EVERY SERVICE — that is a ban, and it is '
+        . 'a different decision made by somebody else: ' . substr($elsewhere['body'], 0, 120)
+);
+
+/* ------------------------------------------------- undoing it, on the screen */
+
+$liveAdmin = getWithJar($baseUrl . '/admin/live', $jar);
+
+check(
+    'The admin screen lists who cannot post',
+    str_contains($liveAdmin['body'], 'Cannot post in this stream')
+        && str_contains($liveAdmin['body'], 'chatter@smoke.test'),
+    'A MUTE WITH NO SCREEN — it is still silencing somebody next month and nobody can find it'
+);
+
+check(
+    'and shows what was taken out of the room',
+    str_contains($liveAdmin['body'], 'Taken out of the room')
+        && str_contains($liveAdmin['body'], 'Morning everyone'),
+    'the hidden message is kept and shown nowhere, so it cannot be put back'
+);
+
+$unmuted = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat/moderate', [
+    '_token' => csrfFrom($liveAdmin['body']),
+    'action' => 'unmute',
+    'user'   => (string) $db->value('SELECT id FROM {users} WHERE email = ?', ['chatter@smoke.test']),
+    '_plain' => '1',
+], $jar);
+
+/*
+ * A redirect, not JSON — because `_plain` was sent, which the script never
+ * sends. That is what makes "it works with the script blocked" a property
+ * rather than a sentence in a comment.
+ */
+check(
+    'Letting them post again is a form that works with no script at all',
+    $unmuted['status'] === 302,
+    "got {$unmuted['status']} — a plain form submission was answered with JSON"
+);
+
+check(
+    'and they can talk again',
+    ($json = json_decode(postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+        '_token' => $chatToken,
+        'body'   => 'Sorry about that',
+    ], $chatterJar)['body'], true)) !== null && ($json['ok'] ?? false) === true,
+    'the unmute did nothing'
+);
+
+/* ------------------------------------------------------------ the window */
+
+$db->execute(
+    'UPDATE {live_streams} SET starts_at = DATE_ADD(NOW(), INTERVAL 3 HOUR) WHERE id = ?',
+    [$streamId]
+);
+
+$early = getWithJar($streamUrl, $chatterJar);
+
+check(
+    'Three hours before a stream the box is not there',
+    !str_contains($early['body'], 'data-chat-input'),
+    'a room open all week is a room nobody is moderating'
+);
+
+check(
+    'and it says when it opens',
+    str_contains($early['body'], '30 minutes before'),
+    'THE CHAT IS CLOSED is true of three situations and useful in none of them'
+);
+
+$tooEarly = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat', [
+    '_token' => $chatToken,
+    'body'   => 'Anybody there',
+], $chatterJar);
+
+check(
+    'and the endpoint refuses as well, not just the page',
+    ($json = json_decode($tooEarly['body'], true)) !== null && ($json['ok'] ?? true) === false,
+    'THE BOX WAS HIDDEN AND THE DOOR WAS OPEN — hiding a form is not a rule'
+);
+
+/* --------------------------------------------------- moderating is a capability */
+
+$notAModerator = postWithJar($baseUrl . '/live/' . $streamSlug . '/chat/moderate', [
+    '_token'  => $chatToken,
+    'action'  => 'hide',
+    'message' => (string) $messageId,
+], $chatterJar);
+
+check(
+    'Somebody in the room cannot moderate it',
+    $notAModerator['status'] === 403,
+    "got {$notAModerator['status']} — ANYBODY COULD HIDE ANYBODY ELSE'S MESSAGE"
+);
+
+check(
+    'and no hide button is drawn for them',
+    !str_contains($roomPage['body'], 'chat-hide'),
+    'a button that 403s reads as a broken site rather than a boundary'
+);
+
+/* Signing out: the transcript is not public. */
+check(
+    'Reading the room needs an account',
+    get($baseUrl . '/live/' . $streamSlug . '/chat')['status'] === 403,
+    'a service chat anybody can scrape'
+);
+
+/*
+ * Put the schedule back the way this section found it, and take the second
+ * stream away again.
+ *
+ * Not tidiness. The checks further down assert that a site with nothing
+ * scheduled shows no live banner and no Live link, and the first run of this
+ * section broke both of them by leaving an extra stream on air — two failures
+ * in a feature nobody had touched, which is precisely the scatter of unrelated
+ * regressions that reads as a foundational bug.
+ */
+$db->execute('DELETE FROM {live_streams} WHERE id = ?', [$otherStreamId]);
+
+$db->execute(
+    'UPDATE {live_streams}
+        SET member_only = 1, starts_at = DATE_SUB(NOW(), INTERVAL 48 HOUR), ends_at = NULL
+      WHERE id = ?',
+    [$streamId]
+);
+
+@unlink($chatterJar);
+
 /* --------------------------------------------------------------- web push
  *
  * Nothing here is delivered — a real notification needs a real push service and

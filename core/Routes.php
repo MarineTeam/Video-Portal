@@ -10,6 +10,7 @@ use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminBookController;
 use Portal\Controllers\AdminApiKeyController;
+use Portal\Controllers\LiveChatController;
 use Portal\Controllers\ApiController;
 use Portal\Controllers\AdminBroadcastController;
 use Portal\Controllers\AdminFormController;
@@ -69,6 +70,24 @@ final class Routes
          * video called "report" in Phase 4.
          */
         $router->get('/live', [LibraryController::class, 'live']);
+
+        /*
+         * The chat lives UNDER the stream's own address, which is what makes it
+         * collision-proof: `{slug}` compiles to `[^/]+`, so /live/x/chat has
+         * three segments and cannot match the two-segment stream route
+         * whichever order they are registered in.
+         *
+         * Worth stating, because the tempting shape — /live/chat?stream=x, or
+         * /chat/{slug} — is the one that produced the Phase 4 bug where
+         * /comments/report resolved as a video called "report", answered 302,
+         * and did nothing. A path that shares a segment count with a
+         * placeholder route is a bug waiting for the registration order to
+         * change.
+         */
+        $router->get('/live/{slug}/chat', [LiveChatController::class, 'poll']);
+        $router->post('/live/{slug}/chat', [LiveChatController::class, 'post']);
+        $router->post('/live/{slug}/chat/moderate', [LiveChatController::class, 'moderate']);
+
         $router->get('/live/{slug}', [LibraryController::class, 'live']);
 
         $router->get('/scripture', [LibraryController::class, 'scriptureIndex']);

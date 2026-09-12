@@ -2672,8 +2672,34 @@ final class AdminController extends Controller
     {
         $this->require(Capability::MANAGE_VIDEOS);
 
+        /*
+         * Each stream carries its own mutes and its hidden messages.
+         *
+         * Two queries per stream, on a screen that lists every stream a site
+         * has ever run — which is the shape of thing that becomes a hundred
+         * queries on a site that has been broadcasting for two years. Accepted
+         * here rather than batched because the alternative is a screen where
+         * the mute list lives somewhere else, and a mute nobody can find is one
+         * still silencing somebody next month. If this screen ever grows a
+         * pager, that is the moment to batch it.
+         */
+        $chat = new \Portal\Live\ChatRepository($this->db());
+        $streams = [];
+
+        foreach ($this->liveRepo()->all() as $stream) {
+            $stream['mutes'] = $chat->mutes((int) $stream['id']);
+            $stream['chat'] = $chat->withHidden((int) $stream['id']);
+            $streams[] = $stream;
+        }
+
         return $this->admin('live', [
-            'streams' => $this->liveRepo()->all(),
+            'streams' => $streams,
+            'chatSlowSeconds' => \Portal\Live\SlowMode::clamp(
+                (int) $this->config()->setting(
+                    'chat_slow_seconds',
+                    (string) \Portal\Live\SlowMode::DEFAULT_SECONDS
+                )
+            ),
             // Only ready videos, so a recording cannot be attached to something
             // that is still encoding and would 404 for everybody who followed
             // the redirect.
@@ -2705,6 +2731,32 @@ final class AdminController extends Controller
                 $repo->resume($id);
                 Audit::log($this->db(), $this->user()?->email, 'live.resume', 'live', (string) $id);
                 return $this->back($request, 'Back on. Its schedule decides again.');
+
+            case 'chat':
+                /*
+                 * Clamped on the way IN as well as on the way out. The form has
+                 * min and max attributes and a browser is not obliged to honour
+                 * them, so without this a posted 99999 would be stored and then
+                 * quietly corrected on every read — which works, and leaves a
+                 * number on the screen that is not the number in the database.
+                 */
+                $seconds = \Portal\Live\SlowMode::clamp(
+                    (int) ($request->input('chat_slow_seconds') ?? 0)
+                );
+
+                $this->config()->setSettings(['chat_slow_seconds' => (string) $seconds]);
+                Audit::log(
+                    $this->db(),
+                    $this->user()?->email,
+                    'settings.update',
+                    'setting',
+                    'chat_slow_seconds',
+                    (string) $seconds
+                );
+
+                return $this->back($request, $seconds === 0
+                    ? 'Slow mode is off.'
+                    : sprintf('%d seconds between one person\'s messages.', $seconds));
 
             case 'update':
                 $reason = \Portal\Content\LiveStreamPolicy::rejectionReason(

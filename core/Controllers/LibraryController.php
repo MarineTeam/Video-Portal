@@ -758,7 +758,7 @@ final class LibraryController extends Controller
                     'embedUrl' => $stream['state'] === \Portal\Content\LiveStreamPolicy::LIVE
                         ? (string) $stream['embed_url']
                         : '',
-                ]
+                ] + $this->chatView($stream)
             );
         }
 
@@ -1165,24 +1165,70 @@ final class LibraryController extends Controller
         return apply_filters('video_list', $cards);
     }
 
-    /**
-     * Can this visitor actually play a video?
-     *
-     * The same test the /watch route applies, asked here so a listing can tell
-     * the difference between "you may see this exists" and "you may see what it
-     * looks like". Signing in is not enough: an account an administrator has
-     * not approved yet cannot play anything, and that is the state every new
-     * account starts in.
+    /*
+     * canWatch() — "can this visitor actually play a video" — moved to
+     * Controller. It had a second inlined copy in the live banner and a third
+     * was about to be written for the chat, and two implementations of a
+     * visibility rule eventually disagree: the failure being a members-only
+     * title on a page that should not name it.
      */
-    private function canWatch(): bool
+
+    /**
+     * Everything the stream page needs to draw a chat.
+     *
+     * Built here rather than in the template because the WINDOW is a decision —
+     * whether a box appears at all, and what somebody who cannot use it is told
+     * — and a decision in a template is one a second theme reimplements from
+     * scratch. A theme that ignores every key below simply has no chat, which
+     * is the correct failure mode; one that had to re-derive the window from
+     * timestamps would eventually open a room an hour late.
+     *
+     * The whole thing is wrapped, because a chat is the least important element
+     * on a page whose point is the stream — and on an install that has not yet
+     * applied migration 0051 the tables are not there at all.
+     *
+     * @param array<string, mixed> $stream
+     * @return array<string, mixed>
+     */
+    private function chatView(array $stream): array
     {
-        if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
-            return true;
+        try {
+            $chat = new \Portal\Live\ChatRepository($this->db());
+            $state = \Portal\Live\ChatWindow::state($stream);
+            $user = $this->user();
+
+            $messages = $chat->recent((int) $stream['id']);
+            $mine = $user?->id ?? 0;
+
+            return [
+                'chatState'   => $state,
+                'chatClosed'  => \Portal\Live\ChatWindow::explain($state),
+                'chatToken'   => $this->csrfToken(),
+                'chatCursor'  => $messages === []
+                    ? 0
+                    : (int) $messages[array_key_last($messages)]['id'],
+                'chatMessages' => array_map(
+                    static fn (array $row): array => $row + [
+                        'mine' => (int) $row['user_id'] === $mine,
+                    ],
+                    $messages
+                ),
+                /*
+                 * "May post" and "the room is open" are separate answers, so
+                 * somebody signed out sees the transcript and an invitation to
+                 * sign in rather than a box that refuses them after they have
+                 * typed a sentence.
+                 */
+                'chatMayPost'     => $user !== null,
+                'chatCanModerate' => $this->guard()->can(Capability::MODERATE_CHAT),
+            ];
+        } catch (\Throwable $e) {
+            error_log('Could not read the live chat: ' . $e->getMessage());
+
+            // chatState absent means the section is not rendered at all. An
+            // empty chat on a working stream is better than a 500.
+            return [];
         }
-
-        $user = $this->user();
-
-        return $user !== null && ($user->isAdmin() || $user->authorized);
     }
 
     /**

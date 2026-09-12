@@ -143,6 +143,18 @@ final class Capability
     public const MANAGE_BOOKS = 'manage_books';
 
     /**
+     * Hiding messages and muting people during a live stream.
+     *
+     * Separate from MODERATE_COMMENTS, and the split is about people rather
+     * than about permissions. Comment moderation is somebody working a queue in
+     * the week; this is somebody watching a room in real time on a Sunday
+     * evening, often a volunteer who does nothing else in the admin area. One
+     * capability would mean handing the weekday moderator a live room, or the
+     * Sunday volunteer the whole comment archive.
+     */
+    public const MODERATE_CHAT = 'moderate_chat';
+
+    /**
      * Making and revoking keys for the read API.
      *
      * Site-wide, and deliberately NOT folded into MANAGE_SETTINGS. A key is a
@@ -201,6 +213,7 @@ final class Capability
             self::DOWNLOAD_CONTENT    => 'Download a video they can watch, for offline viewing',
             self::MANAGE_VIEWERS      => 'Approve viewers and manage viewer groups',
             self::MODERATE_COMMENTS   => 'Review and remove comments',
+            self::MODERATE_CHAT       => 'Hide messages and mute people during a live stream',
             self::MANAGE_ROTA         => 'Build the rota: teams, services, and who is asked to serve',
             self::MANAGE_EVENTS       => 'Create events and see who has signed up',
             self::MANAGE_SCHEDULES    => 'Keep the schedules calendar and the list of people on it',
@@ -250,6 +263,13 @@ final class Capability
             self::SEND_BROADCASTS,
             self::MANAGE_BOOKS,
             self::MANAGE_API_KEYS,
+            /*
+             * Site-only, because grants.scope_type is a category, a series or a
+             * video and a live stream is none of those. There is no such thing
+             * as a grant on one, so offering the scope picker would imply a
+             * containment that does not exist.
+             */
+            self::MODERATE_CHAT,
         ];
     }
 

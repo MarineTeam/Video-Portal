@@ -320,6 +320,52 @@ final class PersonalData
             ),
 
             /*
+             * What they said in a live chat, INCLUDING what a moderator hid.
+             *
+             * Hidden is a fact about a decision somebody made, not a reason to
+             * pretend the words were never written — they are still this
+             * person's own words in the database, and an export that dropped
+             * them would be answering "everything you hold about me" with
+             * "everything except the part you objected to".
+             *
+             * `hidden_by` is NOT selected. That is a staff name attached to a
+             * decision about a member, which is the same line the access-request
+             * section draws and which SecretGuard forbids by name anyway.
+             */
+            'live_chat_messages' => $this->rows(
+                'SELECT s.title AS stream, m.body, m.created_at,
+                        m.hidden_at IS NOT NULL AS hidden
+                   FROM {live_chat_messages} m
+                   INNER JOIN {live_streams} s ON s.id = m.stream_id
+                  WHERE m.user_id = ?
+                  ORDER BY m.created_at DESC',
+                [$user->id]
+            ),
+
+            /*
+             * And whether they are stopped from posting in a stream.
+             *
+             * Included because a standing restriction on somebody is
+             * unambiguously data about them, and one they cannot otherwise
+             * discover: the live page tells them a moderator has stopped them
+             * and nothing says where else that is true.
+             *
+             * Neither who decided nor the note they left. The note is written
+             * for the other moderators — "shouting over the reading" — and
+             * handing it back verbatim turns an internal record into an
+             * argument, which is the same call ChatGate makes when it refuses
+             * a muted person without quoting the reason.
+             */
+            'live_chat_mutes' => $this->rows(
+                'SELECT s.title AS stream, m.created_at
+                   FROM {live_chat_mutes} m
+                   INNER JOIN {live_streams} s ON s.id = m.stream_id
+                  WHERE m.user_id = ?
+                  ORDER BY m.created_at DESC',
+                [$user->id]
+            ),
+
+            /*
              * Asking for access, and the note they wrote. NOT who reviewed it —
              * that is a staff name attached to a decision about a member, which
              * SecretGuard forbids by name anyway.

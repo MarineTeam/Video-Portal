@@ -298,6 +298,30 @@ abstract class Controller
      *
      * @return array{live: array<string, mixed>|null, scheduled: int}
      */
+    /**
+     * Whether this person may see what something LOOKS like, not merely that it
+     * exists.
+     *
+     * The same test the /watch route applies. Signing in is not enough: an
+     * account an administrator has not approved is the state every new account
+     * starts in, and it can play nothing.
+     *
+     * On the base controller because three places were asking it — the live
+     * banner inlined its own copy, LibraryController had a private one, and the
+     * chat needed a third. Two implementations of a visibility rule eventually
+     * disagree, and the failure is a members-only title on a public page.
+     */
+    protected function canWatch(): bool
+    {
+        if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
+            return true;
+        }
+
+        $user = $this->user();
+
+        return $user !== null && ($user->isAdmin() || $user->authorized);
+    }
+
     protected function liveState(): array
     {
         if ($this->liveState !== null) {
@@ -308,10 +332,7 @@ abstract class Controller
             /** @var \Portal\Content\LiveStreamRepository $repo */
             $repo = $this->container->get(\Portal\Content\LiveStreamRepository::class);
 
-            $user = $this->user();
-            $canWatch = $user !== null && ($user->isAdmin() || $user->authorized);
-
-            $rows = $repo->upcoming($canWatch);
+            $rows = $repo->upcoming($this->canWatch());
 
             $live = null;
             foreach ($rows as $row) {
