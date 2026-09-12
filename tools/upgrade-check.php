@@ -55,6 +55,7 @@ $through = (string) ($options['through'] ?? '0002');
 
 $passed = 0;
 $failed = 0;
+$skipped = 0;
 
 function check(string $label, bool $ok, string $detail = ''): void
 {
@@ -68,6 +69,45 @@ function check(string $label, bool $ok, string $detail = ''): void
 
     $failed++;
     echo "  FAIL  {$label}" . ($detail === '' ? '' : " — {$detail}") . "\n";
+}
+
+/**
+ * A block of checks that only means anything for some values of --through.
+ *
+ * Several checks here are about ONE migration's backfill, and a backfill can
+ * only be observed if that migration is in the PENDING set. Run with
+ * `--through=0032` — which is the realistic thing to run, since it is where a
+ * live host's database actually is — the migration is already applied in the
+ * "old schema" half, the precondition seeds a row the removal will never see,
+ * and the check fails.
+ *
+ * That is the harness being unable to tell "the application is wrong" from
+ * "I could not ask", which this project has now recorded four times in three
+ * different tools. It cost twenty minutes here before the log was read
+ * properly, and the next person would pay it again: three red lines about a
+ * capability are alarming, and nothing said they were about a starting point.
+ *
+ * So a block declares which migration it observes, and is SKIPPED — loudly,
+ * and counted as neither a pass nor a failure — when that migration is not
+ * pending. Not counted as a pass, because a skipped check has proved nothing
+ * and a green total that includes it is a lie of the same kind.
+ *
+ * @param list<string> $pending the migration versions this run will apply
+ */
+function observing(string $version, array $pending, string $what, callable $checks): void
+{
+    global $skipped;
+
+    if (!in_array($version, $pending, true)) {
+        $skipped++;
+        echo "  SKIP  {$what}\n";
+        echo "        Migration {$version} is already applied at this --through, so its "
+            . "backfill\n        cannot be observed. Run with a lower --through to exercise it.\n";
+
+        return;
+    }
+
+    $checks();
 }
 
 echo "Video Portal upgrade check\n\n";
@@ -373,6 +413,8 @@ check(
  */
 echo "\nRemoved capability\n";
 
+observing('0019', $after, 'the view_content removal', static function () use ($db): void {
+
 check(
     'view_content is gone from the vocabulary',
     (int) $db->value('SELECT COUNT(*) FROM {capabilities} WHERE slug = ?', ['view_content']) === 0
@@ -440,6 +482,8 @@ check(
     'the role lost a capability it should have kept'
 );
 
+});
+
 echo "\nColumn defaults\n";
 
 check(
@@ -463,6 +507,19 @@ if (!$keep) {
 }
 
 echo "\n" . str_repeat('-', 50) . "\n";
-echo "{$passed} passed, {$failed} failed\n";
+echo "{$passed} passed, {$failed} failed"
+    . ($skipped > 0 ? ", {$skipped} block(s) not applicable at this --through" : '')
+    . "\n";
+
+if ($skipped > 0) {
+    /*
+     * Said out loud rather than folded into the pass count. A skipped block has
+     * proved nothing, and counting it as a pass would be the same kind of lie
+     * as a PHPUnit run reporting OK with 700 skips — which this project has
+     * also had, and treats as a failed run.
+     */
+    echo "\nSome blocks were not exercised, which is expected when --through is high.\n"
+        . "The full run is `php tools/upgrade-check.php` with no --through.\n";
+}
 
 exit($failed === 0 ? 0 : 1);
