@@ -11873,6 +11873,104 @@ check(
     'the sheet does not say who is there, which is what it is read for'
 );
 
+/* ------------------------------------------- present mode, on the wall */
+
+/*
+ * A note naming somebody who has not been asked yet, which is the realistic
+ * kind — and the exact thing that must not end up on a screen three hundred
+ * people are looking at.
+ */
+postWithJar($baseUrl . '/admin/rota', [
+    '_token'     => $planToken,
+    'action'     => 'add-plan-item',
+    'service_id' => (string) $rotaService,
+    'kind'       => 'item',
+    'title'      => 'Notices',
+    'reference'  => '',
+    'note'       => 'Ask Deborah Pike, NOT Gregory — Gregory is away and does not know yet',
+], $jar);
+
+$present = getWithJar($baseUrl . '/services/' . $rotaService . '/present', $jar);
+
+check(
+    'The order can be put on a screen',
+    $present['status'] === 200 && str_contains($present['body'], 'data-present'),
+    "got {$present['status']}"
+);
+
+check(
+    'and it carries every line, so the wifi dropping does not blank it',
+    substr_count($present['body'], 'data-slide=') === 3,
+    'A PROJECTOR WOULD GO BLANK MID-HYMN — the slides are fetched rather than present'
+);
+
+/*
+ * THE RULE, in rendered HTML.
+ *
+ * PresentPlanTest proves a Slide has nowhere to put a note. This proves the
+ * page does not find one some other way — a second query, a shared view
+ * variable, the plan rows arriving alongside. The claim is about what is on the
+ * wall, so it is asserted against the wall.
+ */
+check(
+    'while a leader\'s note is nowhere on it',
+    !str_contains($present['body'], 'Deborah Pike')
+        && !str_contains($present['body'], 'Gregory')
+        && !str_contains($present['body'], 'Organ only'),
+    'A LEADER\'S PRIVATE NOTE IS ON THE SCREEN AT THE FRONT — naming somebody who has '
+        . 'not been asked, to the whole building'
+);
+
+check(
+    'and what the congregation needs is',
+    str_contains($present['body'], 'Be Thou My Vision')
+        && str_contains($present['body'], '245')
+        && str_contains($present['body'], 'Notices'),
+    'the screen at the front is missing the thing it is for'
+);
+
+/*
+ * It works with no script at all: ?at= is a real link that renders one slide.
+ *
+ * Counted as VISIBLE slides rather than as the presence of the word, because
+ * every slide is in the markup by design — the question is which one is not
+ * hidden, and a page that shipped them all unhidden would show three at once.
+ */
+$secondSlide = getWithJar($baseUrl . '/services/' . $rotaService . '/present?at=1', $jar);
+
+check(
+    'A slide has an address of its own',
+    $secondSlide['status'] === 200
+        && substr_count($secondSlide['body'], 'data-slide="1"') === 1
+        && !str_contains($secondSlide['body'], 'data-slide="1" hidden'),
+    'reloading a projector mid-service goes back to the first hymn'
+);
+
+check(
+    'and only one slide is showing at a time',
+    substr_count($secondSlide['body'], 'hidden>') === 2,
+    'THE WHOLE ORDER IS ON THE WALL AT ONCE'
+);
+
+/*
+ * A stale bookmark starts at the beginning rather than anywhere plausible. The
+ * status is asserted too: a 500 here would also contain no slide 40.
+ */
+$stale = getWithJar($baseUrl . '/services/' . $rotaService . '/present?at=40', $jar);
+
+check(
+    'A position that does not exist starts at the beginning',
+    $stale['status'] === 200 && !str_contains($stale['body'], 'data-slide="0" hidden'),
+    "got {$stale['status']} — a stale link presented something plausible"
+);
+
+/* And it is behind the same rule as the page it presents. */
+check(
+    'Present mode is not open to a stranger',
+    in_array(get($baseUrl . '/services/' . $rotaService . '/present')['status'], [302, 403], true),
+    'a way round the rule on the page it presents'
+);
+
 /* The print stylesheet is real, and served. */
 $themeCss = get($baseUrl . '/theme-asset/default/theme.css');
 check(

@@ -9,6 +9,7 @@ use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
 use Portal\Rota\Assignment;
+use Portal\Rota\PresentPlan;
 use Portal\Rota\RotaRepository;
 
 /**
@@ -98,6 +99,52 @@ final class RotaController extends Controller
             'plan'    => $rota->plan((int) $service['id']),
             'serving' => $serving,
             'flash'   => $this->flash(),
+        ]);
+    }
+
+    /**
+     * The service on the screen at the front of the building.
+     *
+     * # THE SAME VISIBILITY RULE AS THE SERVICE PAGE
+     *
+     * Asked by loading the service through the same lookup and the same
+     * unpublished check. A present mode with a looser rule would be a way to
+     * read the running order of a service nobody has been told about, which is
+     * exactly what the publish flag exists to prevent — and it is the kind of
+     * second implementation that drifts, so it is the same code.
+     *
+     * # AND THE LEADER'S NOTES DO NOT COME WITH IT
+     *
+     * Not filtered here: Slide has nowhere to put one. See that class.
+     *
+     * @param array<string, string> $params
+     */
+    public function present(Request $request, array $params): Response
+    {
+        $rota = $this->rota();
+        $service = $rota->service((int) ($params['id'] ?? 0));
+
+        if ($service === null) {
+            throw HttpException::notFound('There is no service at that address.');
+        }
+
+        if (!$service['is_published'] && !$this->guard()->can(Capability::MANAGE_ROTA)) {
+            throw HttpException::notFound('There is no service at that address.');
+        }
+
+        $plan = PresentPlan::from($rota->plan((int) $service['id']));
+
+        return $this->view(['service-present'], [
+            'title'   => (string) $service['title'],
+            'service' => $service,
+            'plan'    => $plan,
+            /*
+             * The starting position comes from the query string, so a projector
+             * can be pointed straight at the third hymn after somebody reloads
+             * mid-service. resolve() sends anything out of range to the
+             * beginning rather than to the end — see PresentPlan.
+             */
+            'at'      => $plan->resolve($request->query('at')),
         ]);
     }
 

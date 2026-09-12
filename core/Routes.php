@@ -543,6 +543,19 @@ final class Routes
          */
         $router->get('/services/{id:\d+}', [RotaController::class, 'service'], ['auth.authorized']);
 
+        /*
+         * The same order of service, full screen, for the screen at the front.
+         *
+         * Behind the same guard: it shows the running order of a service, which
+         * is the same information the page above shows, and a present mode
+         * anybody could open would be a way round that page's rule.
+         */
+        $router->get(
+            '/services/{id:\d+}/present',
+            [RotaController::class, 'present'],
+            ['auth.authorized']
+        );
+
         // Saved videos. Approved-only for the same reason /watch is: the pages
         // list content, and an unapproved account cannot see the library either.
         $router->get('/notes', [LibraryController::class, 'notes'], ['auth.authorized']);
