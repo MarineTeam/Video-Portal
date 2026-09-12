@@ -30,6 +30,9 @@ use Throwable;
  */
 final class PersonalData
 {
+    /** @var list<string> Queries that did not run. See rows() and failures(). */
+    private array $failures = [];
+
     public function __construct(private readonly Db $db)
     {
     }
@@ -164,7 +167,7 @@ final class PersonalData
                   WHERE m.email = ?',
                 [$user->email]
             ),
-        ];
+        ] + $this->churchLife($user);
 
         /*
          * Plugins add their own. Comments, ratings and reactions own their
@@ -174,6 +177,254 @@ final class PersonalData
          */
         /** @var array<string, mixed> $out */
         $out = apply_filters('account_export', $out, $user);
+
+        return $out;
+    }
+
+    /**
+     * Everything the church-life sections know about one person.
+     *
+     * Added because the export had quietly stopped being complete: it was
+     * written against eight tables and then seven sections of work added more,
+     * none of which it knew about. A partial export looks complete, which makes
+     * it worse than none — and PersonalDataCompletenessTest now asks the SCHEMA
+     * which tables are keyed to a person, so the next section to add one fails a
+     * test rather than silently degrading this file.
+     *
+     * # NOBODY ELSE'S DATA LEAVES WITH IT
+     *
+     * Three places where that takes real care, all visible below:
+     *
+     *   A rota slot somebody is COVERING names another person. The fact of the
+     *   cover is theirs; who they are covering for is not, so it comes out as a
+     *   yes or no and never as a name.
+     *
+     *   A small group's ADDRESS goes through GroupAddress::for(), the one
+     *   function allowed to produce one. Reading the column here would be a
+     *   second implementation of that rule, and two implementations of it
+     *   eventually disagree — with the failure being somebody's living room in a
+     *   file that gets emailed to a solicitor.
+     *
+     *   An ANONYMOUS prayer request stays anonymous in the export too. The
+     *   display name comes from PrayerName::for(), for the same reason: it is
+     *   the only function that may produce one, and it answers with the
+     *   anonymous label even for staff.
+     *
+     * @return array<string, mixed>
+     */
+    private function churchLife(User $user): array
+    {
+        return [
+            /*
+             * The rota. `covering_for` is a boolean rather than a name — see
+             * the note above.
+             */
+            'rota' => $this->rows(
+                'SELECT a.state, a.reason, a.answered_at, a.created_at,
+                        s.title AS service, s.starts_at,
+                        t.name AS team, p.name AS position,
+                        a.covering_for_user_id IS NOT NULL AS covering_for_somebody
+                   FROM {rota_assignments} a
+                   INNER JOIN {rota_services} s ON s.id = a.service_id
+                   INNER JOIN {rota_teams} t ON t.id = a.team_id
+                   LEFT JOIN {rota_positions} p ON p.id = a.position_id
+                  WHERE a.user_id = ?
+                  ORDER BY s.starts_at DESC',
+                [$user->id]
+            ),
+
+            'rota_teams' => $this->rows(
+                'SELECT t.name AS team, p.name AS usual_position, m.created_at
+                   FROM {rota_team_members} m
+                   INNER JOIN {rota_teams} t ON t.id = m.team_id
+                   LEFT JOIN {rota_positions} p ON p.id = m.position_id
+                  WHERE m.user_id = ?',
+                [$user->id]
+            ),
+
+            'days_i_cannot_serve' => $this->rows(
+                'SELECT starts_on, ends_on, reason, created_at
+                   FROM {rota_blockouts} WHERE user_id = ? ORDER BY starts_on DESC',
+                [$user->id]
+            ),
+
+            /*
+             * Events signed up to. Nothing about the other people who signed up
+             * — the only row here is theirs.
+             */
+            'event_signups' => $this->rows(
+                'SELECT e.title, e.starts_at, g.state, g.guests, g.note, g.created_at
+                   FROM {event_signups} g
+                   INNER JOIN {events} e ON e.id = g.event_id
+                  WHERE g.user_id = ?
+                  ORDER BY e.starts_at DESC',
+                [$user->id]
+            ),
+
+            /*
+             * The schedules calendar names people rather than accounts, so this
+             * is only here when somebody linked the two.
+             */
+            'schedule_dates' => $this->rows(
+                'SELECT s.name AS schedule, e.on_date, e.role, e.note
+                   FROM {schedule_entries} e
+                   INNER JOIN {schedules} s ON s.id = e.schedule_id
+                   INNER JOIN {schedule_people} p ON p.id = e.person_id
+                  WHERE p.user_id = ?
+                  ORDER BY e.on_date DESC',
+                [$user->id]
+            ),
+
+            'reminder_settings' => $this->rows(
+                'SELECT day_before, day_of, send_hour, timezone, updated_at
+                   FROM {schedule_reminder_prefs} WHERE user_id = ?',
+                [$user->id]
+            ),
+
+            'message_settings' => $this->rows(
+                'SELECT email_opt_out, sms_opt_in, phone, updated_at
+                   FROM {broadcast_prefs} WHERE user_id = ?',
+                [$user->id]
+            ),
+
+            /* What they sent on a form, with the questions they were answering. */
+            'form_responses' => $this->rows(
+                'SELECT f.title AS form, r.created_at, q.label AS question, a.value AS answer
+                   FROM {form_responses} r
+                   INNER JOIN {forms} f ON f.id = r.form_id
+                   LEFT JOIN {form_answers} a ON a.response_id = r.id
+                   LEFT JOIN {form_questions} q ON q.id = a.question_id
+                  WHERE r.user_id = ?
+                  ORDER BY r.created_at DESC',
+                [$user->id]
+            ),
+
+            'prayer_requests' => $this->prayerRequests($user),
+            'small_groups'    => $this->smallGroups($user),
+
+            'books' => $this->rows(
+                'SELECT b.title AS book, m.kind, m.pdf_page, m.quote, m.body, m.created_at
+                   FROM {book_marks} m
+                   INNER JOIN {books} b ON b.id = m.book_id
+                  WHERE m.user_id = ?
+                  ORDER BY m.created_at DESC',
+                [$user->id]
+            ),
+
+            'reading' => $this->rows(
+                'SELECT b.title AS book, r.pdf_page, r.percent, r.updated_at
+                   FROM {reading_positions} r
+                   INNER JOIN {books} b ON b.id = r.book_id
+                  WHERE r.user_id = ?',
+                [$user->id]
+            ),
+
+            /*
+             * Asking for access, and the note they wrote. NOT who reviewed it —
+             * that is a staff name attached to a decision about a member, which
+             * SecretGuard forbids by name anyway.
+             */
+            'access_requests' => $this->rows(
+                'SELECT note, created_at FROM {access_requests} WHERE user_id = ?',
+                [$user->id]
+            ),
+
+            /* How they sign in. The subject identifies them to the provider. */
+            'sign_in_methods' => $this->rows(
+                'SELECT provider, created_at, last_seen_at FROM {user_identities} WHERE user_id = ?',
+                [$user->id]
+            ),
+
+            /* Tags somebody applied to them. Theirs to see. */
+            'tags' => $this->rows(
+                'SELECT tag FROM {user_tags} WHERE user_id = ?',
+                [$user->id]
+            ),
+
+            /*
+             * A calendar feed, WITHOUT its token. The token is the whole of the
+             * authentication for that feed, and an export is a file that gets
+             * emailed onwards — SecretGuard would throw on it, which is the
+             * backstop rather than the reason.
+             */
+            'calendar_feed' => $this->rows(
+                'SELECT created_at, last_used_at, fetches FROM {calendar_feeds} WHERE user_id = ?',
+                [$user->id]
+            ),
+        ];
+    }
+
+    /**
+     * Their own prayer requests.
+     *
+     * ANONYMOUS STAYS ANONYMOUS, even here. The display name comes from
+     * PrayerName::for(), the only function in the application allowed to produce
+     * one — reading the column directly would be a second implementation of a
+     * rule whose whole point is that there is exactly one.
+     *
+     * It is their own request either way, so the content is theirs; what the
+     * export must not do is tell them the wall showed their name when it showed
+     * "Anonymous", or the reverse.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function prayerRequests(User $user): array
+    {
+        $out = [];
+
+        foreach (
+            $this->rows(
+                'SELECT * FROM {prayer_requests} WHERE user_id = ? ORDER BY created_at DESC',
+                [$user->id]
+            ) as $row
+        ) {
+            $out[] = [
+                'body'         => $row['body'] ?? null,
+                'visibility'   => $row['visibility'] ?? null,
+                'status'       => $row['status'] ?? null,
+                'answer_note'  => $row['answer_note'] ?? null,
+                'shown_as'     => \Portal\Prayer\PrayerName::for($row),
+                'prayed_count' => $row['prayed_count'] ?? 0,
+                'created_at'   => $row['created_at'] ?? null,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * The small groups they are in.
+     *
+     * THE ADDRESS GOES THROUGH GroupAddress::for(). Reading the column here
+     * would be a second implementation of the one rule that decides who learns
+     * where a leader lives, and two implementations of it eventually disagree.
+     * A member who is actually in the group gets it; one who only asked does
+     * not, which is the same answer the group's own page gives them.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function smallGroups(User $user): array
+    {
+        $out = [];
+
+        foreach (
+            $this->rows(
+                'SELECT g.*, m.state, m.created_at AS joined_at
+                   FROM {small_group_members} m
+                   INNER JOIN {small_groups} g ON g.id = m.group_id
+                  WHERE m.user_id = ?',
+                [$user->id]
+            ) as $row
+        ) {
+            $out[] = [
+                'name'       => $row['name'] ?? null,
+                'area'       => $row['area'] ?? null,
+                'meets'      => $row['meets'] ?? null,
+                'state'      => $row['state'] ?? null,
+                'joined_at'  => $row['joined_at'] ?? null,
+                'address'    => \Portal\Groups\GroupAddress::for($row, (string) ($row['state'] ?? '')),
+            ];
+        }
 
         return $out;
     }
@@ -197,7 +448,37 @@ final class PersonalData
         } catch (Throwable $e) {
             error_log('Personal data export: skipped a section. ' . $e->getMessage());
 
+            /*
+             * REMEMBERED, not only logged.
+             *
+             * Swallowing the error keeps the export worth handing over, which is
+             * right. But it also means a mistyped column name produces a section
+             * that is silently EMPTY — and "a partial export looks complete, so
+             * it is worse than none" is the rule this whole file is built on.
+             * Catching and forgetting mechanises the exact failure it exists to
+             * prevent.
+             *
+             * Four columns were wrong when the church-life sections were added
+             * here, and every one of them came back as an empty list that looked
+             * like somebody with nothing on their rota.
+             */
+            $this->failures[] = $e->getMessage();
+
             return [];
         }
+    }
+
+    /**
+     * Queries that did not run, if any.
+     *
+     * Public so a test can assert there were none — which is the only cheap way
+     * to tell "this member has nothing on their rota" apart from "the rota query
+     * names a column that does not exist".
+     *
+     * @return list<string>
+     */
+    public function failures(): array
+    {
+        return $this->failures;
     }
 }
