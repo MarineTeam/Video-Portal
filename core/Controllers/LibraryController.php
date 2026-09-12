@@ -8,6 +8,7 @@ use Portal\Auth\Capability;
 use Portal\Content\Breadcrumbs;
 use Portal\Content\Category;
 use Portal\Content\CategoryRepository;
+use Portal\Content\HomeRow;
 use Portal\Content\HomeRowRepository;
 use Portal\Content\PlaylistRepository;
 use Portal\Content\SavedVideoRepository;
@@ -71,10 +72,26 @@ final class LibraryController extends Controller
             $rows = apply_filters('home_rows', $curated);
         }
 
+        $continueWatching = $this->continueWatching();
+
+        /*
+         * Only on an uncurated front page. On a curated one it is a row an editor
+         * places — see homeRows() — and printing it here as well would show it
+         * twice. What continue-watching already shows is left out of it, so the
+         * same card is not offered in two rows one above the other.
+         */
+        $becauseYouWatched = $isFrontPage && $curated === []
+            ? $this->becauseYouWatched(array_map(
+                static fn (array $card): int => (int) $card['id'],
+                $continueWatching
+            ))
+            : null;
+
         return $this->view(['index'], [
             'title'               => $search !== '' ? "Search: {$search}" : 'Library',
             'videos'              => $this->present($result['items']),
-            'continueWatching'    => $this->continueWatching(),
+            'continueWatching'    => $continueWatching,
+            'becauseYouWatched'   => $becauseYouWatched,
             'categories'          => $this->categoryChips(),
             'searchTerm'          => $search,
             'activeCategory'      => '',
@@ -153,6 +170,21 @@ final class LibraryController extends Controller
                  * row that is empty for a stranger, and dropping it then is
                  * correct — a heading over nothing is worse than one row less.
                  */
+                if ($row->sourceType === HomeRow::BECAUSE) {
+                    $because = $this->becauseYouWatched();
+                    if ($because !== null) {
+                        $out[] = [
+                            // An editor's title is kept, but the default names
+                            // the anchor — "Because you watched" on its own
+                            // does not say what the row is based on.
+                            'title'  => $row->title !== '' ? $row->title : $because['title'],
+                            'url'    => null,
+                            'videos' => $because['videos'],
+                        ];
+                    }
+                    continue;
+                }
+
                 if ($row->isPersonal()) {
                     $watching = $this->continueWatching();
                     if ($watching !== []) {
@@ -1236,6 +1268,48 @@ final class LibraryController extends Controller
      *
      * @return list<array<string, mixed>>
      */
+    /**
+     * "Because you watched X", for a signed-in person, or null.
+     *
+     * Through Recommendations with THIS page's visibility filters, so the anchor
+     * and every recommendation obey the same rule as the listing beside them —
+     * the anchor included, because a video withdrawn since somebody watched it
+     * must not reappear as a heading. See Recommendations::becauseYouWatched().
+     *
+     * Wrapped: this is the least important thing on the homepage, and on the
+     * one request that applies a pending migration a table it reads may not be
+     * there yet.
+     *
+     * @param list<int> $alreadyShown ids already on the page, so the same card
+     *                                does not appear in two rows
+     * @return array{title: string, videos: list<array<string, mixed>>}|null
+     */
+    private function becauseYouWatched(array $alreadyShown = []): ?array
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return null;
+        }
+
+        try {
+            $found = (new \Portal\Content\Recommendations($this->db(), $this->videos()))
+                ->becauseYouWatched($user->id, $this->visibilityFilters([]), $alreadyShown);
+        } catch (Throwable $e) {
+            error_log('Could not build "Because you watched": ' . $e->getMessage());
+
+            return null;
+        }
+
+        if ($found === null) {
+            return null;
+        }
+
+        return [
+            'title'  => 'Because you watched ' . $found['anchor']->title,
+            'videos' => $this->present($found['videos']),
+        ];
+    }
     private function continueWatching(): array
     {
         $user = $this->user();

@@ -66,6 +66,28 @@ echo $template->partial('header', get_defined_vars());
 
 <?php
 /*
+ * "Because you watched X".
+ *
+ * Null for a stranger, for someone with no history, and on a curated front page
+ * (where an editor places it as a row of its own). The heading names the video
+ * the row is based on — "Recommended" on its own gives nobody a reason to trust
+ * it, and says nothing when it is wrong.
+ */
+$becauseYouWatched ??= null;
+?>
+<?php if (is_array($becauseYouWatched) && ($becauseYouWatched['videos'] ?? []) !== []): ?>
+  <section aria-labelledby="because-heading" style="margin-bottom:2.5rem">
+    <h2 class="section-title" id="because-heading"><?= e((string) $becauseYouWatched['title']) ?></h2>
+    <div class="video-grid">
+      <?php foreach ($becauseYouWatched['videos'] as $video): ?>
+        <?= $template->partial('video-card', ['video' => $video, 'showDuration' => $showDuration]) ?>
+      <?php endforeach ?>
+    </div>
+  </section>
+<?php endif ?>
+
+<?php
+/*
  * Aimed at /search rather than back at this page. Searching from here used to
  * reload the library with a filter applied, which meant the narrowing controls
  * and the matching series and speakers were unreachable from the one place

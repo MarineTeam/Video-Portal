@@ -78,6 +78,7 @@ final class HomeRowRepository
             // only thing that knows who is asking. An empty list here is the
             // signal for it to fill in.
             HomeRow::CONTINUE => ['Continue watching', null, []],
+            HomeRow::BECAUSE  => ['Because you watched', null, []],
             default           => [
                 'Latest',
                 null,
@@ -90,7 +91,7 @@ final class HomeRowRepository
             return null;
         }
 
-        if ($videos === [] && $row->sourceType !== HomeRow::CONTINUE) {
+        if ($videos === [] && !$row->isPersonal()) {
             return null;
         }
 

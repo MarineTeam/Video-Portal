@@ -482,48 +482,21 @@ final class WatchController extends Controller
             /** @var VideoRepository $videos */
             $videos = $this->container->get(VideoRepository::class);
 
-            $signals = $videos->relatednessSignals($video);
-            if ($signals === []) {
-                return [];
-            }
-
-            $ranked = \Portal\Content\Relatedness::rank($signals);
-            if ($ranked === []) {
-                return [];
-            }
-
-            $user = $this->user();
-            $canWatch = $user !== null && ($user->isAdmin() || $user->authorized);
-
-            $result = $videos->query([
-                'ids'               => $ranked,
-                'includeMemberOnly' => $canWatch,
+            /*
+             * Through Recommendations, which the homepage's "Because you watched"
+             * row uses too — one ranking, so the two cannot drift into
+             * recommending things the other would never list.
+             */
+            $ordered = (new \Portal\Content\Recommendations($this->db(), $videos))->related($video, [
+                'includeMemberOnly' => $this->canWatch(),
                 // A premiere is listed everywhere else on the site, and the
                 // card says so. Hiding it here would make the section disagree
                 // with the series page it sits next to.
                 'includePremieres'  => true,
-            ], 1, \Portal\Content\Relatedness::LIMIT);
+            ]);
 
-            if ($result['items'] === []) {
+            if ($ordered === []) {
                 return [];
-            }
-
-            /*
-             * query() returns its own curated order — pinned first, then the
-             * arrangement an editor chose. That is right for a listing and
-             * wrong here, where the ranking IS the answer. Restored to the
-             * ranked order, with anything the query dropped simply absent.
-             */
-            $byId = [];
-            foreach ($result['items'] as $item) {
-                $byId[$item->id] = $item;
-            }
-
-            $ordered = [];
-            foreach ($ranked as $id) {
-                if (isset($byId[$id])) {
-                    $ordered[] = $byId[$id];
-                }
             }
 
             $presenter = new \Portal\Content\VideoPresenter(
@@ -533,7 +506,7 @@ final class WatchController extends Controller
 
             return $presenter->cards(
                 $ordered,
-                $canWatch,
+                $this->canWatch(),
                 $this->config()->settingBool('members_thumbnail_default', false)
             );
         } catch (Throwable $e) {

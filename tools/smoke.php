@@ -14729,6 +14729,119 @@ check(
     'a 401 tells a crawler that a real token exists at this shape of URL'
 );
 
+echo "\nBecause you watched\n";
+
+/*
+ * Driven as an ordinary MEMBER, not the smoke admin. An administrator's
+ * visibility includes unpublished videos, so the rule that matters most here —
+ * a withdrawn video is never named in a heading — cannot be seen from the admin
+ * account: for them it is not withdrawn.
+ */
+$recNow = date('Y-m-d H:i:s');
+$recSeries = (int) $db->insert('series', [
+    'slug' => 'rec-series', 'title' => 'Recommendation Series', 'is_published' => 1,
+    'member_only' => 0, 'hidden' => 0, 'created_at' => $recNow, 'updated_at' => $recNow,
+]);
+
+$recVideo = static function (string $title) use ($db, $recSeries, $recNow): int {
+    return (int) $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'rec-' . bin2hex(random_bytes(5)),
+        'slug' => 'rec-' . bin2hex(random_bytes(4)), 'title' => $title,
+        'status' => 'ready', 'is_published' => 1, 'member_only' => 0, 'hidden' => 0,
+        'series_id' => $recSeries, 'created_at' => $recNow, 'updated_at' => $recNow,
+    ]);
+};
+
+$recOlder = $recVideo('Older Recommendation Anchor');
+$recNewer = $recVideo('Newer Recommendation Anchor');
+$recVideo('A Recommendation Neighbour');
+
+$recMember = (int) $db->insert('users', [
+    'email' => 'recommend@smoke.test', 'name' => 'Rec Member', 'authorized' => 1,
+    'password_hash' => password_hash('recommend-password-1234', PASSWORD_DEFAULT),
+    'created_at' => $recNow, 'updated_at' => $recNow,
+]);
+
+foreach ([[$recOlder, 3600], [$recNewer, 60]] as [$vid, $ago]) {
+    // Watched to the end, so neither also sits in continue-watching and the
+    // two rows are not arguing over the same cards.
+    $db->insert('watch_progress', [
+        'user_id' => $recMember, 'video_id' => $vid,
+        'position_seconds' => 1800, 'duration_seconds' => 1800,
+        'completed_at' => date('Y-m-d H:i:s', time() - $ago),
+        'updated_at' => date('Y-m-d H:i:s', time() - $ago),
+    ]);
+}
+
+$recJar = sys_get_temp_dir() . '/portal-smoke-rec-' . getmypid() . '.txt';
+@unlink($recJar);
+clearLoginThrottle($db);
+$recLogin = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'recommend@smoke.test',
+    'password' => 'recommend-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $recJar)['body']),
+], $recJar);
+
+check('A member with a history signs in', $recLogin['status'] === 302, "got {$recLogin['status']}");
+
+$recHome = getWithJar($baseUrl . '/', $recJar);
+
+/*
+ * Every assertion about WHAT is recommended reads the row's own markup, never
+ * the whole page: the full library listing further down legitimately contains
+ * every one of these videos, so a page-wide search would pass with no row at
+ * all.
+ */
+$recRow = preg_match('/id="because-heading".*?<\/section>/s', $recHome['body'], $m) === 1 ? $m[0] : '';
+
+check(
+    'Their homepage recommends from what they watched last',
+    $recHome['status'] === 200
+        && str_contains($recRow, 'Because you watched Newer Recommendation Anchor')
+        && str_contains($recRow, 'A Recommendation Neighbour'),
+    "got {$recHome['status']} — no row, or anchored on the wrong watch"
+);
+
+check(
+    'and does not recommend what they already finished',
+    $recRow !== '' && !str_contains($recRow, 'Older Recommendation Anchor'),
+    'A SERMON THEY WATCHED TO THE END WAS RECOMMENDED BACK TO THEM'
+);
+
+check(
+    'A stranger gets no such row',
+    !str_contains(get($baseUrl . '/')['body'], 'because-heading'),
+    'somebody\'s history on a page anyone can load'
+);
+
+/*
+ * THE RULE, over HTTP. The most recent watch is withdrawn; the heading must
+ * fall back to the older one rather than name a video the site has taken down
+ * — and the row must still be there, or "not named" would be indistinguishable
+ * from "the row broke".
+ */
+$db->execute('UPDATE {videos} SET is_published = 0 WHERE id = ?', [$recNewer]);
+
+$recAfter = getWithJar($baseUrl . '/', $recJar)['body'];
+
+check(
+    'A withdrawn video is never the one a recommendation is named after',
+    !str_contains($recAfter, 'Because you watched Newer Recommendation Anchor')
+        && str_contains($recAfter, 'Because you watched Older Recommendation Anchor'),
+    'A WITHDRAWN TITLE IN A HOMEPAGE HEADING — or the row vanished instead of falling back'
+);
+
+$db->execute('UPDATE {videos} SET is_published = 1 WHERE id = ?', [$recNewer]);
+
+/* And an editor can place it as a row of its own. */
+check(
+    'The homepage builder offers it as a row',
+    str_contains(getWithJar($baseUrl . '/admin/homepage', $jar)['body'], 'value="because"'),
+    'a row type nobody can choose'
+);
+
+@unlink($recJar);
+
 echo "\nTelevision\n";
 
 /*
