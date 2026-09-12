@@ -14729,6 +14729,127 @@ check(
     'a 401 tells a crawler that a real token exists at this shape of URL'
 );
 
+echo "\nEpisodes of a public series\n";
+
+/*
+ * A PUBLIC series holding one members-only episode and one scheduled for next
+ * week. The mirror of the leak fixed with the television catalogue — that was a
+ * public video inside a members-only series; this is a members-only video
+ * inside a public one — and it was read out of VideoRepository::forSeries(),
+ * which filters publication and hidden but not members-only, the schedule
+ * window, or group audiences.
+ *
+ * Asked as a STRANGER on every public surface that lists a series: the page,
+ * the RSS feed and the podcast feed. An ordinary public episode is asserted
+ * PRESENT on each, so an absence cannot be satisfied by an empty or broken page.
+ */
+$epNow = date('Y-m-d H:i:s');
+$epSeries = (int) $db->insert('series', [
+    'slug' => 'public-episodes', 'title' => 'Public Episodes Series', 'is_published' => 1,
+    'member_only' => 0, 'hidden' => 0, 'created_at' => $epNow, 'updated_at' => $epNow,
+]);
+
+$epVideo = static function (string $title, array $extra) use ($db, $epSeries, $epNow): int {
+    return (int) $db->insert('videos', $extra + [
+        'provider' => 'bunny', 'provider_id' => 'ep-' . bin2hex(random_bytes(5)),
+        'slug' => 'ep-' . bin2hex(random_bytes(4)), 'title' => $title,
+        'status' => 'ready', 'is_published' => 1, 'member_only' => 0, 'hidden' => 0,
+        'series_id' => $epSeries, 'created_at' => $epNow, 'updated_at' => $epNow,
+    ]);
+};
+
+$epVideo('Ordinary Public Episode', ['series_position' => 1]);
+$epVideo('Members Only Episode Title', ['series_position' => 2, 'member_only' => 1]);
+$epVideo('Next Week Episode Title', [
+    'series_position' => 3,
+    'published_at' => date('Y-m-d H:i:s', time() + 7 * 86400),
+]);
+
+foreach ([
+    'The public series page' => '/series/public-episodes',
+    'The series RSS feed'    => '/feed/series/public-episodes',
+    'The series podcast feed' => '/podcast/series/public-episodes',
+] as $surface => $path) {
+    $answer = get($baseUrl . $path);
+
+    check(
+        "{$surface} lists its public episodes",
+        $answer['status'] === 200 && str_contains($answer['body'], 'Ordinary Public Episode'),
+        "got {$answer['status']} — the checks below would prove nothing"
+    );
+
+    check(
+        "and not a members-only episode",
+        !str_contains($answer['body'], 'Members Only Episode Title'),
+        'A MEMBERS-ONLY TITLE ON A PUBLIC SURFACE — the title is a leak too'
+    );
+
+    check(
+        "and not one scheduled for next week",
+        !str_contains($answer['body'], 'Next Week Episode Title'),
+        'AN UNRELEASED EPISODE LISTED EARLY'
+    );
+}
+
+/*
+ * A PUBLIC PLAYLIST, whose own query filtered members-only and future dates on
+ * the video — and not hidden, not an expired unpublish date, not a
+ * members-only SERIES, not group audiences. Each of those is placed on it here
+ * next to an ordinary video that must still be listed.
+ */
+$plNow = date('Y-m-d H:i:s');
+$plSeries = (int) $db->insert('series', [
+    'slug' => 'pl-members-series', 'title' => 'Playlist Members Series', 'is_published' => 1,
+    'member_only' => 1, 'hidden' => 0, 'created_at' => $plNow, 'updated_at' => $plNow,
+]);
+$plId = (int) $db->insert('playlists', [
+    'slug' => 'public-mix', 'title' => 'Public Mix', 'is_published' => 1,
+    'member_only' => 0, 'hidden' => 0, 'created_at' => $plNow, 'updated_at' => $plNow,
+]);
+
+$plPosition = 0;
+foreach ([
+    'Ordinary Playlist Entry'        => [],
+    'Hidden Playlist Entry'          => ['hidden' => 1],
+    'Expired Playlist Entry'         => ['unpublish_at' => date('Y-m-d H:i:s', time() - 86400)],
+    'In A Members Series Entry'      => ['series_id' => $plSeries],
+] as $title => $extra) {
+    $vid = (int) $db->insert('videos', $extra + [
+        'provider' => 'bunny', 'provider_id' => 'pl-' . bin2hex(random_bytes(5)),
+        'slug' => 'pl-' . bin2hex(random_bytes(4)), 'title' => $title,
+        'status' => 'ready', 'is_published' => 1, 'member_only' => 0, 'hidden' => 0,
+        'created_at' => $plNow, 'updated_at' => $plNow,
+    ]);
+    $db->insert('playlist_items', [
+        'playlist_id' => $plId, 'video_id' => $vid, 'position' => $plPosition++, 'created_at' => $plNow,
+    ]);
+}
+
+foreach ([
+    'The public playlist page' => '/playlist/public-mix',
+    'The playlist RSS feed'    => '/feed/playlist/public-mix',
+] as $surface => $path) {
+    $answer = get($baseUrl . $path);
+
+    check(
+        "{$surface} lists its ordinary entries",
+        $answer['status'] === 200 && str_contains($answer['body'], 'Ordinary Playlist Entry'),
+        "got {$answer['status']} — the checks below would prove nothing"
+    );
+
+    foreach ([
+        'Hidden Playlist Entry'     => 'a hidden video',
+        'Expired Playlist Entry'    => 'one whose run has ended',
+        'In A Members Series Entry' => 'one inside a members-only series',
+    ] as $title => $what) {
+        check(
+            "and not {$what}",
+            !str_contains($answer['body'], $title),
+            'A WITHHELD TITLE ON A PUBLIC PLAYLIST — the title is a leak too'
+        );
+    }
+}
+
 echo "\nBecause you watched\n";
 
 /*

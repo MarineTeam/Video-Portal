@@ -625,7 +625,13 @@ final class WatchController extends Controller
              * hidden from them is skipped rather than becoming a wall they can
              * never get past.
              */
-            $episodes = $this->container->get(VideoRepository::class)->forSeries($series->id);
+            $episodes = $this->container->get(VideoRepository::class)->seriesEpisodes($series->id, [
+                'includeMemberOnly' => $this->canWatch(),
+                'audienceGroupIds'  => $this->viewerGroupIds(),
+                // A premiere is an episode the course is waiting on, so it still
+                // holds the next one back — as it did before this was filtered.
+                'includePremieres'  => true,
+            ]);
             $order = array_map(static fn ($v): int => $v->id, $episodes);
 
             $completed = $this->completedIn($user->id, $order);

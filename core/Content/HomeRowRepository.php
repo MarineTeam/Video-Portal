@@ -72,7 +72,7 @@ final class HomeRowRepository
                 $this->videos->query($filters + ['featured' => true], 1, $limit)['items'],
             ],
             HomeRow::CATEGORY => $this->fromCategory($row, $filters, $limit),
-            HomeRow::SERIES   => $this->fromSeries($row, $limit),
+            HomeRow::SERIES   => $this->fromSeries($row, $filters, $limit),
             HomeRow::PLAYLIST => $this->fromPlaylist($row, $filters, $limit),
             // Continue-watching is assembled by the controller, which is the
             // only thing that knows who is asking. An empty list here is the
@@ -123,7 +123,7 @@ final class HomeRowRepository
     }
 
     /** @return array{0: ?string, 1: ?string, 2: list<Video>} */
-    private function fromSeries(HomeRow $row, int $limit): array
+    private function fromSeries(HomeRow $row, array $filters, int $limit): array
     {
         $series = $row->sourceId === null ? null : $this->series->find($row->sourceId);
         if ($series === null) {
@@ -132,7 +132,14 @@ final class HomeRowRepository
 
         // In running order, which is the whole reason to put a series on a
         // homepage rather than letting its episodes appear under "latest".
-        return [$series->title, $series->url(), array_slice($this->videos->forSeries($series->id), 0, $limit)];
+        /*
+         * With the page's filters, like every other row. forSeries() put a
+         * members-only episode's title on the public homepage. A series whose
+         * episodes are all hidden from this viewer resolves to an empty row,
+         * which the caller drops — so a members-only series does not even show
+         * its heading to a stranger.
+         */
+        return [$series->title, $series->url(), array_slice($this->videos->seriesEpisodes($series->id, $filters), 0, $limit)];
     }
 
     /**
@@ -146,11 +153,9 @@ final class HomeRowRepository
             return [null, null, []];
         }
 
-        $videos = $this->playlists->videos(
-            $playlist->id,
-            !empty($filters['includeUnpublished']),
-            !empty($filters['includeMemberOnly'])
-        );
+        // The page's own filters, whole — not two of them passed on as booleans,
+        // which is how hidden videos and group restrictions got left behind.
+        $videos = $this->videos->visibleInOrder($this->playlists->videoIds($playlist->id), $filters);
 
         return [$playlist->title, $playlist->url(), array_slice($videos, 0, $limit)];
     }

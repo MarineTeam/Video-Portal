@@ -153,7 +153,14 @@ final class FeedController extends Controller
                 return [
                     $series->title,
                     (string) ($series->description ?? ''),
-                    $this->videos()->forSeries($series->id),
+                    /*
+                     * seriesEpisodes() with the PUBLIC filter set, not forSeries(),
+                     * which listed members-only and unreleased episodes to every
+                     * podcast client — title, description and an enclosure. No
+                     * premieres either: an episode announced in a feed before it
+                     * can be downloaded is one every client reports as broken.
+                     */
+                    $this->videos()->seriesEpisodes($series->id, $filters),
                 ];
 
             case 'playlist':
@@ -167,7 +174,8 @@ final class FeedController extends Controller
                 return [
                     $playlist->title,
                     (string) ($playlist->description ?? ''),
-                    $playlists->videos($playlist->id),
+                    // The public filter set, like the series feed above.
+                    $this->videos()->visibleInOrder($playlists->videoIds($playlist->id), $filters),
                 ];
 
             default:

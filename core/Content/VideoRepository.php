@@ -451,7 +451,94 @@ final class VideoRepository
     }
 
     /**
-     * Videos in a series, in series order.
+     * The episodes of a series that THIS viewer may see, in running order.
+     *
+     * # WHY THIS EXISTS BESIDE forSeries()
+     *
+     * forSeries() filters publication and hidden, and nothing else. It does not
+     * know about members-only, the schedule window or group audiences — and it
+     * fed the public series page, the series RSS and podcast feeds, the series
+     * homepage row and the sequential-unlock order. So a stranger opening a
+     * public series saw the TITLE of every members-only episode in it, and a
+     * podcast client was handed next week's sermon with an enclosure. Proved by
+     * a smoke run against the unfixed code before anything here was written.
+     *
+     * The rules are not repeated here. The running order comes from the series
+     * and the visibility comes from query(), which owns every rule about what a
+     * given viewer may see — two places deciding visibility is one place that
+     * will eventually disagree, which is exactly what forSeries() had become.
+     *
+     * forSeries() stays for the admin screen, which wants every episode.
+     *
+     * @param array<string, mixed> $filters the caller's visibility filters
+     * @return list<Video>
+     */
+    public function seriesEpisodes(int $seriesId, array $filters): array
+    {
+        $order = array_map('intval', $this->db->column(
+            'SELECT id FROM {videos}
+              WHERE series_id = ? AND deleted_at IS NULL
+              ORDER BY series_position ASC, id ASC',
+            [$seriesId]
+        ));
+
+        return $this->visibleInOrder($order, $filters);
+    }
+
+    /**
+     * These videos, in THIS order, keeping only what the viewer may see.
+     *
+     * The shape every hand-arranged list has — a series' running order, a
+     * playlist's arrangement — and the reason those lists leaked: each wrote its
+     * own WHERE clause for "what may be listed", and each one forgot something.
+     * forSeries() forgot members-only and the schedule; the playlist query forgot
+     * hidden, an ended run, a members-only series and group audiences. Here the
+     * order comes from the caller and every visibility rule comes from query(),
+     * so there is nothing left for a list to forget.
+     *
+     * @param list<int>            $ids     in the order to return them
+     * @param array<string, mixed> $filters the caller's visibility filters
+     * @return list<Video>
+     */
+    public function visibleInOrder(array $ids, array $filters): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
+
+        if ($ids === []) {
+            return [];
+        }
+
+        $visible = [];
+
+        /*
+         * In batches of the most query() returns in one page. A single call would
+         * silently cut a long list at its hundredth entry — and a teaching series
+         * that runs a hundred and twenty weeks is not unusual.
+         */
+        foreach (array_chunk($ids, 100) as $chunk) {
+            foreach ($this->query(['ids' => $chunk] + $filters, 1, 100)['items'] as $video) {
+                $visible[$video->id] = $video;
+            }
+        }
+
+        // Back into the caller's order: query() sorts by pinned and featured,
+        // and a pinned episode three must not jump to the front of a series.
+        $out = [];
+        foreach ($ids as $id) {
+            if (isset($visible[$id])) {
+                $out[] = $visible[$id];
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Every video in a series, in series order — for the ADMIN screen.
+     *
+     * Not for anything a viewer sees: it knows nothing about members-only, the
+     * schedule or group audiences. Use seriesEpisodes() with the viewer's
+     * filters for that.
      *
      * @return list<Video>
      */

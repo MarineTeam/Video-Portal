@@ -326,10 +326,13 @@ final class LibraryController extends Controller
             throw HttpException::notFound('There is no series at that address.');
         }
 
-        $videos = $this->videos()->forSeries(
-            $series->id,
-            $this->guard()->can(Capability::MANAGE_VIDEOS)
-        );
+        /*
+         * The episodes THIS viewer may see — through the same filters as every
+         * other listing, so a stranger on a public series no longer sees the
+         * titles of its members-only and unreleased episodes. An editor still
+         * sees everything, because visibilityFilters() says so for them.
+         */
+        $videos = $this->videos()->seriesEpisodes($series->id, $this->visibilityFilters([]));
 
         return $this->view(
             $this->themeManager()->loader()->hierarchy('series', ['slug' => $series->slug]),
@@ -554,10 +557,15 @@ final class LibraryController extends Controller
             throw HttpException::notFound('There is no playlist at that address.');
         }
 
-        $videos = $repo->videos(
-            $playlist->id,
-            $this->guard()->can(Capability::MANAGE_VIDEOS),
-            $this->canWatch()
+        /*
+         * The arrangement from the playlist, the visibility from the same filters
+         * every listing uses. The playlist's own query listed hidden videos,
+         * ended runs, members-only-series episodes and group-restricted videos
+         * on a public playlist.
+         */
+        $videos = $this->videos()->visibleInOrder(
+            $repo->videoIds($playlist->id),
+            $this->visibilityFilters([])
         );
 
         return $this->view(

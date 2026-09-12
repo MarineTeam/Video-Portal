@@ -65,12 +65,38 @@ final class PlaylistRepository
     }
 
     /**
-     * The videos in one playlist, in the order somebody arranged.
+     * The videos on a playlist, as ids in its arranged order — and nothing about
+     * who may see them.
      *
-     * Visibility is applied here rather than left to the caller. A playlist is
-     * a hand-made list, so it is exactly the place an unpublished or
-     * members-only video would be quietly included and then rendered to
-     * everybody.
+     * Deliberately only the ORDER. Visibility is VideoRepository::visibleInOrder()
+     * with the viewer's filters, because the query this replaced decided
+     * visibility itself and got it wrong in four ways: hidden videos, videos
+     * whose run had ended, videos in a members-only series, and group
+     * restrictions were all listed on public playlists and in their feeds.
+     *
+     * @return list<int>
+     */
+    public function videoIds(int $playlistId): array
+    {
+        return array_map('intval', $this->db->column(
+            'SELECT pi.video_id FROM {playlist_items} pi
+               JOIN {videos} v ON v.id = pi.video_id
+              WHERE pi.playlist_id = ? AND v.deleted_at IS NULL
+              ORDER BY pi.position, pi.video_id',
+            [$playlistId]
+        ));
+    }
+
+    /**
+     * Every video on a playlist, in its arranged order — for the ADMIN screen.
+     *
+     * Its docblock used to say "visibility is applied here rather than left to
+     * the caller", and the claim was the problem: it applied publication, the
+     * start of the schedule and members-only on the video, and nothing else, so
+     * the public page and feed that trusted it listed hidden videos, ended runs,
+     * members-only-series episodes and group-restricted videos. Anything a
+     * viewer sees now goes through videoIds() and
+     * VideoRepository::visibleInOrder() instead.
      *
      * @return list<Video>
      */
