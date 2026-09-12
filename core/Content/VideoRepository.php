@@ -192,6 +192,34 @@ final class VideoRepository
         }
         if (empty($filters['includeMemberOnly'])) {
             $conditions[] = 'v.member_only = 0';
+
+            /*
+             * AND ITS SERIES, which was stored and enforced nowhere.
+             *
+             * `series.member_only` has existed since Phase 1. The series PAGE
+             * has always refused a stranger — LibraryController checks
+             * Series::isVisible() — but nothing ever hid its EPISODES, so a
+             * series marked members-only listed every one of its videos to
+             * anybody, with title and artwork, on the home page and in search.
+             *
+             * Watching was never open: /watch needs an approved account either
+             * way. What leaked was the title, and this project's own rule says
+             * plainly that a members-only item is absent from public listings,
+             * feeds, sitemaps and metadata — the title is a leak too.
+             *
+             * Found while building the television catalogue feed, whose stated
+             * requirement is to filter members-only on the video AND its
+             * series. Fixed HERE rather than in the feed: a feed with a
+             * stricter rule than the listing is two implementations of one
+             * visibility decision, and the one that drifts leaves a title on a
+             * public page.
+             *
+             * A NOT EXISTS rather than a term on the series join, because that
+             * join is only present in the search branch — a condition that
+             * referenced `se` would be a fatal on every other query.
+             */
+            $conditions[] = 'NOT EXISTS (SELECT 1 FROM {series} sm
+                                          WHERE sm.id = v.series_id AND sm.member_only = 1)';
         }
 
         /*
@@ -891,6 +919,22 @@ final class VideoRepository
 
         if (array_key_exists('description', $attributes)) {
             $fields['description'] = $attributes['description'];
+        }
+
+        /*
+         * What language this sermon is IN, which is not what language the
+         * interface is in — see Portal\I18n\ContentLanguage.
+         *
+         * Normalised through Locale, so `EN_gb` becomes `en-GB` and anything
+         * that is not a language tag becomes NULL rather than being stored.
+         * NULL is a real answer here and the right one for rubbish: it means
+         * "nobody has said", which falls through to the series and then the
+         * site — where storing a broken tag would make every listing that
+         * filters on language quietly disagree with itself.
+         */
+        if (array_key_exists('language', $attributes)) {
+            $tag = \Portal\I18n\Locale::normalise((string) $attributes['language']);
+            $fields['language'] = $tag === '' ? null : $tag;
         }
 
         /*

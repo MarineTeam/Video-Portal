@@ -64,4 +64,94 @@ echo $template->partial('header', get_defined_vars());
   <p class="page-subtitle" style="max-width:44rem"><?= nl2br(e((string) $stream['description'])) ?></p>
 <?php endif ?>
 
+<?php
+/*
+ * The chat.
+ *
+ * THE MESSAGES ARE RENDERED HERE, SERVER-SIDE, and the script then takes over
+ * appending to them. Not because a no-script chat is a good chat — it is a page
+ * you have to reload — but because two things genuinely must not depend on a
+ * script loading:
+ *
+ *   READING. Somebody arriving at a finished stream is reading a transcript,
+ *   which is ordinary content and should be in the HTML.
+ *
+ *   MODERATING. The hide and mute controls below are real forms with real
+ *   tokens, so the one action you need most on the evening something is
+ *   misbehaving is the one that does not need the thing that is misbehaving.
+ *   This is the same reasoning as the admin navigation opening on a checkbox.
+ */
+?>
+<?php if (($chatState ?? '') !== ''): ?>
+  <section class="chat"
+           data-chat="/live/<?= e((string) $stream['slug']) ?>/chat"
+           data-token="<?= e((string) ($chatToken ?? '')) ?>"
+           data-cursor="<?= (int) ($chatCursor ?? 0) ?>"
+           data-moderate="<?= !empty($chatCanModerate) ? '1' : '0' ?>">
+
+    <h2>Chat</h2>
+
+    <div class="chat-log" data-chat-log>
+      <?php foreach (($chatMessages ?? []) as $message): ?>
+        <div class="chat-message<?= !empty($message['mine']) ? ' chat-mine' : '' ?>"
+             data-message="<?= (int) $message['id'] ?>">
+          <span class="chat-author"><?= e((string) $message['author']) ?></span>
+          <span class="chat-body"><?= e((string) $message['body']) ?></span>
+
+          <?php if (!empty($chatCanModerate) && empty($message['mine'])): ?>
+            <form method="post" action="/live/<?= e((string) $stream['slug']) ?>/chat/moderate"
+                  class="chat-moderate">
+              <input type="hidden" name="_token" value="<?= e((string) ($chatToken ?? '')) ?>">
+              <input type="hidden" name="message" value="<?= (int) $message['id'] ?>">
+              <input type="hidden" name="_plain" value="1">
+              <button name="action" value="hide" class="chat-hide">hide</button>
+              <button name="action" value="mute" class="chat-mute">mute</button>
+            </form>
+          <?php endif ?>
+        </div>
+      <?php endforeach ?>
+
+      <?php if (($chatMessages ?? []) === []): ?>
+        <p class="muted">Nothing said yet.</p>
+      <?php endif ?>
+    </div>
+
+    <p class="chat-notice" data-chat-notice><?= e((string) ($chatClosed ?? '')) ?></p>
+
+    <?php if (($chatState ?? '') === 'open' && !empty($chatMayPost)): ?>
+      <form method="post" action="/live/<?= e((string) $stream['slug']) ?>/chat" data-chat-form>
+        <input type="hidden" name="_token" value="<?= e((string) ($chatToken ?? '')) ?>">
+        <?php
+        /*
+         * `_plain` marks a submission the BROWSER made, because the script
+         * builds its own body from two fields and never sends it. Its presence
+         * is what tells the controller to answer with a redirect and a flash
+         * instead of a screenful of JSON — see LiveChatController::answer().
+         */
+        ?>
+        <input type="hidden" name="_plain" value="1">
+        <?php
+        /*
+         * aria-label rather than a visually-hidden <label>. This theme has no
+         * class for one, and a placeholder is not a label: it disappears the
+         * moment somebody types, so a screen reader arriving at a half-filled
+         * box would have nothing to announce.
+         */
+        ?>
+        <input type="text" name="body" maxlength="500" autocomplete="off"
+               aria-label="Message" placeholder="Say something" data-chat-input>
+        <button class="btn">Send</button>
+      </form>
+    <?php elseif (($chatState ?? '') !== 'open'): ?>
+      <p class="muted small"><?= e((string) ($chatClosed ?? '')) ?></p>
+    <?php else: ?>
+      <p class="muted small"><a href="/auth/login">Sign in</a> to join the chat.</p>
+    <?php endif ?>
+  </section>
+
+  <script src="<?= e(isset($themeAsset)
+      ? $themeAsset('live-chat.js')
+      : ($assetsUrl ?? '/theme-asset/default') . '/live-chat.js') ?>" defer></script>
+<?php endif ?>
+
 <?= $template->partial('footer', get_defined_vars()) ?>

@@ -174,15 +174,97 @@ final class ReaderController extends Controller
 
         $page = max(1, (int) ($request->input('page') ?? 1));
 
+        /*
+         * An EPUB sends its own percentage, because nothing here could work one
+         * out: its position is a CFI, an opaque pointer into a document that
+         * reflows, and there is no page count to divide by. A PDF sends none
+         * and the page is enough.
+         */
+        $percent = $request->input('percent') !== null
+            ? (int) $request->input('percent')
+            : Locator::percent($page, (int) $book['page_count']);
+
         $this->books()->savePosition(
             (int) $book['id'],
             $user->id,
             $page,
-            Locator::percent($page, (int) $book['page_count']),
+            $percent,
             (string) ($request->input('cfi') ?? '')
         );
 
         return Response::json(['saved' => true]);
+    }
+
+    /**
+     * A bookmark, a highlight or a note.
+     *
+     * NEEDS AN ACCOUNT, unlike reading. A mark belongs to somebody, and there
+     * is nowhere to put one for a visitor with no account — so this refuses
+     * rather than inventing an owner, and the reader hides the controls.
+     *
+     * @param array<string, string> $params
+     */
+    public function addMark(Request $request, array $params): Response
+    {
+        $this->verifyCsrf($request);
+
+        $book = $this->visibleBook((string) ($params['slug'] ?? ''));
+        $user = $this->user();
+
+        if ($user === null) {
+            throw HttpException::forbidden('Marks need an account.');
+        }
+
+        /*
+         * A HIGHLIGHT IS PDF-ONLY, and it is refused here rather than only
+         * hidden in the theme. An EPUB is rendered inside an iframe its own
+         * renderer owns, so there is no selection this application can see and
+         * nothing to anchor to — a mark stored anyway would be one that could
+         * never be drawn again.
+         */
+        $kind = (string) ($request->input('kind') ?? 'bookmark');
+
+        if ($kind === 'highlight' && (string) $book['kind'] !== BookRepository::PDF) {
+            throw HttpException::badRequest(
+                'Highlighting only works in a PDF — an EPUB\'s text belongs to its own reader.'
+            );
+        }
+
+        $id = $this->books()->addMark((int) $book['id'], $user->id, [
+            'kind'     => $kind,
+            'pdf_page' => (int) ($request->input('page') ?? 1),
+            'anchor'   => (string) ($request->input('anchor') ?? ''),
+            'quote'    => (string) ($request->input('quote') ?? ''),
+            'body'     => (string) ($request->input('body') ?? ''),
+            'colour'   => (string) ($request->input('colour') ?? ''),
+        ]);
+
+        return Response::json(['id' => $id])->private();
+    }
+
+    /**
+     * Take one off.
+     *
+     * The signed-in person goes into the WHERE clause rather than being
+     * checked here — ids are sequential, and a delete taking only an id would
+     * let anybody destroy a stranger's notes by counting.
+     *
+     * @param array<string, string> $params
+     */
+    public function removeMark(Request $request, array $params): Response
+    {
+        $this->verifyCsrf($request);
+
+        $this->visibleBook((string) ($params['slug'] ?? ''));
+        $user = $this->user();
+
+        if ($user === null) {
+            throw HttpException::forbidden('Marks need an account.');
+        }
+
+        $this->books()->removeMark((int) ($request->input('mark') ?? 0), $user->id);
+
+        return Response::json(['removed' => true])->private();
     }
 
     /**

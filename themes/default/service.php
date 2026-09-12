@@ -49,6 +49,24 @@ echo $template->partial('header', get_defined_vars());
     <section aria-labelledby="order-heading">
       <h2 class="section-title" id="order-heading">The order</h2>
 
+      <?php
+      /*
+       * The way into present mode, and the only one.
+       *
+       * Shown only when there IS an order, because presenting an empty service
+       * is a black screen with "Nothing in the order yet" on the wall — and
+       * offered here rather than on a menu, since the person who opens it is
+       * standing at the front with this page already up.
+       *
+       * no-print: it is a button, and this page's other job is to be the sheet
+       * somebody holds on a Sunday morning.
+       */
+      ?>
+      <p class="no-print">
+        <a href="/services/<?= (int) ($service['id'] ?? 0) ?>/present">Show this on a screen</a>
+        <span class="muted small">— full screen, one line at a time. The notes stay here.</span>
+      </p>
+
       <ol class="service-order">
         <?php foreach ($plan as $item): ?>
           <li>

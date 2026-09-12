@@ -1093,6 +1093,12 @@ final class AdminView
             default                 => '<span class="pill ok">Published</span>',
         };
 
+        $languageOptions = $this->languageSelect(
+            (string) ($video->language ?? ''),
+            (array) ($data['locales'] ?? []),
+            'Not set — ask the series, then the site'
+        );
+
         return <<<HTML
         <p class="muted small"><a href="/admin/videos">&larr; All videos</a></p>
         <h1>{$title} {$published}</h1>
@@ -1115,6 +1121,11 @@ final class AdminView
                 <legend>Details</legend>
                 <label>Title <input type="text" name="title" value="{$title}" required></label>
                 <label>Description <textarea name="description" rows="5">{$description}</textarea></label>
+                <label>Spoken language <select name="language">{$languageOptions}</select></label>
+                <p class="muted small">What language the sermon is IN — not the language of this
+                   site's menus. The two are separate on purpose: somebody reading the site in
+                   Spanish watching an English sermon, and the reverse, are both ordinary. Left
+                   unset, the series answers, and then the site.</p>
               </fieldset>
 
               <fieldset>
@@ -2151,6 +2162,12 @@ final class AdminView
                 . '<a href="/admin/permissions">Create one</a> to restrict this to particular people.</p>';
         }
 
+        $seriesLanguageOptions = $this->languageSelect(
+            (string) ($series->language ?? ''),
+            (array) ($data['locales'] ?? []),
+            'Not set — ask the site'
+        );
+
         return <<<HTML
         <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
         <h1>{$title}</h1>
@@ -2167,6 +2184,10 @@ final class AdminView
                 <p class="muted small">Changing this keeps the old address working.</p>
                 <label>Category <select name="category_id">{$categoryOptions}</select></label>
                 <label>Description <textarea name="description" rows="4">{$description}</textarea></label>
+                <label>Spoken language <select name="language">{$seriesLanguageOptions}</select></label>
+                <p class="muted small">Applies to every video in the series that does not say
+                   otherwise. Not the language of this site's menus — the two are separate
+                   questions on purpose.</p>
               </fieldset>
 
               <fieldset>
@@ -2811,6 +2832,8 @@ final class AdminView
 
         {$rows}
 
+        {$this->liveChatSettings($data, $token)}
+
         <h2>Add a stream</h2>
         <form method="post">
           <input type="hidden" name="_token" value="{$token}">
@@ -2838,6 +2861,95 @@ final class AdminView
     }
 
     /** @param array<string, mixed> $stream */
+    /**
+     * The one chat setting, on the Live screen rather than in Settings.
+     *
+     * It is next to the thing it affects, which is the whole argument: somebody
+     * who has just watched a room scroll past too fast is on this page, and
+     * sending them to a general settings screen to find a slow-mode box is how
+     * a setting goes unused. General Settings holds the things that are about
+     * the whole site; this is about a stream's chat.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function liveChatSettings(array $data, string $token): string
+    {
+        $seconds = (int) ($data['chatSlowSeconds'] ?? \Portal\Live\SlowMode::DEFAULT_SECONDS);
+        $max = \Portal\Live\SlowMode::MAX_SECONDS;
+        $before = \Portal\Live\ChatWindow::OPENS_MINUTES_BEFORE;
+        $after = \Portal\Live\ChatWindow::CLOSES_MINUTES_AFTER;
+
+        return <<<HTML
+        <h2>Chat</h2>
+
+        <p class="muted small">Every stream gets a chat. It opens {$before} minutes before the stream
+           starts and closes {$after} minutes after it ends — so people can gather beforehand, and the
+           conversation a service produces is not cut off mid-sentence. A room that stayed open
+           indefinitely would be one nobody is watching, which is exactly where the message somebody
+           should have removed sits unremoved.</p>
+
+        <p class="muted small">Anyone signed in can read and post. Nobody can post without an account,
+           because a room where nobody can be asked to stop is one a moderator cannot moderate.</p>
+
+        <form method="post">
+          <input type="hidden" name="_token" value="{$token}">
+          <label>Slow mode
+            <input type="number" name="chat_slow_seconds" value="{$seconds}" min="0" max="{$max}">
+          </label>
+          <p class="muted small">Seconds between one person's messages. <strong>Per person, not per
+             room</strong> — so it throttles somebody typing continuously and is invisible to two
+             people having a conversation. A per-room limit would mean the fastest typist holds the
+             floor, and it would get worse the more people arrived. 0 turns it off; {$max} is the most
+             it will accept, because a longer wait is a closed room with a Send button.</p>
+          <button class="btn" name="action" value="chat">Save</button>
+        </form>
+        HTML;
+    }
+
+    /**
+     * The "what language is this in" select.
+     *
+     * One method for both the video and the series form, so the two cannot
+     * drift into offering different lists.
+     *
+     * "Not set" is the first option and the default, and it is a REAL VALUE
+     * rather than a prompt: it means "ask the series, then the site", which is
+     * what almost every row should say. A form defaulting to the site's
+     * language would assert something about every video anybody opened for any
+     * other reason.
+     *
+     * @param list<string> $available the locales this site has catalogues for
+     */
+    private function languageSelect(string $current, array $available, string $inheritLabel): string
+    {
+        $options = sprintf('<option value="">%s</option>', e($inheritLabel));
+
+        /*
+         * The site's catalogue languages, PLUS whatever this row already says.
+         *
+         * The second half matters and is easy to leave out: a video labelled
+         * Tamil on a site with English and Spanish catalogues must not lose its
+         * label because somebody opened the edit screen. The languages the
+         * INTERFACE is available in and the languages sermons are preached in
+         * are different lists — which is the whole point of this field.
+         */
+        $tags = $available;
+
+        if ($current !== '' && !in_array($current, $tags, true)) {
+            $tags[] = $current;
+        }
+
+        foreach ($tags as $tag) {
+            $options .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e((string) $tag),
+                (string) $tag === $current ? ' selected' : '',
+                e(\Portal\I18n\ContentLanguage::name((string) $tag))
+            );
+        }
+
+        return $options;
+    }
     private function liveRow(array $stream, string $token, string $videoOptions): string
     {
         $id = (int) $stream['id'];
@@ -2885,6 +2997,7 @@ final class AdminView
             : '<button name="action" value="resume" class="btn tiny">Put it back on</button>';
 
         $url = e((string) $stream['url']);
+        $chat = $this->liveChat($stream, $token);
 
         return <<<HTML
         <div class="panel">
@@ -2915,8 +3028,126 @@ final class AdminView
                       onclick="return confirm('Remove this stream?')">Remove</button>
             </div>
           </form>
+          {$chat}
         </div>
         HTML;
+    }
+
+    /**
+     * What moderation happened in this stream's chat.
+     *
+     * On the stream's own row rather than on a screen of its own, for the
+     * reason the webhook history is beside its endpoints and the access note is
+     * beside the person: the question somebody arrives with is "what happened
+     * in that service", and the answer is a mute list and a set of takedowns.
+     * Split across two screens, one of them goes unread — and the one that goes
+     * unread is the mute list, which is the one still affecting somebody next
+     * week.
+     *
+     * This screen is where a mute is UNDONE. The live page can mute somebody in
+     * one click and has no list, deliberately: a moderator mid-service should
+     * not be scrolling a roster. So without this panel a mute would be
+     * one-directional, which is the shape of decision people are afraid to
+     * make quickly.
+     *
+     * @param array<string, mixed> $stream
+     */
+    private function liveChat(array $stream, string $token): string
+    {
+        $id = (int) $stream['id'];
+        $slug = e((string) ($stream['slug'] ?? ''));
+
+        $mutes = (array) ($stream['mutes'] ?? []);
+        $hidden = array_filter(
+            (array) ($stream['chat'] ?? []),
+            static fn (array $row): bool => ($row['hidden_at'] ?? null) !== null
+        );
+
+        if ($mutes === [] && $hidden === []) {
+            // Nothing to show rather than two empty headings. A panel that says
+            // "no mutes, no hidden messages" on every stream ever run is a
+            // panel people learn to skip, and this one has to be noticed on the
+            // week it is not empty.
+            return '';
+        }
+
+        $muteRows = '';
+        foreach ($mutes as $mute) {
+            $who = trim((string) ($mute['name'] ?? '')) !== ''
+                ? (string) $mute['name']
+                : (string) ($mute['email'] ?? ('user ' . (int) $mute['user_id']));
+
+            $muteRows .= sprintf(
+                '<tr>
+                   <td>%s<div class="muted small">%s</div></td>
+                   <td class="muted small">%s%s</td>
+                   <td class="right">
+                     <form method="post" action="/live/%s/chat/moderate" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="user" value="%d">
+                       <input type="hidden" name="_plain" value="1">
+                       <button name="action" value="unmute" class="btn tiny secondary">Let them post</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e($who),
+                e((string) ($mute['email'] ?? '')),
+                e((string) ($mute['created_at'] ?? '')),
+                ($mute['reason'] ?? null) !== null
+                    ? '<br>' . e((string) $mute['reason'])
+                    : '',
+                $slug,
+                $token,
+                (int) $mute['user_id']
+            );
+        }
+
+        $hiddenRows = '';
+        foreach ($hidden as $message) {
+            $hiddenRows .= sprintf(
+                '<tr>
+                   <td><strong>%s</strong><div>%s</div></td>
+                   <td class="muted small">hidden %s<br>by %s</td>
+                   <td class="right">
+                     <form method="post" action="/live/%s/chat/moderate" class="inline">
+                       <input type="hidden" name="_token" value="%s">
+                       <input type="hidden" name="message" value="%d">
+                       <input type="hidden" name="_plain" value="1">
+                       <button name="action" value="show" class="btn tiny secondary">Put it back</button>
+                     </form>
+                   </td>
+                 </tr>',
+                e((string) $message['author']),
+                e((string) $message['body']),
+                e((string) $message['hidden_at']),
+                e((string) ($message['hidden_by'] ?? 'somebody')),
+                $slug,
+                $token,
+                (int) $message['id']
+            );
+        }
+
+        $muteSection = $muteRows === ''
+            ? ''
+            : '<h4>Cannot post in this stream</h4>'
+              . '<p class="muted small">Only this stream. Muting somebody here has never affected '
+              . 'any other broadcast, and it does not expire.</p>'
+              . '<table><tbody>' . $muteRows . '</tbody></table>';
+
+        $hiddenSection = $hiddenRows === ''
+            ? ''
+            : '<h4>Taken out of the room</h4>'
+              . '<p class="muted small">Kept rather than deleted — so the decision survives, and so '
+              . 'the same message cannot be sent straight back past whoever made it.</p>'
+              . '<table><tbody>' . $hiddenRows . '</tbody></table>';
+
+        return sprintf(
+            '<details><summary>Chat moderation (%d muted, %d hidden)</summary>%s%s</details>',
+            count($mutes),
+            count($hidden),
+            $muteSection,
+            $hiddenSection
+        );
     }
 
     /**
@@ -4637,6 +4868,27 @@ REG;
             );
         }
 
+        /*
+         * The site's own language: the LAST resort in the interface-language
+         * decision, after a visitor's choice and after their browser's
+         * preference. Named that way on the screen, because "site language"
+         * reads as "force everybody into this" and it is not that.
+         *
+         * Only the languages there are catalogues for. A picker offering a
+         * language with no strings behind it would set a value that renders
+         * English while claiming otherwise in the lang attribute — which a
+         * screen reader believes.
+         */
+        $localeOptions = '';
+        foreach ((array) ($data['locales'] ?? []) as $tag) {
+            $localeOptions .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e((string) $tag),
+                ($settings['site_locale'] ?? 'en') === $tag ? ' selected' : '',
+                e(\Portal\I18n\ContentLanguage::name((string) $tag))
+            );
+        }
+
         $jobs = '';
         foreach ((array) ($data['cronJobs'] ?? []) as $job) {
             $jobs .= sprintf(
@@ -4683,6 +4935,12 @@ REG;
           <input type="hidden" name="_whole_form" value="1">
           <label>Site name <input type="text" name="site_name" value="{$this->attr($settings['site_name'] ?? '')}"></label>
           <label>Timezone <select name="timezone">{$zones}</select></label>
+
+          <label>Default language <select name="site_locale">{$localeOptions}</select></label>
+          <p class="muted small">The LAST resort, not a rule. A visitor who has chosen a language
+             keeps it, and one who has not gets whatever their browser asks for; this is what
+             happens when neither says anything. It does not change what language sermons are
+             in — that is set on each video or series, and is a separate question.</p>
 
           <label class="checkbox">
             <input type="checkbox" name="members_thumbnail_default" value="1"{$membersDefault}>

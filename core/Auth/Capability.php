@@ -142,6 +142,29 @@ final class Capability
      */
     public const MANAGE_BOOKS = 'manage_books';
 
+    /**
+     * Hiding messages and muting people during a live stream.
+     *
+     * Separate from MODERATE_COMMENTS, and the split is about people rather
+     * than about permissions. Comment moderation is somebody working a queue in
+     * the week; this is somebody watching a room in real time on a Sunday
+     * evening, often a volunteer who does nothing else in the admin area. One
+     * capability would mean handing the weekday moderator a live room, or the
+     * Sunday volunteer the whole comment archive.
+     */
+    public const MODERATE_CHAT = 'moderate_chat';
+
+    /**
+     * Making and revoking keys for the read API.
+     *
+     * Site-wide, and deliberately NOT folded into MANAGE_SETTINGS. A key is a
+     * standing credential handed to another system, and one of the six scopes
+     * it can carry gives out names, email addresses and phone numbers. Somebody
+     * trusted to change the site name is not automatically somebody who should
+     * be issuing that.
+     */
+    public const MANAGE_API_KEYS = 'manage_api_keys';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -190,6 +213,7 @@ final class Capability
             self::DOWNLOAD_CONTENT    => 'Download a video they can watch, for offline viewing',
             self::MANAGE_VIEWERS      => 'Approve viewers and manage viewer groups',
             self::MODERATE_COMMENTS   => 'Review and remove comments',
+            self::MODERATE_CHAT       => 'Hide messages and mute people during a live stream',
             self::MANAGE_ROTA         => 'Build the rota: teams, services, and who is asked to serve',
             self::MANAGE_EVENTS       => 'Create events and see who has signed up',
             self::MANAGE_SCHEDULES    => 'Keep the schedules calendar and the list of people on it',
@@ -204,6 +228,7 @@ final class Capability
             self::MANAGE_THEMES       => 'Install, switch, and customize themes',
             self::MANAGE_PROVIDERS    => 'Change the auth, video, and email services',
             self::MANAGE_SETTINGS     => 'Change site settings',
+            self::MANAGE_API_KEYS     => 'Create and revoke keys for the read API',
             self::VIEW_AUDIT_LOG      => 'Read the activity log',
             self::VIEW_ANALYTICS      => 'View viewing statistics',
         ];
@@ -237,6 +262,14 @@ final class Capability
             self::MANAGE_GROUPS,
             self::SEND_BROADCASTS,
             self::MANAGE_BOOKS,
+            self::MANAGE_API_KEYS,
+            /*
+             * Site-only, because grants.scope_type is a category, a series or a
+             * video and a live stream is none of those. There is no such thing
+             * as a grant on one, so offering the scope picker would imply a
+             * containment that does not exist.
+             */
+            self::MODERATE_CHAT,
         ];
     }
 

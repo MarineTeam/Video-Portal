@@ -94,6 +94,21 @@ echo $template->partial('header', get_defined_vars());
 
   <?php
   /*
+   * The way to /tv, and the only one a person will find.
+   *
+   * The address is public and does the right thing for whichever device opens
+   * it — a code on a television, this form on a phone — but nothing else on the
+   * site mentions it, and a route people have to be told about is a route
+   * nobody uses. This is where somebody looks for "what have I signed in".
+   */
+  ?>
+  <a class="card account-tile" href="/tv">
+    <strong>Television</strong>
+    <span class="muted small">Sign in a TV with the code it shows you</span>
+  </a>
+
+  <?php
+  /*
    * Watch history and the data export share a tile, because they answer one
    * question — what does this site know about me — and separating them would
    * put the export somewhere nobody looks for it.

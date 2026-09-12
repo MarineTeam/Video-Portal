@@ -351,6 +351,70 @@ final class AccountController extends Controller
         ]);
     }
 
+    /**
+     * A calendar feed for this member's own dates.
+     *
+     * NOBODY HAS ONE UNTIL THEY ASK. No row exists until this button is
+     * pressed, so a URL cannot be guessed for an account that never wanted a
+     * feed — and minting one for everybody at install would be a capability
+     * handed to anybody who ever reads the database.
+     */
+    public function calendarFeed(Request $request): Response
+    {
+        $user = $this->user();
+
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        $feeds = new \Portal\Feeds\CalendarFeedRepository($this->db());
+
+        if ($request->method === 'POST') {
+            $this->verifyCsrf($request);
+
+            $action = (string) ($request->input('action') ?? '');
+
+            if ($action === 'stop') {
+                $feeds->revoke($user->id);
+
+                return $this->back($request, 'Stopped. Every calendar subscribed to it will now '
+                    . 'find nothing there.');
+            }
+
+            $feeds->issue($user->id);
+
+            return $this->back(
+                $request,
+                /*
+                 * Said plainly, because this is the one thing somebody needs to
+                 * understand before pressing it a second time: a replacement is
+                 * not an addition. It is the answer to a leak, and it has to end
+                 * every existing subscription or it would not be one.
+                 */
+                'Here is the address. If you had one before, it has stopped working everywhere — '
+                . 'which is the point of replacing it.'
+            );
+        }
+
+        $feed = $feeds->forUser($user->id);
+
+        return $this->view(['account-calendar'], [
+            'title' => 'Your calendar',
+            /*
+             * Rendered straight into the page rather than through a guarded
+             * payload. SecretGuard forbids `feed_token` by name, so this value
+             * can never leave through an export or the read API — and this
+             * screen is the one place it is allowed to appear at all.
+             */
+            'feedToken' => $feed === null ? null : (string) $feed['feed_token'],
+            'lastUsed'  => $feed === null ? null : $feed['last_used_at'],
+            'fetches'   => $feed === null ? 0 : (int) $feed['fetches'],
+            'base'      => rtrim((string) $this->config()->get('base_url', ''), '/'),
+            'token'     => $this->csrfToken(),
+            'flash'     => $this->flash(),
+        ]);
+    }
+
     public function reminders(Request $request): Response
     {
         $user = $this->user();

@@ -191,6 +191,17 @@ final class SeriesRepository
             $fields['download_mode'] = DownloadPolicy::sanitize($attributes['download_mode']);
         }
 
+        /*
+         * The language of everything in the series, unless a video says
+         * otherwise. Normalised, and rubbish becomes NULL — "nobody has said",
+         * which falls through to the site's own setting. See
+         * Portal\I18n\ContentLanguage for the precedence.
+         */
+        if (array_key_exists('language', $attributes)) {
+            $tag = \Portal\I18n\Locale::normalise((string) $attributes['language']);
+            $fields['language'] = $tag === '' ? null : $tag;
+        }
+
         if ($fields === []) {
             return $series;
         }

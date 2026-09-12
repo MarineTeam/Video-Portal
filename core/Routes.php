@@ -9,6 +9,11 @@ use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminBookController;
+use Portal\Controllers\AdminApiKeyController;
+use Portal\Controllers\LiveChatController;
+use Portal\Controllers\LocaleController;
+use Portal\Controllers\TvController;
+use Portal\Controllers\ApiController;
 use Portal\Controllers\AdminBroadcastController;
 use Portal\Controllers\AdminFormController;
 use Portal\Controllers\AdminGroupController;
@@ -19,6 +24,7 @@ use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CalendarController;
+use Portal\Controllers\CalendarFeedController;
 use Portal\Controllers\FormController;
 use Portal\Controllers\ReaderController;
 use Portal\Controllers\GroupController;
@@ -66,7 +72,88 @@ final class Routes
          * video called "report" in Phase 4.
          */
         $router->get('/live', [LibraryController::class, 'live']);
+
+        /*
+         * The chat lives UNDER the stream's own address, which is what makes it
+         * collision-proof: `{slug}` compiles to `[^/]+`, so /live/x/chat has
+         * three segments and cannot match the two-segment stream route
+         * whichever order they are registered in.
+         *
+         * Worth stating, because the tempting shape — /live/chat?stream=x, or
+         * /chat/{slug} — is the one that produced the Phase 4 bug where
+         * /comments/report resolved as a video called "report", answered 302,
+         * and did nothing. A path that shares a segment count with a
+         * placeholder route is a bug waiting for the registration order to
+         * change.
+         */
+        $router->get('/live/{slug}/chat', [LiveChatController::class, 'poll']);
+        $router->post('/live/{slug}/chat', [LiveChatController::class, 'post']);
+        $router->post('/live/{slug}/chat/moderate', [LiveChatController::class, 'moderate']);
+
         $router->get('/live/{slug}', [LibraryController::class, 'live']);
+
+        /*
+         * Television.
+         *
+         * The two device endpoints take NO SESSION, by definition: a television
+         * asking to be paired has nothing yet, which is the whole point of the
+         * device grant. What protects them is a rate limit by address, a
+         * ten-minute lifetime, and a device code that is 32 random bytes.
+         *
+         * They are also the only POSTs in this file with no CSRF token, and
+         * that is correct rather than an omission: a token protects an action
+         * that borrows the victim's authority, and these borrow none — the
+         * caller has no session for anything to be done in the name of. The
+         * same reasoning the subscribe and unsubscribe endpoints carry.
+         */
+        $router->post('/tv/pair', [TvController::class, 'start']);
+        $router->post('/tv/pair/poll', [TvController::class, 'poll']);
+
+        /*
+         * The catalogue, public and read by devices with no session — which is
+         * exactly why the members-only filtering happens in the listing query
+         * rather than here. There is nobody to check later.
+         */
+        $router->get('/tv/catalogue.json', [TvController::class, 'catalogue']);
+
+        /*
+         * /tv IS PUBLIC, AND IT ANSWERS DIFFERENTLY TO EACH DEVICE.
+         *
+         * Signed out, it is the television: it shows a code and waits. Signed
+         * in, it is the phone: it asks for the code. One address, because
+         * somebody has to type it on a remote control once and will not type
+         * two — and because "open /tv on the television and /tv/approve on your
+         * phone" is an instruction nobody follows correctly the first time.
+         *
+         * Not a device sniff. The question is "does this browser have a session
+         * of its own", which is the thing that actually distinguishes them and
+         * is the thing that decides which page is useful.
+         */
+        $router->get('/tv', [TvController::class, 'entry']);
+
+        // Approving needs an account. The GET above does not, which is the
+        // whole point of it.
+        $router->post('/tv', [TvController::class, 'approve'], ['auth.authorized']);
+
+        $router->get('/tv/screen', [TvController::class, 'screen'], ['auth.authorized']);
+
+        /*
+         * Choosing the interface language.
+         *
+         * PUBLIC, and with NO CSRF TOKEN — the third endpoint in this table to
+         * make that argument, after subscribe and unsubscribe, and the
+         * reasoning is written at the handler and at the form as well as here.
+         *
+         * A token protects an action that borrows the victim's authority, and
+         * choosing a display language borrows none: nothing is stored about
+         * them, nothing is sent, no permission changes, and the picker in front
+         * of them undoes it in one press. Requiring one would mean generating a
+         * token in the header of every page, which means a session and a cookie
+         * for every anonymous visitor to every public page — a regression this
+         * project has already shipped once and had to unpick.
+         */
+        $router->post('/locale', [LocaleController::class, 'set']);
+        $router->get('/locale', [LocaleController::class, 'current']);
 
         $router->get('/scripture', [LibraryController::class, 'scriptureIndex']);
         $router->get('/scripture/{book}/{chapter:\d+}', [LibraryController::class, 'scriptureBook']);
@@ -247,6 +334,20 @@ final class Routes
             ['GET', 'POST'],
             '/account/messages',
             [AccountController::class, 'messages'],
+            ['auth.user']
+        );
+
+        /*
+         * Making and replacing a personal calendar feed.
+         *
+         * Behind auth.user: the FEED itself needs no session — a calendar
+         * cannot log in — but deciding to have one, and replacing it after a
+         * leak, is something only the member may do.
+         */
+        $router->any(
+            ['GET', 'POST'],
+            '/account/calendar',
+            [AccountController::class, 'calendarFeed'],
             ['auth.user']
         );
 
@@ -432,6 +533,57 @@ final class Routes
         $router->get('/books/{slug}/file', [ReaderController::class, 'file']);
         $router->get('/books/{slug}/search', [ReaderController::class, 'search']);
         $router->post('/books/{slug}/position', [ReaderController::class, 'savePosition']);
+        $router->post('/books/{slug}/marks', [ReaderController::class, 'addMark']);
+        $router->post('/books/{slug}/marks/remove', [ReaderController::class, 'removeMark']);
+
+        /*
+         * Calendar feeds. All three are open, and the personal one's TOKEN IS
+         * THE WHOLE OF THE AUTHENTICATION — a calendar application cannot log
+         * in, so there is no session to guard it with. Constrained to 64 hex
+         * characters so a crawler's guesses never reach a query.
+         *
+         * The literal paths come first, or a token could never match.
+         */
+        /*
+         * The read API. Key-authenticated inside the controller rather than by
+         * middleware, because the INDEX deliberately needs no key — somebody
+         * integrating has to see what exists before they have been given
+         * anything, or the first step is asking a person for a key to read the
+         * documentation.
+         *
+         * No auth middleware also means no session is started for a machine
+         * that will never hold a cookie.
+         */
+        $router->get('/api/v1', [ApiController::class, 'index']);
+        $router->get('/api/v1/categories', [ApiController::class, 'categories']);
+        $router->get('/api/v1/series', [ApiController::class, 'series']);
+        $router->get('/api/v1/videos', [ApiController::class, 'videos']);
+        $router->get('/api/v1/files', [ApiController::class, 'files']);
+        $router->get('/api/v1/events', [ApiController::class, 'events']);
+        /*
+         * A scope of its own, which events:read does not imply — the difference
+         * between the two is this list of names and phone numbers.
+         */
+        $router->get(
+            '/api/v1/events/{id:\d+}/registrations',
+            [ApiController::class, 'registrations']
+        );
+        $router->get('/api/v1/schedules', [ApiController::class, 'schedules']);
+        $router->get('/api/v1/schedule-dates', [ApiController::class, 'scheduleDates']);
+        $router->get('/api/v1/groups', [ApiController::class, 'groups']);
+        $router->get('/api/v1/analytics', [ApiController::class, 'analytics']);
+
+        $router->get('/calendar/events.ics', [CalendarFeedController::class, 'whatsOn']);
+        /*
+         * `[0-9a-f]+` rather than `[0-9a-f]{64}`: the router's placeholder
+         * syntax is `{name:pattern}` matched with `[^}]+`, so a quantifier
+         * brace inside the pattern cuts it short and the route silently never
+         * matches. The exact length is enforced in CalendarFeedRepository,
+         * which refuses anything that is not 64 hex characters before it
+         * reaches a query.
+         */
+        $router->get('/calendar/mine/{token:[0-9a-f]+}.ics', [CalendarFeedController::class, 'mine']);
+        $router->get('/events/{slug}.ics', [CalendarFeedController::class, 'oneEvent']);
 
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);
@@ -455,6 +607,19 @@ final class Routes
          * page listing who is serving is for the people serving.
          */
         $router->get('/services/{id:\d+}', [RotaController::class, 'service'], ['auth.authorized']);
+
+        /*
+         * The same order of service, full screen, for the screen at the front.
+         *
+         * Behind the same guard: it shows the running order of a service, which
+         * is the same information the page above shows, and a present mode
+         * anybody could open would be a way round that page's rule.
+         */
+        $router->get(
+            '/services/{id:\d+}/present',
+            [RotaController::class, 'present'],
+            ['auth.authorized']
+        );
 
         // Saved videos. Approved-only for the same reason /watch is: the pages
         // list content, and an unapproved account cannot see the library either.
@@ -515,6 +680,9 @@ final class Routes
          * once made /comments/report a comment on video 0.
          */
         $router->post('/admin/books/{id:\d+}/index', [AdminBookController::class, 'receiveIndex'], ['admin.area']);
+
+        $router->get('/admin/api-keys', [AdminApiKeyController::class, 'index'], ['admin.area']);
+        $router->post('/admin/api-keys', [AdminApiKeyController::class, 'update'], ['admin.area']);
 
         $router->get('/admin/broadcasts', [AdminBroadcastController::class, 'index'], ['admin.area']);
         $router->post('/admin/broadcasts', [AdminBroadcastController::class, 'update'], ['admin.area']);

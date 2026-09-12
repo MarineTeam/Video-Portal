@@ -239,6 +239,171 @@
     return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
   }
 
+  /* -------------------------------------------------------------- books
+   *
+   * A SAVED BOOK STILL NEEDS A CONNECTION TO OPEN, and that is deliberate.
+   *
+   * Saving one caches the file, so it opens without waiting and without
+   * spending the bandwidth again. It does NOT make the book readable with the
+   * network off, because access to a book is a question about RIGHT NOW: the
+   * reader asks the server on every open, so somebody who has left the church
+   * cannot keep opening a members-only hymnal out of their cache.
+   *
+   * That is the opposite of a saved video, which plays offline — a video
+   * download is a thing somebody was given, and it cannot be recalled once it
+   * exists. The two differ on purpose, and the offline screen says so: saving
+   * a hymnal for a hall with no signal and finding it will not open is the
+   * failure this note exists to prevent.
+   *
+   * Its own cache, because the two are listed and swept on different terms,
+   * and because a book's saved copy is keyed by a REVISION that a video has no
+   * equivalent of.
+   */
+  var BOOKS = 'portal-offline-books-v1';
+
+  function bookKey(slug) {
+    return '/books/' + encodeURIComponent(slug) + '/file';
+  }
+
+  function bookMetaKey(slug) {
+    return '/books/' + encodeURIComponent(slug) + '/saved.json';
+  }
+
+  /**
+   * Save a book's file, remembering which REVISION it is.
+   *
+   * The revision is what lets a saved copy find out it is stale. Without it a
+   * re-scanned hymnal keeps serving the old pages out of the cache for ever,
+   * with every page number silently one out.
+   */
+  function saveBook(slug, onProgress) {
+    if (!supported()) {
+      return Promise.reject(new Error('This browser cannot save books.'));
+    }
+
+    return fetch('/books/' + encodeURIComponent(slug) + '/open', { credentials: 'same-origin' })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error('That book is not available to you.');
+        }
+
+        return response.json();
+      })
+      .then(function (info) {
+        return fetch(info.file, { credentials: 'same-origin' }).then(function (file) {
+          if (!file.ok) {
+            throw new Error('The file could not be fetched.');
+          }
+
+          return file.blob().then(function (blob) {
+            return { info: info, blob: blob };
+          });
+        });
+      })
+      .then(function (got) {
+        return caches.open(BOOKS).then(function (cache) {
+          var meta = {
+            slug: got.info.slug,
+            kind: got.info.kind,
+            revision: got.info.revision,
+            pages: got.info.pages,
+            bytes: got.blob.size,
+            savedAt: Date.now()
+          };
+
+          return Promise.all([
+            cache.put(bookKey(slug), new Response(got.blob)),
+            cache.put(bookMetaKey(slug), new Response(JSON.stringify(meta), {
+              headers: { 'Content-Type': 'application/json' }
+            }))
+          ]).then(function () {
+            if (onProgress) { onProgress(1); }
+
+            return meta;
+          });
+        });
+      });
+  }
+
+  /** Everything saved here, newest first. */
+  function listBooks() {
+    if (!supported()) { return Promise.resolve([]); }
+
+    return caches.open(BOOKS).then(function (cache) {
+      return cache.keys().then(function (requests) {
+        var metas = requests
+          .map(function (r) { return new URL(r.url).pathname; })
+          .filter(function (p) { return /\/saved\.json$/.test(p); });
+
+        return Promise.all(metas.map(function (path) {
+          return cache.match(path)
+            .then(function (r) { return r ? r.json() : null; })
+            .catch(function () { return null; });
+        })).then(function (rows) {
+          return rows.filter(Boolean).sort(function (a, b) {
+            return (b.savedAt || 0) - (a.savedAt || 0);
+          });
+        });
+      });
+    });
+  }
+
+  function removeBook(slug) {
+    return caches.open(BOOKS).then(function (cache) {
+      return Promise.all([cache.delete(bookKey(slug)), cache.delete(bookMetaKey(slug))]);
+    });
+  }
+
+  /* --------------------------------------------------- the download manager
+   *
+   * PER DEVICE, not per account. "Only on wi-fi" is a fact about the phone in
+   * somebody's hand and the tariff on it, not about who they are — and the
+   * same person on a laptop means something different by it. Stored in
+   * localStorage for that reason, and because the server has no business
+   * holding a description of somebody's data plan.
+   */
+  var WIFI_KEY = 'portal_offline_wifi_only';
+
+  function wifiOnly(value) {
+    try {
+      if (value === undefined) {
+        return window.localStorage.getItem(WIFI_KEY) === '1';
+      }
+
+      window.localStorage.setItem(WIFI_KEY, value ? '1' : '0');
+
+      return !!value;
+    } catch (e) {
+      // Private windows and browsers set to refuse storage land here. The
+      // preference is a convenience; losing it is not worth an error.
+      return false;
+    }
+  }
+
+  /**
+   * Whether saving should go ahead now.
+   *
+   * The browser cannot say "this is wi-fi" — Network Information is not
+   * everywhere and is vague where it exists. What it can sometimes say is that
+   * the connection is metered or slow, and that is what this asks.
+   *
+   * When it can say nothing, saving GOES AHEAD. Refusing on a guess would make
+   * the feature fail on every browser that reports nothing, which is most of
+   * them — and a download manager that refuses to download is worse than one
+   * that occasionally spends data somebody asked it to spend.
+   */
+  function mayDownloadNow() {
+    if (!wifiOnly()) { return true; }
+
+    var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+
+    if (!connection) { return true; }
+    if (connection.saveData) { return false; }
+    if (connection.type === 'cellular') { return false; }
+
+    return ['slow-2g', '2g', '3g'].indexOf(connection.effectiveType) === -1;
+  }
+
   window.PortalOffline = {
     supported: supported,
     save: save,
@@ -246,6 +411,11 @@
     remove: remove,
     sweep: sweep,
     space: space,
-    bytes: bytes
+    bytes: bytes,
+    saveBook: saveBook,
+    listBooks: listBooks,
+    removeBook: removeBook,
+    wifiOnly: wifiOnly,
+    mayDownloadNow: mayDownloadNow
   };
 })();

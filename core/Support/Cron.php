@@ -401,6 +401,24 @@ final class Cron
          * answers `full` instead, which is the honest answer rather than a
          * cheaper wrong one.
          */
+        /*
+         * Pairings nobody completed.
+         *
+         * A pairing is a credential with a ten-minute life, so a table of dead
+         * ones is a table of things that must never be honoured again. Hourly
+         * rather than daily: the rows are small, but on a site where a screen
+         * in the foyer reconnects every morning they accumulate steadily and
+         * every one of them is a row a lookup walks past.
+         */
+        $this->handlers['tv.pairings.purge'] = static function (App $app): string {
+            $removed = (new \Portal\Tv\PairingRepository(
+                $app->container()->get(\Portal\Db::class)
+            ))->purge();
+
+            return $removed === 0
+                ? 'Nothing to clear.'
+                : sprintf('Cleared %d pairing(s) nobody completed.', $removed);
+        };
         $this->handlers['schedules.prune'] = static function (App $app): string {
             $db = $app->container()->get(\Portal\Db::class);
 
@@ -509,6 +527,7 @@ final class Cron
             'schedules.reminders' => 900,
             'schedules.prune'    => 86400,
             'broadcasts.send'    => 60,
+            'tv.pairings.purge'  => 3600,
         ] as $slug => $interval) {
             $this->db->execute(
                 'INSERT IGNORE INTO {cron_jobs} (slug, interval_seconds, next_run_at, is_enabled)

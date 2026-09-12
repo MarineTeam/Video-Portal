@@ -14,6 +14,7 @@ use Portal\Db;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
+use Portal\I18n\Translator;
 use Portal\Themes\ThemeManager;
 
 /**
@@ -79,6 +80,25 @@ abstract class Controller
     protected function themeManager(): ThemeManager
     {
         return $this->container->get(ThemeManager::class);
+    }
+
+    /**
+     * The interface language and its strings.
+     *
+     * Wrapped, because this has to work on a site part-way through its
+     * installer and on one whose lang directory somebody has deleted. A page of
+     * English is a working page; a 500 because a catalogue is missing is not,
+     * and the strings are the least important thing on any page they appear on.
+     */
+    protected function translator(): Translator
+    {
+        try {
+            return $this->container->get(Translator::class);
+        } catch (\Throwable $e) {
+            error_log('Portal: could not settle the interface language. ' . $e->getMessage());
+
+            return new Translator();
+        }
     }
 
     protected function user(): ?User
@@ -218,6 +238,24 @@ abstract class Controller
                 'unreadNotifications' => $this->unreadNotifications($user->email),
             ],
             'nav' => apply_filters('site_nav', $this->defaultNav()),
+
+            /*
+             * The interface language, and the strings in it.
+             *
+             * `locale` is what the html lang attribute carries — which matters
+             * for more than tidiness: it is what a screen reader chooses a
+             * voice from, so a Spanish page declaring itself English is read
+             * aloud in an English accent and is close to unintelligible.
+             *
+             * `t` is a callable rather than the Translator itself, so a
+             * template cannot reach past it to the catalogue or the misses —
+             * and so a theme written before this still works, since anything
+             * that does not call it simply renders its own English.
+             */
+            'locale'    => $this->translator()->locale(),
+            'locales'   => $this->translator()->available(),
+            't'         => fn (string $key, array $replace = []): string
+                => $this->translator()->get($key, $replace),
             /*
              * Whether search engines may index the public pages.
              *
@@ -298,6 +336,30 @@ abstract class Controller
      *
      * @return array{live: array<string, mixed>|null, scheduled: int}
      */
+    /**
+     * Whether this person may see what something LOOKS like, not merely that it
+     * exists.
+     *
+     * The same test the /watch route applies. Signing in is not enough: an
+     * account an administrator has not approved is the state every new account
+     * starts in, and it can play nothing.
+     *
+     * On the base controller because three places were asking it — the live
+     * banner inlined its own copy, LibraryController had a private one, and the
+     * chat needed a third. Two implementations of a visibility rule eventually
+     * disagree, and the failure is a members-only title on a public page.
+     */
+    protected function canWatch(): bool
+    {
+        if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
+            return true;
+        }
+
+        $user = $this->user();
+
+        return $user !== null && ($user->isAdmin() || $user->authorized);
+    }
+
     protected function liveState(): array
     {
         if ($this->liveState !== null) {
@@ -308,10 +370,7 @@ abstract class Controller
             /** @var \Portal\Content\LiveStreamRepository $repo */
             $repo = $this->container->get(\Portal\Content\LiveStreamRepository::class);
 
-            $user = $this->user();
-            $canWatch = $user !== null && ($user->isAdmin() || $user->authorized);
-
-            $rows = $repo->upcoming($canWatch);
+            $rows = $repo->upcoming($this->canWatch());
 
             $live = null;
             foreach ($rows as $row) {
@@ -770,6 +829,13 @@ abstract class Controller
                     ['label' => 'General',  'path' => '/admin/settings',  'key' => 'settings',  'cap' => Capability::MANAGE_SETTINGS,  'screens' => ['settings']],
                     ['label' => 'Services', 'path' => '/admin/providers', 'key' => 'providers', 'cap' => Capability::MANAGE_PROVIDERS, 'screens' => ['providers']],
                     ['label' => 'Webhooks', 'path' => '/admin/webhooks',  'key' => 'webhooks',  'cap' => Capability::MANAGE_SETTINGS,  'screens' => ['webhooks']],
+                    /*
+                     * Under Settings rather than a section of its own, and
+                     * `siteWide` because manage_api_keys is site-only: a key is
+                     * not a value of grants.scope_type, so a category-scoped
+                     * editor holds nothing here and the link would 403.
+                     */
+                    ['label' => 'API keys', 'path' => '/admin/api-keys',  'key' => 'api-keys',  'cap' => Capability::MANAGE_API_KEYS,  'screens' => ['api-keys'], 'siteWide' => true],
                 ],
             ],
         ];

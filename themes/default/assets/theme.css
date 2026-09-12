@@ -1041,3 +1041,154 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 .book-search { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; }
 .book-hits { list-style: none; padding: 0; }
 .book-hits li { padding: .5rem 0; border-bottom: 1px solid var(--line, #2a2a2a); }
+
+/* The page we draw ourselves, and the invisible text sitting exactly on it.
+ *
+ * The text layer is what makes selection, highlighting and read-aloud possible:
+ * PDF.js positions transparent spans over the picture, and the browser's own
+ * selection then works as it does anywhere else. It must line up to the pixel,
+ * which is why both are absolutely positioned in a wrapper sized to the canvas.
+ */
+.reader-canvas-wrap { position: relative; margin: 0 auto; }
+.reader-canvas { display: block; width: 100%; height: auto; }
+.reader-text {
+  position: absolute; inset: 0; overflow: hidden; line-height: 1;
+  opacity: .01;                 /* not 0: some browsers stop selecting at zero */
+  transform-origin: 0 0;
+}
+.reader-text span { position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+.reader-text ::selection { background: rgba(56, 189, 248, .4); }
+.reader-stage { overflow: auto; }
+
+/* Highlights, positioned as a fraction of the page rather than in pixels — so
+ * they land on the same words at any window width and any reading size. */
+.reader-marks { position: absolute; inset: 0; pointer-events: none; }
+.reader-mark {
+  position: absolute;
+  background: rgba(255, 213, 79, .45);
+  border-radius: 2px;
+  mix-blend-mode: multiply;   /* the words stay readable through the colour */
+  pointer-events: auto;
+}
+
+.reader-find { display: flex; align-items: flex-end; gap: .35rem; }
+.reader-find input { width: 11rem; }
+.reader-hits { max-height: 40vh; overflow: auto; }
+.reader-hits ul { list-style: none; padding: 0; margin: 0; }
+.reader-hits li { padding: .3rem 0; border-bottom: 1px solid var(--line, #2a2a2a); }
+
+/* An EPUB renders inside an iframe epub.js owns — which is why it cannot be
+ * highlighted, and why it needs a real box rather than growing to fit. */
+.reader-epub { width: 100%; height: 70vh; }
+.reader-presenting .reader-epub { height: 100vh; }
+
+/* ---------------------------------------------------------------- live chat
+ *
+ * A room beside a stream, and the layout has one job the CSS has to get right:
+ * NEW MESSAGES MUST NOT MOVE THE PLAYER. So the log is a fixed-height scroller
+ * rather than a growing list — otherwise every message during a service nudges
+ * the video down the page, which on a phone means the thing you are watching
+ * walks off the screen while people talk about it.
+ */
+.chat { margin: 2rem 0; max-width: 44rem; }
+
+.chat-log {
+  height: 22rem;
+  overflow-y: auto;
+  /* overscroll-behavior so reaching the top of the log does not start
+     scrolling the page underneath — on a touch screen that is how somebody
+     loses the player while trying to read back. */
+  overscroll-behavior: contain;
+  padding: .5rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-muted) 6%, transparent);
+}
+
+.chat-message { padding: .3rem 0; line-height: 1.45; }
+.chat-message + .chat-message { border-top: 1px solid var(--border); }
+
+.chat-author { font-weight: 600; margin-right: .4rem; }
+
+/* Long words wrap rather than widening the box. A single 400-character "word"
+ * is the cheapest way to break a chat layout, and `maxlength` does not stop
+ * it. */
+.chat-body { overflow-wrap: anywhere; }
+
+/* Your own messages are marked by more than colour — a left edge — so the
+ * distinction survives a high-contrast rendering and colour blindness. */
+.chat-mine { border-left: 3px solid var(--accent); padding-left: .5rem; }
+
+.chat-notice { min-height: 1.25rem; margin: .4rem 0; font-size: .8125rem; }
+.chat-notice.warn { color: #fbbf24; }
+.chat-notice.ok { color: #4ade80; }
+.chat-notice.muted { color: var(--text-muted); }
+
+.chat form { display: flex; gap: .5rem; align-items: center; margin: 0; }
+.chat form input[type="text"] { flex: 1; }
+
+/* The moderator controls are inline forms so they work with no script, and
+ * small so they do not compete with what somebody said. */
+.chat-moderate { display: inline-flex; gap: .25rem; margin-left: .4rem; }
+.chat-hide, .chat-mute {
+  font: inherit;
+  font-size: .75rem;
+  padding: 0 .35rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.chat-hide:hover, .chat-mute:hover { color: inherit; border-color: var(--text-muted); }
+
+/* ----------------------------------------------------------- the language picker
+ *
+ * In the header on every page, so it has to be small and has to not push the
+ * navigation around. It is a real form with a real button, deliberately: a
+ * select that submitted on change would navigate a keyboard user on every
+ * option they arrowed past, which is the commonest way this control is made
+ * unusable.
+ */
+.locale-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  margin: 0;
+}
+
+/* The label is for a screen reader and for anybody who cannot tell what the
+ * select is for from its contents — which is most people, since its contents
+ * are words in languages they may not read. Hidden visually rather than
+ * removed, because the select is beside an icon-free row of links and a
+ * visible "Language" label would be the widest thing in the header. */
+.locale-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.locale-picker select {
+  width: auto;
+  margin: 0;
+  padding: .25rem .4rem;
+  font-size: .8125rem;
+}
+
+.locale-go {
+  font: inherit;
+  font-size: .75rem;
+  padding: .2rem .5rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.locale-go:hover { color: inherit; }

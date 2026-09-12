@@ -70,7 +70,7 @@ final class MemberShareController extends Controller
          * category would let somebody share an unpublished or trashed video in
          * it — content they cannot open themselves.
          */
-        if (!$this->canWatch($video->id)) {
+        if (!$this->mayWatchVideo($video->id)) {
             throw HttpException::forbidden('You can only share something you can watch yourself.');
         }
 
@@ -187,11 +187,17 @@ final class MemberShareController extends Controller
      * Asked through the ordinary listing query so the answer comes from the
      * one place that owns publication, the schedule window, hidden and
      * members-only — rather than from a second copy of those rules here.
+     *
+     * Named mayWatchVideo rather than canWatch, which is what it was called
+     * until Controller::canWatch() arrived and PHP refused the tree: a private
+     * method cannot narrow a protected one. The rename is the better name
+     * anyway — the two ask different questions, "may this person play anything"
+     * and "may they play THIS", and one name for both is how a caller ends up
+     * asking the weaker one.
      */
-    private function canWatch(int $videoId): bool
+    private function mayWatchVideo(int $videoId): bool
     {
-        $user = $this->user();
-        $mayWatch = $user !== null && ($user->isAdmin() || $user->authorized);
+        $mayWatch = $this->canWatch();
 
         /** @var VideoRepository $videos */
         $videos = $this->container->get(VideoRepository::class);
