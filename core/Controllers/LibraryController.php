@@ -1349,10 +1349,21 @@ final class LibraryController extends Controller
             return [];
         }
 
-        // Presented through the same path as any other card, so someone whose
-        // approval was withdrawn does not keep seeing artwork in their
-        // continue-watching row that the rest of the site now withholds.
-        $videos = array_map(static fn (array $row): Video => Video::fromRow($row), $rows);
+        /*
+         * Through visibleInOrder() with this page's filters, keeping the order
+         * of the progress rows. The query above knows only that a video is not
+         * deleted and has finished encoding — so a video unpublished, hidden,
+         * scheduled out or restricted AFTER somebody started it kept its title in
+         * their row, the same shape of leak the series and playlist lists had.
+         *
+         * And presented through the same path as any other card, so someone whose
+         * approval was withdrawn does not keep seeing artwork the rest of the
+         * site now withholds.
+         */
+        $videos = $this->videos()->visibleInOrder(
+            array_map(static fn (array $row): int => (int) $row['id'], $rows),
+            $this->visibilityFilters([])
+        );
         $cards = $this->present($videos);
 
         $progressById = [];

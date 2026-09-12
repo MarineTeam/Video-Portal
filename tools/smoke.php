@@ -14954,6 +14954,39 @@ check(
 
 $db->execute('UPDATE {videos} SET is_published = 1 WHERE id = ?', [$recNewer]);
 
+/*
+ * Continue-watching, which knew only "not deleted, finished encoding". Two
+ * part-watched videos; one is withdrawn; the other must remain — or an empty
+ * row would satisfy the absence.
+ */
+$cwKeep = $recVideo('Part Watched And Still Here');
+$cwGone = $recVideo('Part Watched Then Withdrawn');
+
+foreach ([$cwKeep, $cwGone] as $cwVid) {
+    $db->insert('watch_progress', [
+        'user_id' => $recMember, 'video_id' => $cwVid,
+        'position_seconds' => 300, 'duration_seconds' => 1800,
+        'completed_at' => null, 'updated_at' => date('Y-m-d H:i:s'),
+    ]);
+}
+
+$db->execute('UPDATE {videos} SET hidden = 1 WHERE id = ?', [$cwGone]);
+
+$cwPage = getWithJar($baseUrl . '/', $recJar)['body'];
+$cwRow = preg_match('/id="continue-heading".*?<\/section>/s', $cwPage, $cwM) === 1 ? $cwM[0] : '';
+
+check(
+    'Continue watching keeps what can still be watched',
+    str_contains($cwRow, 'Part Watched And Still Here'),
+    'no continue-watching row at all, so the next check proves nothing'
+);
+
+check(
+    'and drops a video hidden since it was started',
+    !str_contains($cwRow, 'Part Watched Then Withdrawn'),
+    'A WITHDRAWN TITLE KEPT IN SOMEBODY\'S CONTINUE-WATCHING ROW'
+);
+
 /* And an editor can place it as a row of its own. */
 check(
     'The homepage builder offers it as a row',
