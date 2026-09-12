@@ -770,6 +770,13 @@ abstract class Controller
                     ['label' => 'General',  'path' => '/admin/settings',  'key' => 'settings',  'cap' => Capability::MANAGE_SETTINGS,  'screens' => ['settings']],
                     ['label' => 'Services', 'path' => '/admin/providers', 'key' => 'providers', 'cap' => Capability::MANAGE_PROVIDERS, 'screens' => ['providers']],
                     ['label' => 'Webhooks', 'path' => '/admin/webhooks',  'key' => 'webhooks',  'cap' => Capability::MANAGE_SETTINGS,  'screens' => ['webhooks']],
+                    /*
+                     * Under Settings rather than a section of its own, and
+                     * `siteWide` because manage_api_keys is site-only: a key is
+                     * not a value of grants.scope_type, so a category-scoped
+                     * editor holds nothing here and the link would 403.
+                     */
+                    ['label' => 'API keys', 'path' => '/admin/api-keys',  'key' => 'api-keys',  'cap' => Capability::MANAGE_API_KEYS,  'screens' => ['api-keys'], 'siteWide' => true],
                 ],
             ],
         ];

@@ -13713,6 +13713,249 @@ check(
     'revoking destroyed the audit trail at the moment somebody needs it'
 );
 
+/*
+ * The screen, driven as a person drives it.
+ *
+ * Everything above goes through ApiKeys directly, which is exactly the shape
+ * this project keeps finding: a repository that works, tested, with no form
+ * anywhere. The API index advertises /admin/api-keys in its own payload, so a
+ * missing screen is a documented path to a 404.
+ */
+$keysPage = getWithJar($baseUrl . '/admin/api-keys', $jar);
+
+check(
+    'The screen the API index points at exists',
+    $keysPage['status'] === 200,
+    "got {$keysPage['status']} — the index advertises this path"
+);
+
+check(
+    'and offers all six scopes as choices',
+    substr_count($keysPage['body'], 'name="scopes[]"') === 6,
+    'a scope with no checkbox is one nobody can grant'
+);
+
+check(
+    'and marks the two that hand over personal data',
+    /*
+     * Two of the six: events:registrations and calendar:read. Counted as the
+     * mark next to a checkbox rather than as the words on the page, which the
+     * prose also says — and asserted as an exact count rather than "at least
+     * one", so a scope that starts carrying names without being marked fails
+     * here instead of shipping.
+     */
+    substr_count($keysPage['body'], '<span class="pill warn">personal data</span>') === 2,
+    'six equal-looking checkboxes, two of which give out phone numbers'
+);
+
+/*
+ * Nothing preselected. Asked of the six inputs themselves rather than of the
+ * page: `:checked` appears in the admin stylesheet, so searching the whole body
+ * for "checked" would fail whatever the form did.
+ */
+preg_match_all('/<input type="checkbox" name="scopes\[\]"[^>]*>/', $keysPage['body'], $boxes);
+
+check(
+    'and nothing is ticked to begin with',
+    count($boxes[0]) === 6 && !str_contains(implode('', $boxes[0]), 'checked'),
+    'a form that starts with everything ticked is a form where nobody unticks anything'
+);
+
+$keysToken = csrfFrom($keysPage['body']);
+
+$madeAnswer = postWithJar($baseUrl . '/admin/api-keys', [
+    '_token' => $keysToken,
+    'action' => 'create',
+    'name'   => 'Foyer screen',
+    'scopes' => ['content:read'],
+], $jar);
+
+/*
+ * The plaintext, out of the HTML. Every check below works on the key a person
+ * would actually have copied off the screen rather than one made in PHP — which
+ * is the only way to tell "the screen issues a key" from "the screen says it
+ * did".
+ */
+preg_match('/value="(vpk_[0-9a-f]{64})"/', $madeAnswer['body'], $shown);
+$shownKey = (string) ($shown[1] ?? '');
+
+check(
+    'Making a key shows it',
+    $madeAnswer['status'] === 200 && $shownKey !== '',
+    "got {$madeAnswer['status']} — the one moment the key exists in readable form"
+);
+
+check(
+    'and says plainly that this is the only time',
+    str_contains($madeAnswer['body'], 'only time it is shown'),
+    'somebody who does not know that closes the tab'
+);
+
+check(
+    'and the key it showed actually works',
+    $shownKey !== '' && $apiGet('/api/v1/videos', $shownKey)['status'] === 200,
+    'the screen issued something decorative'
+);
+
+check(
+    'and holds only what was ticked',
+    $shownKey !== '' && $apiGet('/api/v1/events', $shownKey)['status'] === 403,
+    'A KEY GAINED A SCOPE NOBODY CHOSE'
+);
+
+/*
+ * THE RULE, and the reason this screen answers a POST with a page instead of a
+ * redirect and a flash. A flash lives in {sessions}, which is a table in MySQL
+ * — so flashing the plaintext would write a live credential into the database
+ * the hash exists to keep it out of.
+ *
+ * Both tables are searched, because "the key is not in {api_keys}" is the claim
+ * everybody thinks to make and {sessions} is where it would actually land.
+ */
+$everywhere = '';
+
+/*
+ * Three tables, because "not in {api_keys}" is the claim everybody thinks to
+ * make and the other two are where it would actually land: {sessions}, if the
+ * screen ever answered with a redirect and a flash, and {audit_log}, which this
+ * screen writes on every issue and where putting the key in the detail line
+ * would look like helpful record-keeping.
+ *
+ * Concatenated rather than json_encode'd. A session payload is not guaranteed
+ * to be valid UTF-8, json_encode answers false on one that is not, and
+ * (string) false is the empty string — which would make this check pass
+ * because it had searched nothing at all. That is the exact vacuous pass this
+ * project keeps finding, so the haystack is also asserted non-empty below.
+ */
+foreach (['{api_keys}', '{sessions}', '{audit_log}'] as $table) {
+    foreach ($db->all('SELECT * FROM ' . $table) as $row) {
+        foreach ($row as $value) {
+            $everywhere .= is_scalar($value) ? (string) $value : '';
+        }
+    }
+}
+
+check(
+    'and the plaintext is in none of the three tables it could land in',
+    $shownKey !== ''
+        // The admin's own session is in there, so an empty haystack means the
+        // read failed rather than that nothing was stored.
+        && $everywhere !== ''
+        && !str_contains($everywhere, $shownKey),
+    /*
+     * Two different failures, said apart. With no key to search for this
+     * check CANNOT answer, and reporting "the key is stored somewhere" then
+     * sends somebody looking for a leak that is not there — which is the
+     * harness telling "wrong" from "I could not ask", a rule this project has
+     * paid for three times.
+     */
+    $shownKey === ''
+        ? 'NO KEY WAS SHOWN, so this could not be checked — see the failure above'
+        : 'THE KEY IS STORED SOMEWHERE — it leaks with any backup taken in that window'
+);
+
+/* A key that could read nothing is refused rather than made. */
+$before = (int) $db->value('SELECT COUNT(*) FROM {api_keys}');
+
+postWithJar($baseUrl . '/admin/api-keys', [
+    '_token' => $keysToken,
+    'action' => 'create',
+    'name'   => 'Nothing at all',
+], $jar);
+
+check(
+    'A key with nothing ticked is refused rather than made',
+    (int) $db->value('SELECT COUNT(*) FROM {api_keys}') === $before,
+    'a row on the screen that looks like access somebody granted, answering 403 to everything'
+);
+
+/* And revoking from the screen stops the key a person is holding. */
+$foyerId = (int) $db->value(
+    'SELECT id FROM {api_keys} WHERE name = ? ORDER BY id DESC LIMIT 1',
+    ['Foyer screen']
+);
+
+postWithJar($baseUrl . '/admin/api-keys', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/admin/api-keys', $jar)['body']),
+    'action' => 'revoke',
+    'id'     => (string) $foyerId,
+], $jar);
+
+check(
+    'Revoking on the screen stops the key',
+    $shownKey !== '' && $apiGet('/api/v1/videos', $shownKey)['status'] === 401,
+    'THE BUTTON DID NOTHING — and the person pressing it is handling an incident'
+);
+
+check(
+    'and the revoked key is still listed, with who made it',
+    (static function () use ($baseUrl, $jar): bool {
+        $page = getWithJar($baseUrl . '/admin/api-keys', $jar)['body'];
+
+        return str_contains($page, 'Foyer screen')
+            && str_contains($page, 'revoked')
+            && str_contains($page, 'admin@smoke.test');
+    })(),
+    'the row that answers "who made this" went with the key'
+);
+
+/*
+ * And the capability is its own.
+ *
+ * The subject is nav-editor, who holds manage_videos SITE-WIDE through a role
+ * and nothing else — not the category-scoped editor, which was the first
+ * attempt and proved nothing: a scoped grant answers the site-wide question
+ * false, so this screen refused them whichever capability it asked for. The
+ * mutation that guards /admin/api-keys with manage_videos survived the whole
+ * suite. Only somebody who genuinely HAS manage_videos can tell the two apart.
+ *
+ * Signed in FRESH rather than reusing a jar from far above: those sessions have
+ * lapsed by this point in the run, and a signed-out request answers 302, which
+ * reads as a boundary holding while proving nothing. Every check below asserts
+ * the page it depends on first.
+ */
+$keyEditorJar = sys_get_temp_dir() . '/portal-smoke-keyeditor-' . getmypid() . '.txt';
+@unlink($keyEditorJar);
+
+clearLoginThrottle($db);
+$keyEditorLogin = postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'nav-editor@smoke.test',
+    'password' => 'nav-editor-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $keyEditorJar)['body']),
+], $keyEditorJar);
+
+check(
+    'A site-wide video editor is signed in to ask what they may reach',
+    $keyEditorLogin['status'] === 302,
+    "got {$keyEditorLogin['status']} — without a session the checks below prove nothing"
+);
+
+$editorVideos = getWithJar($baseUrl . '/admin/videos', $keyEditorJar);
+
+check(
+    'and really does hold manage_videos, site-wide',
+    // The premise. Without it, a refusal below could be a refusal of
+    // everything, which is the trap the scoped editor fell into.
+    $editorVideos['status'] === 200,
+    "got {$editorVideos['status']} — then the refusal below distinguishes nothing"
+);
+
+$editorKeys = getWithJar($baseUrl . '/admin/api-keys', $keyEditorJar);
+
+check(
+    'while the API keys screen is refused',
+    $editorKeys['status'] === 403,
+    "got {$editorKeys['status']} — ISSUING A KEY IS NOT PART OF EDITING VIDEOS"
+);
+
+check(
+    'and it is not in their sidebar either',
+    $editorVideos['status'] === 200 && !str_contains($editorVideos['body'], '/admin/api-keys'),
+    'a link that 403s reads as a broken site rather than a boundary'
+);
+
+@unlink($keyEditorJar);
+
 echo "\nCalendar feeds\n";
 
 $whatsOn = get($baseUrl . '/calendar/events.ics');

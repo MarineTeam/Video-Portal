@@ -142,6 +142,17 @@ final class Capability
      */
     public const MANAGE_BOOKS = 'manage_books';
 
+    /**
+     * Making and revoking keys for the read API.
+     *
+     * Site-wide, and deliberately NOT folded into MANAGE_SETTINGS. A key is a
+     * standing credential handed to another system, and one of the six scopes
+     * it can carry gives out names, email addresses and phone numbers. Somebody
+     * trusted to change the site name is not automatically somebody who should
+     * be issuing that.
+     */
+    public const MANAGE_API_KEYS = 'manage_api_keys';
+
     // Administration
     public const MANAGE_USERS       = 'manage_users';
     public const MANAGE_PERMISSIONS = 'manage_permissions';
@@ -204,6 +215,7 @@ final class Capability
             self::MANAGE_THEMES       => 'Install, switch, and customize themes',
             self::MANAGE_PROVIDERS    => 'Change the auth, video, and email services',
             self::MANAGE_SETTINGS     => 'Change site settings',
+            self::MANAGE_API_KEYS     => 'Create and revoke keys for the read API',
             self::VIEW_AUDIT_LOG      => 'Read the activity log',
             self::VIEW_ANALYTICS      => 'View viewing statistics',
         ];
@@ -237,6 +249,7 @@ final class Capability
             self::MANAGE_GROUPS,
             self::SEND_BROADCASTS,
             self::MANAGE_BOOKS,
+            self::MANAGE_API_KEYS,
         ];
     }
 

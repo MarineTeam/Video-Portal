@@ -9,6 +9,7 @@ use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminBookController;
+use Portal\Controllers\AdminApiKeyController;
 use Portal\Controllers\ApiController;
 use Portal\Controllers\AdminBroadcastController;
 use Portal\Controllers\AdminFormController;
@@ -582,6 +583,9 @@ final class Routes
          * once made /comments/report a comment on video 0.
          */
         $router->post('/admin/books/{id:\d+}/index', [AdminBookController::class, 'receiveIndex'], ['admin.area']);
+
+        $router->get('/admin/api-keys', [AdminApiKeyController::class, 'index'], ['admin.area']);
+        $router->post('/admin/api-keys', [AdminApiKeyController::class, 'update'], ['admin.area']);
 
         $router->get('/admin/broadcasts', [AdminBroadcastController::class, 'index'], ['admin.area']);
         $router->post('/admin/broadcasts', [AdminBroadcastController::class, 'update'], ['admin.area']);
