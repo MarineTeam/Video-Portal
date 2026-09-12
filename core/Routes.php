@@ -19,6 +19,7 @@ use Portal\Controllers\AssetController;
 use Portal\Controllers\AssetDownloadController;
 use Portal\Controllers\AuthController;
 use Portal\Controllers\CalendarController;
+use Portal\Controllers\CalendarFeedController;
 use Portal\Controllers\FormController;
 use Portal\Controllers\ReaderController;
 use Portal\Controllers\GroupController;
@@ -251,6 +252,20 @@ final class Routes
         );
 
         /*
+         * Making and replacing a personal calendar feed.
+         *
+         * Behind auth.user: the FEED itself needs no session — a calendar
+         * cannot log in — but deciding to have one, and replacing it after a
+         * leak, is something only the member may do.
+         */
+        $router->any(
+            ['GET', 'POST'],
+            '/account/calendar',
+            [AccountController::class, 'calendarFeed'],
+            ['auth.user']
+        );
+
+        /*
          * Asking for access.
          *
          * Guarded by `auth.user` and NOT by `auth.authorized`, which is the
@@ -434,6 +449,26 @@ final class Routes
         $router->post('/books/{slug}/position', [ReaderController::class, 'savePosition']);
         $router->post('/books/{slug}/marks', [ReaderController::class, 'addMark']);
         $router->post('/books/{slug}/marks/remove', [ReaderController::class, 'removeMark']);
+
+        /*
+         * Calendar feeds. All three are open, and the personal one's TOKEN IS
+         * THE WHOLE OF THE AUTHENTICATION — a calendar application cannot log
+         * in, so there is no session to guard it with. Constrained to 64 hex
+         * characters so a crawler's guesses never reach a query.
+         *
+         * The literal paths come first, or a token could never match.
+         */
+        $router->get('/calendar/events.ics', [CalendarFeedController::class, 'whatsOn']);
+        /*
+         * `[0-9a-f]+` rather than `[0-9a-f]{64}`: the router's placeholder
+         * syntax is `{name:pattern}` matched with `[^}]+`, so a quantifier
+         * brace inside the pattern cuts it short and the route silently never
+         * matches. The exact length is enforced in CalendarFeedRepository,
+         * which refuses anything that is not 64 hex characters before it
+         * reaches a query.
+         */
+        $router->get('/calendar/mine/{token:[0-9a-f]+}.ics', [CalendarFeedController::class, 'mine']);
+        $router->get('/events/{slug}.ics', [CalendarFeedController::class, 'oneEvent']);
 
         $router->get('/events', [EventController::class, 'index']);
         $router->post('/events/signup', [EventController::class, 'signUp']);

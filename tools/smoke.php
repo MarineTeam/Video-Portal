@@ -13512,6 +13512,112 @@ check(
     'half the list would get the old words and half the new'
 );
 
+echo "\nCalendar feeds\n";
+
+$whatsOn = get($baseUrl . '/calendar/events.ics');
+
+check('The what-is-on feed renders', $whatsOn['status'] === 200, "got {$whatsOn['status']}");
+check(
+    'and is a calendar rather than a page',
+    str_starts_with($whatsOn['body'], "BEGIN:VCALENDAR\r\n")
+        && str_contains($whatsOn['headers']['content-type'] ?? '', 'text/calendar'),
+    'a reader that is handed HTML shows nothing and says nothing'
+);
+check(
+    'and every line break is a CRLF',
+    substr_count($whatsOn['body'], "\n") === substr_count($whatsOn['body'], "\r\n"),
+    'a bare LF got in — several readers enforce CRLF'
+);
+
+/* A personal feed. Nobody has one until they ask. */
+$feedPage = getWithJar($baseUrl . '/account/calendar', $jar);
+
+check(
+    'Somebody can ask for a calendar of their own dates',
+    $feedPage['status'] === 200 && str_contains($feedPage['body'], 'Make me a calendar address'),
+    "got {$feedPage['status']} — and nobody has a feed until they ask"
+);
+
+check(
+    'and none exists before they do',
+    (int) $db->value('SELECT COUNT(*) FROM {calendar_feeds}') === 0,
+    'a token existed for an account that never wanted one'
+);
+
+postWithJar($baseUrl . '/account/calendar', [
+    '_token' => csrfFrom($feedPage['body']),
+    'action' => 'issue',
+], $jar);
+
+$firstToken = (string) $db->value('SELECT feed_token FROM {calendar_feeds} LIMIT 1');
+
+check(
+    'Asking makes one',
+    strlen($firstToken) === 64,
+    'the token is not 64 hex characters'
+);
+
+$mine = get($baseUrl . '/calendar/mine/' . $firstToken . '.ics');
+
+check(
+    'and the address works with no session at all',
+    $mine['status'] === 200 && str_contains($mine['body'], 'BEGIN:VCALENDAR'),
+    "got {$mine['status']} — a calendar application cannot log in, so the token is the whole of it"
+);
+
+check(
+    'and is never cached by anything shared',
+    str_contains(strtolower($mine['headers']['cache-control'] ?? ''), 'private')
+        || str_contains(strtolower($mine['headers']['cache-control'] ?? ''), 'no-store'),
+    'ONE MEMBER\'S DIARY COULD BE SERVED TO THE NEXT REQUEST'
+);
+
+check(
+    'and asks not to be indexed',
+    str_contains(strtolower($mine['headers']['x-robots-tag'] ?? ''), 'noindex'),
+    'a feed URL reaches a crawler the moment somebody pastes it anywhere'
+);
+
+/* Replacing it stops the old address everywhere at once. */
+postWithJar($baseUrl . '/account/calendar', [
+    '_token' => csrfFrom(getWithJar($baseUrl . '/account/calendar', $jar)['body']),
+    'action' => 'issue',
+], $jar);
+
+$secondToken = (string) $db->value('SELECT feed_token FROM {calendar_feeds} LIMIT 1');
+
+check(
+    'Replacing it gives a different address',
+    $secondToken !== '' && $secondToken !== $firstToken,
+    'the address did not change'
+);
+
+/*
+ * Both of these would pass against a route that never matches — everything
+ * 404s then, which is exactly what happened on the first run. So the NEW
+ * address is confirmed to work first, and that check failing is what tells you
+ * these two mean nothing.
+ */
+$newWorks = get($baseUrl . '/calendar/mine/' . $secondToken . '.ics');
+
+check(
+    'and the new one works',
+    $newWorks['status'] === 200 && str_contains($newWorks['body'], 'BEGIN:VCALENDAR'),
+    "got {$newWorks['status']} — if this fails, the two checks below prove nothing"
+);
+
+check(
+    'and the old one stops working everywhere at once',
+    get($baseUrl . '/calendar/mine/' . $firstToken . '.ics')['status'] === 404,
+    'THE OLD ADDRESS STILL WORKS — replacing it did not answer a leak'
+);
+
+check(
+    'A made-up address is a 404 rather than a 401',
+    get($baseUrl . '/calendar/mine/' . str_repeat('a', 64) . '.ics')['status'] === 404,
+    'a 401 tells a crawler that a real token exists at this shape of URL'
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');
