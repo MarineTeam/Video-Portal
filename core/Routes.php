@@ -11,6 +11,7 @@ use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminBookController;
 use Portal\Controllers\AdminApiKeyController;
 use Portal\Controllers\LiveChatController;
+use Portal\Controllers\LocaleController;
 use Portal\Controllers\TvController;
 use Portal\Controllers\ApiController;
 use Portal\Controllers\AdminBroadcastController;
@@ -135,6 +136,24 @@ final class Routes
         $router->post('/tv', [TvController::class, 'approve'], ['auth.authorized']);
 
         $router->get('/tv/screen', [TvController::class, 'screen'], ['auth.authorized']);
+
+        /*
+         * Choosing the interface language.
+         *
+         * PUBLIC, and with NO CSRF TOKEN — the third endpoint in this table to
+         * make that argument, after subscribe and unsubscribe, and the
+         * reasoning is written at the handler and at the form as well as here.
+         *
+         * A token protects an action that borrows the victim's authority, and
+         * choosing a display language borrows none: nothing is stored about
+         * them, nothing is sent, no permission changes, and the picker in front
+         * of them undoes it in one press. Requiring one would mean generating a
+         * token in the header of every page, which means a session and a cookie
+         * for every anonymous visitor to every public page — a regression this
+         * project has already shipped once and had to unpick.
+         */
+        $router->post('/locale', [LocaleController::class, 'set']);
+        $router->get('/locale', [LocaleController::class, 'current']);
 
         $router->get('/scripture', [LibraryController::class, 'scriptureIndex']);
         $router->get('/scripture/{book}/{chapter:\d+}', [LibraryController::class, 'scriptureBook']);

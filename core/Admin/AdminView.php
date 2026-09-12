@@ -1093,6 +1093,12 @@ final class AdminView
             default                 => '<span class="pill ok">Published</span>',
         };
 
+        $languageOptions = $this->languageSelect(
+            (string) ($video->language ?? ''),
+            (array) ($data['locales'] ?? []),
+            'Not set — ask the series, then the site'
+        );
+
         return <<<HTML
         <p class="muted small"><a href="/admin/videos">&larr; All videos</a></p>
         <h1>{$title} {$published}</h1>
@@ -1115,6 +1121,11 @@ final class AdminView
                 <legend>Details</legend>
                 <label>Title <input type="text" name="title" value="{$title}" required></label>
                 <label>Description <textarea name="description" rows="5">{$description}</textarea></label>
+                <label>Spoken language <select name="language">{$languageOptions}</select></label>
+                <p class="muted small">What language the sermon is IN — not the language of this
+                   site's menus. The two are separate on purpose: somebody reading the site in
+                   Spanish watching an English sermon, and the reverse, are both ordinary. Left
+                   unset, the series answers, and then the site.</p>
               </fieldset>
 
               <fieldset>
@@ -2151,6 +2162,12 @@ final class AdminView
                 . '<a href="/admin/permissions">Create one</a> to restrict this to particular people.</p>';
         }
 
+        $seriesLanguageOptions = $this->languageSelect(
+            (string) ($series->language ?? ''),
+            (array) ($data['locales'] ?? []),
+            'Not set — ask the site'
+        );
+
         return <<<HTML
         <p class="muted small"><a href="/admin/series">&larr; All series</a></p>
         <h1>{$title}</h1>
@@ -2167,6 +2184,10 @@ final class AdminView
                 <p class="muted small">Changing this keeps the old address working.</p>
                 <label>Category <select name="category_id">{$categoryOptions}</select></label>
                 <label>Description <textarea name="description" rows="4">{$description}</textarea></label>
+                <label>Spoken language <select name="language">{$seriesLanguageOptions}</select></label>
+                <p class="muted small">Applies to every video in the series that does not say
+                   otherwise. Not the language of this site's menus — the two are separate
+                   questions on purpose.</p>
               </fieldset>
 
               <fieldset>
@@ -2885,6 +2906,50 @@ final class AdminView
         HTML;
     }
 
+    /**
+     * The "what language is this in" select.
+     *
+     * One method for both the video and the series form, so the two cannot
+     * drift into offering different lists.
+     *
+     * "Not set" is the first option and the default, and it is a REAL VALUE
+     * rather than a prompt: it means "ask the series, then the site", which is
+     * what almost every row should say. A form defaulting to the site's
+     * language would assert something about every video anybody opened for any
+     * other reason.
+     *
+     * @param list<string> $available the locales this site has catalogues for
+     */
+    private function languageSelect(string $current, array $available, string $inheritLabel): string
+    {
+        $options = sprintf('<option value="">%s</option>', e($inheritLabel));
+
+        /*
+         * The site's catalogue languages, PLUS whatever this row already says.
+         *
+         * The second half matters and is easy to leave out: a video labelled
+         * Tamil on a site with English and Spanish catalogues must not lose its
+         * label because somebody opened the edit screen. The languages the
+         * INTERFACE is available in and the languages sermons are preached in
+         * are different lists — which is the whole point of this field.
+         */
+        $tags = $available;
+
+        if ($current !== '' && !in_array($current, $tags, true)) {
+            $tags[] = $current;
+        }
+
+        foreach ($tags as $tag) {
+            $options .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e((string) $tag),
+                (string) $tag === $current ? ' selected' : '',
+                e(\Portal\I18n\ContentLanguage::name((string) $tag))
+            );
+        }
+
+        return $options;
+    }
     private function liveRow(array $stream, string $token, string $videoOptions): string
     {
         $id = (int) $stream['id'];
@@ -4803,6 +4868,27 @@ REG;
             );
         }
 
+        /*
+         * The site's own language: the LAST resort in the interface-language
+         * decision, after a visitor's choice and after their browser's
+         * preference. Named that way on the screen, because "site language"
+         * reads as "force everybody into this" and it is not that.
+         *
+         * Only the languages there are catalogues for. A picker offering a
+         * language with no strings behind it would set a value that renders
+         * English while claiming otherwise in the lang attribute — which a
+         * screen reader believes.
+         */
+        $localeOptions = '';
+        foreach ((array) ($data['locales'] ?? []) as $tag) {
+            $localeOptions .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                e((string) $tag),
+                ($settings['site_locale'] ?? 'en') === $tag ? ' selected' : '',
+                e(\Portal\I18n\ContentLanguage::name((string) $tag))
+            );
+        }
+
         $jobs = '';
         foreach ((array) ($data['cronJobs'] ?? []) as $job) {
             $jobs .= sprintf(
@@ -4849,6 +4935,12 @@ REG;
           <input type="hidden" name="_whole_form" value="1">
           <label>Site name <input type="text" name="site_name" value="{$this->attr($settings['site_name'] ?? '')}"></label>
           <label>Timezone <select name="timezone">{$zones}</select></label>
+
+          <label>Default language <select name="site_locale">{$localeOptions}</select></label>
+          <p class="muted small">The LAST resort, not a rule. A visitor who has chosen a language
+             keeps it, and one who has not gets whatever their browser asks for; this is what
+             happens when neither says anything. It does not change what language sermons are
+             in — that is set on each video or series, and is a separate question.</p>
 
           <label class="checkbox">
             <input type="checkbox" name="members_thumbnail_default" value="1"{$membersDefault}>

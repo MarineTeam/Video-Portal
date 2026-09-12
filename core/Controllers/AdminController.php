@@ -869,6 +869,16 @@ final class AdminController extends Controller
                     'description'    => $request->input('description') === null
                         ? $video->description
                         : $request->input('description'),
+                    /*
+                     * Absent means LEAVE IT ALONE, per the partial-POST rule this
+                     * codebase paid for twice. The edit form declares itself
+                     * whole, so an empty string arriving from it really does
+                     * clear the language back to "nobody has said" — which is
+                     * a value somebody may genuinely want to set.
+                     */
+                    'language'       => $request->input('language') === null && !$whole
+                        ? $video->language
+                        : (string) ($request->input('language') ?? ''),
                     'watermark_mode' => $request->input('watermark_mode') ?? $video->watermarkMode,
                     'thumbnail_mode' => $request->input('thumbnail_mode') ?? $video->thumbnailMode,
                     'download_mode'  => $request->input('download_mode') ?? $video->downloadMode,
@@ -1714,6 +1724,7 @@ final class AdminController extends Controller
                         'title'        => $request->input('title'),
                         'slug'         => $request->input('slug'),
                         'description'  => $request->input('description'),
+                        'language'     => (string) ($request->input('language') ?? ''),
                         'category_id'  => $request->input('category_id'),
                         // Absent means unchecked; see updateVideo().
                         'is_published' => $request->input('is_published') !== null,
@@ -4198,6 +4209,7 @@ final class AdminController extends Controller
             'settings' => [
                 'site_name' => $this->config()->setting('site_name', 'Video Portal'),
                 'timezone'  => $this->config()->setting('timezone', 'UTC'),
+                'site_locale' => $this->config()->setting('site_locale', \Portal\I18n\Locale::BASE),
                 'members_thumbnail_default' => $this->config()->setting('members_thumbnail_default', '0'),
                 'downloads_enabled'   => $this->config()->setting('downloads_enabled', '0'),
                 // Default '0'. It makes the audio file reachable by anybody who
@@ -4289,6 +4301,24 @@ final class AdminController extends Controller
             'site_name' => $siteName,
             'timezone'  => $timezone,
 
+            /*
+             * The site's own language, which is the LAST resort in the
+             * interface-language decision — after a visitor's choice and after
+             * their browser's preference. Not a way to force everybody into one
+             * language: somebody who has chosen Spanish keeps Spanish.
+             *
+             * Matched against the catalogues that exist rather than merely
+             * validated, so a stale value cannot leave every page declaring a
+             * language nothing can render. An unmatched value keeps whatever
+             * was there, which is what the rest of this handler does with a
+             * field it cannot use.
+             */
+            'site_locale' => \Portal\I18n\Locale::match(
+                (string) ($request->input('site_locale') ?? ''),
+                $this->translator()->available()
+            ) ?? (string) ($this->config()->setting('site_locale', \Portal\I18n\Locale::BASE)
+                ?? \Portal\I18n\Locale::BASE),
+
             'members_thumbnail_default' => $checkbox('members_thumbnail_default', false),
             'downloads_enabled'         => $checkbox('downloads_enabled', false),
             'audio_mode_enabled'        => $checkbox('audio_mode_enabled', false),
@@ -4331,6 +4361,18 @@ final class AdminController extends Controller
             // Every admin screen, because the person who needs reminding that
             // the site is shut is the one who has moved on to something else.
             'maintenanceMode' => $this->config()->settingBool('maintenance_mode', false),
+
+            /*
+             * The languages this site has catalogues for, so the "what language
+             * is this in" selects on the video and series screens have
+             * something to offer.
+             *
+             * Shared rather than passed by the two screens that use it, because
+             * a third will want it — and because the list is the same answer on
+             * every screen, so two callers deriving it is two places to get it
+             * wrong.
+             */
+            'locales' => $this->translator()->available(),
         ]))->private();
     }
 

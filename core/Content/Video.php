@@ -37,6 +37,14 @@ final class Video
         public readonly string $slug,
         public readonly string $title,
         public readonly ?string $description = null,
+
+        /**
+         * What language this sermon is IN, or null if nobody has said.
+         *
+         * NOT the interface language, and null is a real answer rather than a
+         * gap — see Portal\I18n\ContentLanguage.
+         */
+        public readonly ?string $language = null,
         public readonly string $provider = 'bunny',
         public readonly ?string $providerCollectionId = null,
         public readonly ?int $duration = null,
@@ -109,6 +117,7 @@ final class Video
             slug:                 (string) $row['slug'],
             title:                (string) $row['title'],
             description:          $nullableString('description'),
+            language:             $nullableString('language'),
             provider:             (string) ($row['provider'] ?? 'bunny'),
             providerCollectionId: $nullableString('provider_collection_id'),
             duration:             $nullableInt('duration'),

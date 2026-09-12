@@ -14,6 +14,7 @@ use Portal\Db;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
+use Portal\I18n\Translator;
 use Portal\Themes\ThemeManager;
 
 /**
@@ -79,6 +80,25 @@ abstract class Controller
     protected function themeManager(): ThemeManager
     {
         return $this->container->get(ThemeManager::class);
+    }
+
+    /**
+     * The interface language and its strings.
+     *
+     * Wrapped, because this has to work on a site part-way through its
+     * installer and on one whose lang directory somebody has deleted. A page of
+     * English is a working page; a 500 because a catalogue is missing is not,
+     * and the strings are the least important thing on any page they appear on.
+     */
+    protected function translator(): Translator
+    {
+        try {
+            return $this->container->get(Translator::class);
+        } catch (\Throwable $e) {
+            error_log('Portal: could not settle the interface language. ' . $e->getMessage());
+
+            return new Translator();
+        }
     }
 
     protected function user(): ?User
@@ -218,6 +238,24 @@ abstract class Controller
                 'unreadNotifications' => $this->unreadNotifications($user->email),
             ],
             'nav' => apply_filters('site_nav', $this->defaultNav()),
+
+            /*
+             * The interface language, and the strings in it.
+             *
+             * `locale` is what the html lang attribute carries — which matters
+             * for more than tidiness: it is what a screen reader chooses a
+             * voice from, so a Spanish page declaring itself English is read
+             * aloud in an English accent and is close to unintelligible.
+             *
+             * `t` is a callable rather than the Translator itself, so a
+             * template cannot reach past it to the catalogue or the misses —
+             * and so a theme written before this still works, since anything
+             * that does not call it simply renders its own English.
+             */
+            'locale'    => $this->translator()->locale(),
+            'locales'   => $this->translator()->available(),
+            't'         => fn (string $key, array $replace = []): string
+                => $this->translator()->get($key, $replace),
             /*
              * Whether search engines may index the public pages.
              *

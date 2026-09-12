@@ -25,6 +25,9 @@ final class Series
         public readonly string $title,
         public readonly ?int $categoryId = null,
         public readonly ?string $description = null,
+
+        /** The language of everything in it, unless a video says otherwise. */
+        public readonly ?string $language = null,
         public readonly ?string $imageUrl = null,
         public readonly int $position = 0,
         public readonly bool $isPublished = true,
@@ -65,6 +68,7 @@ final class Series
                 ? (int) $row['category_id']
                 : null,
             description: $nullableString('description'),
+            language:    $nullableString('language'),
             imageUrl:    $nullableString('image_url'),
             position:    (int) ($row['position'] ?? 0),
             isPublished: (bool) ($row['is_published'] ?? true),

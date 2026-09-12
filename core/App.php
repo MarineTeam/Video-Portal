@@ -17,6 +17,8 @@ use Portal\Content\SeriesRepository;
 use Portal\Content\SpeakerRepository;
 use Portal\Content\VideoRepository;
 use Portal\Http\ErrorPage;
+use Portal\I18n\Locale;
+use Portal\I18n\Translator;
 use Portal\Http\HttpException;
 use Portal\Http\Request;
 use Portal\Http\Response;
@@ -137,6 +139,34 @@ final class App
 
         $c->singleton(Crypto::class, fn (): Crypto => new Crypto($this->config->str('app_key')));
         $c->singleton(Session::class, static fn (Container $c): Session => new Session($c->get(Db::class)));
+
+        /*
+         * The interface language, decided once per request.
+         *
+         * A singleton because the decision involves reading a cookie, parsing a
+         * header and listing a directory, and every template that asks for a
+         * string would otherwise redo all three. It is also the only sensible
+         * arrangement for correctness: two Translators built at different
+         * moments could disagree about the locale, and the page would render
+         * half in each language.
+         *
+         * Bound WITHOUT the request, which is not available here — the locale
+         * is negotiated in Controller::view() and the translator is asked for
+         * it there. What this binding provides is the catalogue loading, which
+         * is what benefits from being shared.
+         */
+        $c->singleton(Translator::class, function (Container $c): Translator {
+            $base = new Translator();
+
+            return new Translator(
+                Locale::choose(
+                    $_COOKIE[Locale::COOKIE] ?? null,
+                    $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? null,
+                    $base->available(),
+                    (string) ($this->config->setting('site_locale', Locale::BASE) ?? Locale::BASE)
+                )
+            );
+        });
 
         $c->singleton(ProviderRegistry::class, static fn (Container $c): ProviderRegistry => new ProviderRegistry(
             $c->get(Db::class),

@@ -922,6 +922,22 @@ final class VideoRepository
         }
 
         /*
+         * What language this sermon is IN, which is not what language the
+         * interface is in — see Portal\I18n\ContentLanguage.
+         *
+         * Normalised through Locale, so `EN_gb` becomes `en-GB` and anything
+         * that is not a language tag becomes NULL rather than being stored.
+         * NULL is a real answer here and the right one for rubbish: it means
+         * "nobody has said", which falls through to the series and then the
+         * site — where storing a broken tag would make every listing that
+         * filters on language quietly disagree with itself.
+         */
+        if (array_key_exists('language', $attributes)) {
+            $tag = \Portal\I18n\Locale::normalise((string) $attributes['language']);
+            $fields['language'] = $tag === '' ? null : $tag;
+        }
+
+        /*
          * Dates are normalised on the way in, and an unusable one is refused
          * rather than stored.
          *

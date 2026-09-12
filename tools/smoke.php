@@ -14869,6 +14869,196 @@ check(
 
 @unlink($tvJar);
 
+echo "\nLanguage\n";
+
+/*
+ * The interface language, driven over real HTTP — which is the only way to see
+ * the two rules that are about a request rather than about a string: the cookie
+ * beating the header, and the header's quality weights deciding.
+ */
+$langJar = sys_get_temp_dir() . '/portal-smoke-lang-' . getmypid() . '.txt';
+@unlink($langJar);
+
+$plainPage = get($baseUrl . '/');
+
+check(
+    'A page declares the language it is in',
+    str_contains($plainPage['body'], '<html lang="en">'),
+    'A HARDCODED LANG ATTRIBUTE — a screen reader picks its voice from this, so a page '
+        . 'declaring the wrong language is read aloud in the wrong accent'
+);
+
+check(
+    'and offers a way to change it',
+    str_contains($plainPage['body'], 'locale-picker')
+        && str_contains($plainPage['body'], 'action="/locale"'),
+    'A PICKER NOBODY CAN FIND — the mechanism works and no visitor reaches it'
+);
+
+check(
+    'and names each language in its own language',
+    // "Español", not "Spanish". The person who needs to find Spanish in the
+    // list is the person who does not read the language the list is in.
+    str_contains($plainPage['body'], 'Español'),
+    'the picker is labelled in a language its user may not read'
+);
+
+/*
+ * THE HEADER'S QUALITY WEIGHTS DECIDE. `en;q=0.5, es` is a request for
+ * SPANISH, and reading the header left to right — which is what every naive
+ * parser does — gets it exactly backwards.
+ */
+/*
+ * A THROWAWAY JAR rather than get(), which takes a BOOL second argument — so
+ * passing headers to it sends none and quietly asks for nothing, and the check
+ * would then be measuring the default rather than the header. A fresh jar
+ * carries no locale cookie, so these checks see the header and nothing else.
+ */
+$headerJar = sys_get_temp_dir() . '/portal-smoke-lang-header-' . getmypid() . '.txt';
+@unlink($headerJar);
+
+$weighted = getWithJar($baseUrl . '/locale', $headerJar, ['Accept-Language: en;q=0.5, es']);
+$weightedJson = json_decode($weighted['body'], true);
+
+check(
+    'A weighted Accept-Language is read the way the browser meant it',
+    ($weightedJson['locale'] ?? '') === 'es',
+    'THE HEADER WAS READ LEFT TO RIGHT — got ' . (string) ($weightedJson['locale'] ?? '?')
+        . ', which inverts a preference the browser expressed carefully'
+);
+
+check(
+    'and the site says which input decided',
+    str_contains((string) ($weightedJson['chosen_by'] ?? ''), 'browser'),
+    'four things can decide the language and nothing said which one did'
+);
+
+/* And a page really does come back in that language, not just the endpoint. */
+@unlink($headerJar);
+$spanishPage = getWithJar($baseUrl . '/', $headerJar, ['Accept-Language: es']);
+
+check(
+    'A page arrives in the language that was asked for',
+    str_contains($spanishPage['body'], '<html lang="es">')
+        && str_contains($spanishPage['body'], 'Iniciar sesión'),
+    'the negotiation answered Spanish and the page rendered English'
+);
+
+/* THE COOKIE BEATS THE HEADER: a choice somebody made beats a guess. */
+$chosen = postWithJar($baseUrl . '/locale', ['locale' => 'es'], $langJar);
+
+check(
+    'Choosing a language is remembered',
+    $chosen['status'] === 302,
+    "got {$chosen['status']}"
+);
+
+$afterChoosing = getWithJar($baseUrl . '/', $langJar, ['Accept-Language: en-GB,en;q=0.9']);
+
+check(
+    'and beats what the browser asks for',
+    str_contains($afterChoosing['body'], '<html lang="es">'),
+    'THE HEADER OVERRODE THE PICKER — somebody who switched to Spanish gets English back '
+        . 'tomorrow and concludes the picker does not work'
+);
+
+/*
+ * A posted locale this site has no catalogue for changes nothing. Asserted as
+ * the page still being English rather than as a status, because a 302 is what
+ * both the accepted and the ignored case return.
+ */
+postWithJar($baseUrl . '/locale', ['locale' => 'zz'], $langJar);
+
+check(
+    'A language this site does not have is ignored',
+    str_contains(getWithJar($baseUrl . '/', $langJar)['body'], '<html lang="es">'),
+    'A LANG ATTRIBUTE FOR A CATALOGUE THAT DOES NOT EXIST — the page renders English and '
+        . 'tells a screen reader otherwise'
+);
+
+/* And a cookie cannot name a file. */
+postWithJar($baseUrl . '/locale', ['locale' => '../../config'], $langJar);
+
+check(
+    'and a locale cannot name a file',
+    str_contains(getWithJar($baseUrl . '/', $langJar)['body'], '<html lang="es">'),
+    'a posted locale reached a file path'
+);
+
+/* ------------------------------- the content language is a SEPARATE question */
+
+/*
+ * The rule that matters most in this section, and the only place it can be
+ * seen: the interface in one language and the sermon in another, at the same
+ * time, on the same page.
+ */
+$langSeries = (int) $db->insert('series', [
+    'slug' => 'lang-series', 'title' => 'Spanish Language Series',
+    'is_published' => 1, 'member_only' => 0, 'hidden' => 0,
+    'language' => 'es',
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$englishSermon = (int) $db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'lang-en-' . bin2hex(random_bytes(4)),
+    'slug' => 'lang-english-sermon', 'title' => 'An English Sermon',
+    'status' => 'ready', 'is_published' => 1, 'member_only' => 0,
+    'language' => 'en', 'series_id' => $langSeries,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+check(
+    'A video says what language it is in, and the series says otherwise',
+    (string) $db->value('SELECT language FROM {videos} WHERE id = ?', [$englishSermon]) === 'en'
+        && (string) $db->value('SELECT language FROM {series} WHERE id = ?', [$langSeries]) === 'es',
+    'the columns did not take the values'
+);
+
+/*
+ * THE RULE. The interface in Spanish does not change what language the sermon
+ * is in — and the sermon being English does not change the interface.
+ *
+ * Both directions on one page load, which is the shape a single "language"
+ * setting doing both jobs could never produce.
+ */
+$mixed = getWithJar($baseUrl . '/', $langJar);
+
+check(
+    'The interface language and the sermon language are separate',
+    str_contains($mixed['body'], '<html lang="es">')
+        && (string) $db->value('SELECT language FROM {videos} WHERE id = ?', [$englishSermon]) === 'en',
+    'THE SERMON CHANGED LANGUAGE BECAUSE SOMEBODY SWITCHED THE MENUS — which would hide '
+        . 'content from the people most likely to be looking for it'
+);
+
+/* The admin screens can set both, which is what stops them being dead columns. */
+$videoEdit = getWithJar($baseUrl . '/admin/videos/' . $englishSermon, $jar);
+
+check(
+    'A video edit screen offers the spoken language',
+    $videoEdit['status'] === 200
+        && str_contains($videoEdit['body'], 'name="language"')
+        && str_contains($videoEdit['body'], 'Spoken language'),
+    "got {$videoEdit['status']} — A COLUMN NOTHING WRITES IS NOT A FEATURE"
+);
+
+check(
+    'and says plainly that it is not the interface language',
+    str_contains($videoEdit['body'], 'not the language of this'),
+    'the two questions look like one question on the screen where they are set'
+);
+
+$settingsPage = getWithJar($baseUrl . '/admin/settings', $jar);
+
+check(
+    'The settings screen offers a default language',
+    str_contains($settingsPage['body'], 'name="site_locale"'),
+    'the third tier of the precedence has no writer'
+);
+
+@unlink($langJar);
+@unlink($headerJar);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

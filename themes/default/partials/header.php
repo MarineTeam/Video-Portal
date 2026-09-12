@@ -73,8 +73,25 @@ $tabIcon = static function (string $href): string {
         . $d . '</svg>';
 };
 ?>
+<?php
+/*
+ * The lang attribute is the ACTIVE locale, not a hardcoded "en".
+ *
+ * This matters for more than tidiness. It is what a screen reader picks a
+ * voice from, so a Spanish page declaring itself English gets read aloud in an
+ * English accent and is close to unintelligible; it is what a browser's
+ * translate offer keys off; and it is what decides hyphenation and quotation
+ * marks. Getting it wrong is the single cheapest accessibility failure
+ * available.
+ *
+ * Defaulted here as well as provided by the controller, because a theme
+ * template can be rendered by anything and "en" is a better guess than an
+ * empty attribute.
+ */
+$locale ??= 'en';
+?>
 <!doctype html>
-<html lang="en">
+<html lang="<?= e($locale) ?>">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -273,9 +290,76 @@ do_action('head');
             <span class="pill"><?= (int) $currentUser['unreadNotifications'] ?></span>
           <?php endif ?>
         </a>
-        <a href="/auth/logout">Sign out</a>
+        <a href="/auth/logout"><?= e(isset($t) ? $t('nav.sign_out') : 'Sign out') ?></a>
       <?php else: ?>
-        <a href="/auth/login" data-tab>Sign in</a>
+        <a href="/auth/login" data-tab><?= e(isset($t) ? $t('nav.sign_in') : 'Sign in') ?></a>
+      <?php endif ?>
+
+      <?php
+      /*
+       * The language picker, shown ONLY when there is more than one language to
+       * pick. A picker with one option in it is a control that cannot do
+       * anything, on every page, for every site that never wanted a second
+       * language — which is most of them.
+       *
+       * A FORM rather than links, because choosing a language is a write: it
+       * sets a cookie that changes every later page, and a GET that changes
+       * state is one a prefetcher or a crawler can trigger. Somebody's browser
+       * would quietly switch their site to Spanish because it was warming
+       * links.
+       *
+       * And each option is labelled in ITS OWN language — "Español", not
+       * "Spanish" — because the person who needs to find Spanish in the list is
+       * the person who does not read the language the list is written in.
+       */
+      ?>
+      <?php if (count($locales ?? []) > 1): ?>
+        <?php
+        /*
+         * NO CSRF TOKEN, deliberately, and this is the third endpoint in the
+         * product to make that argument — see the subscribe and unsubscribe
+         * handlers, where the same reasoning is written out.
+         *
+         * A token protects an action that borrows the victim's AUTHORITY.
+         * Choosing a display language borrows none: there is nothing an
+         * attacker gains beyond changing what language somebody's menus are in,
+         * which the picker in front of them undoes in one press. No data
+         * changes, no permission changes, nothing is sent to anybody.
+         *
+         * And the cost of requiring one is concrete and already paid once:
+         * putting the token field in shared view data started a session and set
+         * a cookie for EVERY anonymous visitor to EVERY public page, because
+         * generating a token means having a session to keep it in. This picker
+         * is in the header of every page on the site, so it is the worst
+         * possible place to reintroduce that.
+         */
+        ?>
+        <form method="post" action="/locale" class="locale-picker">
+          <label class="locale-label" for="site-locale">
+            <?= e(isset($t) ? $t('language.label') : 'Language') ?>
+          </label>
+          <?php
+          /*
+           * NO onchange="this.form.submit()", which is the obvious thing to
+           * write here and is hostile to a keyboard.
+           *
+           * Arrowing through a closed select fires `change` on every option it
+           * passes, so a keyboard user reaching for the third language would be
+           * navigated twice on the way — each time reloading the page in a
+           * language they did not choose, and each time losing their place in
+           * the list. The button below is how somebody says "this one", for
+           * every input.
+           */
+          ?>
+          <select id="site-locale" name="locale">
+            <?php foreach ($locales as $tag): ?>
+              <option value="<?= e((string) $tag) ?>"<?= $tag === ($locale ?? '') ? ' selected' : '' ?>>
+                <?= e(\Portal\I18n\ContentLanguage::name((string) $tag)) ?>
+              </option>
+            <?php endforeach ?>
+          </select>
+          <button class="locale-go"><?= e(isset($t) ? $t('action.save') : 'Save') ?></button>
+        </form>
       <?php endif ?>
     </nav>
   </div>
