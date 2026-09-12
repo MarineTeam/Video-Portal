@@ -167,6 +167,31 @@ final class WatchController extends Controller
                      * forward.
                      */
                     'locked'      => $locked,
+
+                    /*
+                     * The address to share, from BASE_URL and never from the
+                     * Host header — the host-header-poisoning fix this product
+                     * inherited, applied to the one link a visitor copies and
+                     * sends to other people.
+                     */
+                    'shareUrl'    => $this->config()->url('/watch/' . $video->slug),
+
+                    /*
+                     * Whether a stranger can follow the link. Share-to-X and
+                     * Facebook are offered only when they can: for a
+                     * members-only video every person who clicks is sent to a
+                     * page that 404s for them, which is a dead end posted in
+                     * public. Copying the link is always offered, because
+                     * another member can use it.
+                     */
+                    'publicLink'  => ($video->isVisible() || $premiering)
+                        && !$video->memberOnly
+                        && !($this->seriesOf($video)?->memberOnly ?? false)
+                        // Restricted to named groups: a stranger belongs to
+                        // none, so asking with no groups is asking "can a
+                        // stranger follow this link" — the same rule the page
+                        // itself applies, rather than a second copy of it.
+                        && $videos->audienceAllows($video, []),
                 ],
                 // Which of this viewer's lists the video is already on, so the
                 // buttons can say "Saved" rather than offering to save
@@ -527,7 +552,13 @@ final class WatchController extends Controller
      */
     private function startPosition(Request $request, ?int $duration): int
     {
-        $requested = (int) ($request->query('t') ?? 0);
+        /*
+         * Through Timestamp, so `?t=1:30` works as well as `?t=90` — the "Share
+         * at" field sends what was typed, and this is the only place it is
+         * parsed. A value that is not a moment starts at the beginning rather
+         * than at a guess.
+         */
+        $requested = \Portal\Support\Timestamp::parse($request->query('t')) ?? 0;
 
         if ($requested <= 0) {
             return 0;

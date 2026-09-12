@@ -4275,6 +4275,151 @@ check('A negative moment is ignored', str_contains($negativeMoment['body'], 'dat
 $nonsenseMoment = getWithJar($baseUrl . '/watch/' . $videoSlug . '?t=notatime', $jar);
 check('A moment that is not a number is ignored', str_contains($nonsenseMoment['body'], 'data-start-at="0"'));
 
+echo "\nShare at a moment\n";
+
+/*
+ * `?t=1:00` is the "Share at" field's own output, because the field sends what
+ * was typed and the server is the only thing that parses it.
+ */
+$minutesMoment = getWithJar($baseUrl . '/watch/' . $videoSlug . '?t=1:00', $jar);
+check(
+    'A moment written as minutes and seconds is read',
+    str_contains($minutesMoment['body'], 'data-start-at="60"'),
+    'the Share at field produces links the watch page cannot read'
+);
+
+/* Ambiguous is refused rather than guessed: 1:5 is 1:05 or 1:50. */
+$ambiguousMoment = getWithJar($baseUrl . '/watch/' . $videoSlug . '?t=1:5', $jar);
+check(
+    'An ambiguous moment starts at the beginning rather than a guess',
+    str_contains($ambiguousMoment['body'], 'data-start-at="0"'),
+    'A GUESSED MOMENT — the link opens somewhere its maker did not mean'
+);
+
+$sharePage = $noMoment['body'];
+
+check(
+    'The page offers the link to pass on',
+    str_contains($sharePage, 'data-share-address') && str_contains($sharePage, 'data-share-at'),
+    'nothing on a sermon page lets somebody pass it on'
+);
+
+/*
+ * THE ADDRESS COMES FROM BASE_URL, NOT THE HOST HEADER.
+ *
+ * Asked with a forged Host. The link a visitor copies and sends to other people
+ * is the one place a poisoned host would travel furthest — this is the fix the
+ * share-link emails already carry, checked on the new surface.
+ */
+/*
+ * The session cookie is sent BY HAND with the forged Host.
+ *
+ * curl picks which cookies to send by matching the Host header, not the URL —
+ * so a jar holding cookies for 127.0.0.1 sends none to "evil.example", the
+ * request arrives signed out, /watch answers 302 to the sign-in page, and a
+ * check that only looked for the ABSENCE of the forged host passed on a page
+ * that never rendered. A mutation building the address from HTTP_HOST survived
+ * it for exactly that reason. Reading the cookies out of the jar and naming
+ * them is the only way to make this request as the signed-in visitor it means
+ * to be.
+ */
+$jarCookies = [];
+
+foreach (file($jar, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+    // Netscape format; HttpOnly cookies are written with a "#HttpOnly_" prefix
+    // on the domain, which is not a comment and must not be skipped.
+    $line = str_starts_with($line, '#HttpOnly_') ? substr($line, 10) : $line;
+
+    if ($line === '' || $line[0] === '#') {
+        continue;
+    }
+
+    $fields = explode("\t", $line);
+
+    if (count($fields) >= 7) {
+        $jarCookies[] = $fields[5] . '=' . $fields[6];
+    }
+}
+
+$forgedHost = getWithJar(
+    $baseUrl . '/watch/' . $videoSlug,
+    sys_get_temp_dir() . '/portal-smoke-forged-' . getmypid() . '.txt',
+    ['Host: evil.example', 'Cookie: ' . implode('; ', $jarCookies)]
+);
+
+/*
+ * Asserted three ways, because the first version asserted only the ABSENCE of
+ * the forged host — and a mutation building the address from HTTP_HOST passed
+ * it. An absence is satisfied by a page that never rendered, so the check now
+ * requires a 200, requires the share box to be present, and requires the
+ * address in it to be the configured base URL: a positive fact that nothing
+ * but the right answer satisfies.
+ */
+$expectedShare = 'value="' . htmlspecialchars($baseUrl . '/watch/' . $videoSlug, ENT_QUOTES) . '" data-share-address';
+
+check(
+    'The shared address never uses the Host a request claimed',
+    $forgedHost['status'] === 200
+        && str_contains($forgedHost['body'], 'data-share-address')
+        && str_contains($forgedHost['body'], $expectedShare)
+        && !str_contains($forgedHost['body'], 'evil.example'),
+    "got {$forgedHost['status']} — A POISONED HOST IN A LINK PEOPLE COPY AND SEND ON, or the "
+        . 'page did not render the share box at all'
+);
+
+/*
+ * THE FIELD USES THE SERVER'S PATTERN. The browser checks what is typed against
+ * the same regular expression PHP parses with, so the two cannot disagree —
+ * asserted as the exact constant appearing in the page, escaped as HTML.
+ */
+check(
+    'and the Share at field checks input against the server\'s own pattern',
+    str_contains($sharePage, 'pattern="' . htmlspecialchars(\Portal\Support\Timestamp::PATTERN, ENT_QUOTES) . '"'),
+    'the browser and the server each have their own idea of what a moment looks like'
+);
+
+/*
+ * X and Facebook only when a stranger can follow the link. Both directions, on
+ * the same video, by flipping it members-only and back — so the check is about
+ * the rule and not about whichever state the fixture happened to be in.
+ */
+$wasMemberOnly = (int) $db->value('SELECT member_only FROM {videos} WHERE id = ?', [$videoRow]);
+
+$db->execute('UPDATE {videos} SET member_only = 0 WHERE id = ?', [$videoRow]);
+$publicShare = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body'];
+
+$db->execute('UPDATE {videos} SET member_only = 1 WHERE id = ?', [$videoRow]);
+$memberShare = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar)['body'];
+
+$db->execute('UPDATE {videos} SET member_only = ? WHERE id = ?', [$wasMemberOnly, $videoRow]);
+
+check(
+    'A public video can be shared to X and Facebook',
+    str_contains($publicShare, 'twitter.com/intent/tweet')
+        && str_contains($publicShare, 'facebook.com/sharer'),
+    'a public sermon offers nowhere to post it'
+);
+
+check(
+    'while a members-only one is not offered to a public feed',
+    !str_contains($memberShare, 'twitter.com/intent/tweet')
+        && str_contains($memberShare, 'data-share-address'),
+    'A MEMBERS-ONLY VIDEO POSTED PUBLICLY — everybody who clicks lands on a 404, '
+        . 'or the copy link vanished along with it'
+);
+
+/*
+ * And no third party's script on the page. A share widget that loads X's or
+ * Facebook's JavaScript reports every visitor to them whether or not anybody
+ * presses it — on a sermon archive, a list of who watched what.
+ */
+check(
+    'and no social network\'s script is loaded to do it',
+    !str_contains($publicShare, 'platform.twitter.com')
+        && !str_contains($publicShare, 'connect.facebook.net'),
+    'A THIRD-PARTY SHARE WIDGET — it tells that network about every visitor'
+);
+
 echo "\nTranscripts\n";
 
 $transcriptEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
