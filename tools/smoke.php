@@ -14584,6 +14584,291 @@ check(
     'a 401 tells a crawler that a real token exists at this shape of URL'
 );
 
+echo "\nTelevision\n";
+
+/*
+ * The device grant, driven the way the two devices drive it: one request with
+ * no session at all (the television), and one from a signed-in browser (the
+ * phone). Two separate cookie jars, because the whole point of the flow is that
+ * they are two different clients.
+ */
+$tvJar = sys_get_temp_dir() . '/portal-smoke-tv-' . getmypid() . '.txt';
+@unlink($tvJar);
+
+/*
+ * /tv with no session is the TELEVISION, and it must show a code.
+ *
+ * The same address signed in is the phone's approval form — one address,
+ * because somebody has to type it on a remote control once and will not type
+ * two.
+ */
+$tvWaiting = getWithJar($baseUrl . '/tv', $tvJar);
+
+check('A television opening /tv gets a code', $tvWaiting['status'] === 200, "got {$tvWaiting['status']}");
+
+preg_match('/data-device="([0-9a-f]{64})"/', $tvWaiting['body'], $deviceMatch);
+preg_match('/data-tv-code>([0-9A-Z-]+)</', $tvWaiting['body'], $codeMatch);
+
+$deviceCode = (string) ($deviceMatch[1] ?? '');
+$shownCode = (string) ($codeMatch[1] ?? '');
+
+check(
+    'and the code is on the screen, grouped for reading across a room',
+    $shownCode !== '' && str_contains($shownCode, '-'),
+    'the television is showing nothing to type'
+);
+
+/*
+ * THE ALPHABET RULE, asserted on what is actually on the screen.
+ *
+ * PairingCodeTest proves the generator never produces these over 400 codes;
+ * this proves the thing rendered to a television carries none either — a
+ * display helper that lower-cased or transliterated would pass the first check
+ * and fail here.
+ */
+check(
+    'and it contains no character that could be misread',
+    $shownCode !== ''
+        && !preg_match('/[ILOU]/', $shownCode),
+    'A CODE ON A TELEVISION CONTAINED A LOOKALIKE — somebody reading it across a room '
+        . "cannot tell it from another character: {$shownCode}"
+);
+
+check(
+    'and the television is given a device code to poll with',
+    strlen($deviceCode) === 64,
+    'nothing for the television to ask about'
+);
+
+/* Nobody has said yes yet, and the answer is the specification's word. */
+$pending = post($baseUrl . '/tv/pair/poll', ['device_code' => $deviceCode]);
+
+check(
+    'Before anybody approves it the answer is authorization_pending',
+    ($json = json_decode($pending['body'], true)) !== null
+        && ($json['error'] ?? '') === 'authorization_pending',
+    'a television cannot tell whether to keep asking: ' . substr($pending['body'], 0, 120)
+);
+
+/* THE LOOKALIKE MAPPING, over real HTTP: the code typed as a person misreads it. */
+$misread = strtolower(strtr(str_replace('-', '', $shownCode), ['0' => 'O', '1' => 'I']));
+
+$tvApprovePage = getWithJar($baseUrl . '/tv', $jar);
+
+check(
+    'A signed-in person opening the same address gets the form instead',
+    $tvApprovePage['status'] === 200 && str_contains($tvApprovePage['body'], 'name="code"'),
+    'one address has to do the right thing for each device'
+);
+
+$approved = postWithJar($baseUrl . '/tv', [
+    '_token' => csrfFrom($tvApprovePage['body']),
+    'code'   => $misread,
+], $jar);
+
+check(
+    'and a code read wrongly still works',
+    $approved['status'] === 302,
+    "got {$approved['status']} — A MISREAD CODE WAS REFUSED, which is the commonest thing "
+        . "that happens: typed {$misread}"
+);
+
+check(
+    'and the pairing really was approved',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {tv_pairings} WHERE device_hash = ? AND approved_at IS NOT NULL',
+        [hash('sha256', $deviceCode)]
+    ) === 1,
+    'the form redirected and wrote nothing'
+);
+
+/*
+ * THE DEVICE CODE IS NOWHERE IN THE DATABASE. Asserted here as well as in the
+ * unit test, because this is the code that actually travelled — the one the
+ * page rendered and the poll presented.
+ */
+$pairingRows = (string) json_encode($db->all('SELECT * FROM {tv_pairings}'));
+
+check(
+    'The device code is not stored anywhere',
+    $pairingRows !== '' && !str_contains($pairingRows, $deviceCode),
+    'THE DEVICE CODE IS IN THE DATABASE — it leaks with any backup, and it is a session'
+);
+
+/* The television polls again, and this time it is signed in. */
+$claimed = postWithJar($baseUrl . '/tv/pair/poll', ['device_code' => $deviceCode], $tvJar);
+$claimedJson = json_decode($claimed['body'], true);
+
+check(
+    'The television is signed in by polling',
+    $claimed['status'] === 200 && ($claimedJson['ok'] ?? false) === true,
+    "got {$claimed['status']} — " . substr($claimed['body'], 0, 160)
+);
+
+$tenFoot = getWithJar($baseUrl . '/tv/screen', $tvJar);
+
+check(
+    'and it now reaches the ten-foot page',
+    $tenFoot['status'] === 200,
+    /*
+     * The STATUS, named. This check first read "the pairing produced no
+     * session" and the real answer was 500 from an undefined array key in the
+     * template — so a message asserting a cause sent the diagnosis to the one
+     * place it was not. A 302 here means no session; anything else means
+     * something else, and the check has to say which it got.
+     */
+    "got {$tenFoot['status']} — 302 would mean no session, 500 means the page itself"
+);
+
+/*
+ * A PAIRING IS GOOD FOR ONE SIGN-IN. The television's device code lives in a
+ * config file for years, so a second claim would be a permanent session.
+ */
+$second = post($baseUrl . '/tv/pair/poll', ['device_code' => $deviceCode]);
+
+check(
+    'and the same device code cannot be used twice',
+    ($json = json_decode($second['body'], true)) !== null
+        && ($json['error'] ?? '') === 'access_denied',
+    'A PAIRING WAS CLAIMED TWICE — the device code is a permanent session: '
+        . substr($second['body'], 0, 120)
+);
+
+/* A made-up device code is refused without anything being created. */
+$madeUp = post($baseUrl . '/tv/pair/poll', ['device_code' => str_repeat('a', 64)]);
+
+check(
+    'A made-up device code is refused',
+    ($json = json_decode($madeUp['body'], true)) !== null
+        && ($json['error'] ?? '') !== 'ok'
+        && !isset($json['ok']),
+    'a television could sign itself in by guessing'
+);
+
+/* --------------------------------- the ten-foot page, and what it must not do */
+
+/*
+ * The page already fetched above, rather than fetched again. Every check below
+ * is about its content and each one asserts the status was 200 first — so a
+ * page that 500s reports as a page that 500s rather than as three separate
+ * layout rules having been broken, which is what the first run of this section
+ * did.
+ */
+$tvScreen = $tenFoot;
+
+check(
+    'The ten-foot page lays the tiles in one strip',
+    $tvScreen['status'] === 200
+        && str_contains($tvScreen['body'], 'data-tv-strip')
+        && str_contains($tvScreen['body'], 'flex-wrap: nowrap'),
+    'A GRID THAT WRAPS — Right from the end of a row lands somewhere nobody can predict'
+);
+
+check(
+    'and never takes the focus ring away',
+    $tvScreen['status'] === 200
+        && !str_contains($tvScreen['body'], 'outline: none')
+        && !str_contains($tvScreen['body'], 'outline:none')
+        && str_contains($tvScreen['body'], 'outline: 4px solid'),
+    'A REMOTE MOVES FOCUS AND NOTHING ELSE — without a ring the page cannot be used at all'
+);
+
+check(
+    'and the focused tile grows by a transform rather than by size',
+    /*
+     * The clipping rule. A focused tile that grew its BOX would be clipped by
+     * the strip's own scroll container — which is the bug the admin sidebar
+     * flyout turned out to be, measured in a browser rather than reasoned
+     * about: overflow-y:auto makes overflow-x compute to auto, and the submenu
+     * widened the scroll area instead of escaping it. A transform paints
+     * outside the box without changing the box the scroller measures.
+     */
+    $tvScreen['status'] === 200 && str_contains($tvScreen['body'], 'transform: scale('),
+    'THE FOCUSED TILE IS CLIPPED BY ITS OWN SCROLLER'
+);
+
+/* --------------------------------------------------- the catalogue feed */
+
+$catalogue = get($baseUrl . '/tv/catalogue.json');
+$catalogueJson = json_decode($catalogue['body'], true);
+
+check(
+    'The catalogue is readable with no session at all',
+    $catalogue['status'] === 200 && is_array($catalogueJson['videos'] ?? null),
+    "got {$catalogue['status']}"
+);
+
+check(
+    'and every address in it points at this site rather than the CDN',
+    $catalogue['body'] !== ''
+        && !str_contains($catalogue['body'], 'b-cdn.net')
+        && !str_contains($catalogue['body'], 'token='),
+    'A SIGNED CDN URL IN A FEED — it expires, and one already handed out cannot be recalled'
+);
+
+/*
+ * THE RULE. Members-only content is ABSENT from a feed a device fetches with no
+ * session, and that includes a public video inside a members-only SERIES —
+ * which is the case that was leaking into every public listing until this
+ * section was built.
+ *
+ * Staged here rather than relying on whatever the fixtures happen to hold: the
+ * middle case is the only one that distinguishes the two implementations, and
+ * the two obvious fixtures both pass against the broken code.
+ */
+$tvSeries = (int) $db->insert('series', [
+    'slug' => 'tv-members-series', 'title' => 'TV Members Series',
+    'is_published' => 1, 'member_only' => 1, 'hidden' => 0,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$db->insert('videos', [
+    'provider' => 'bunny', 'provider_id' => 'tv-inside-' . bin2hex(random_bytes(4)),
+    'slug' => 'tv-inside-members-series', 'title' => 'Inside The TV Members Series',
+    'status' => 'ready', 'is_published' => 1, 'member_only' => 0,
+    'series_id' => $tvSeries,
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$catalogueAgain = get($baseUrl . '/tv/catalogue.json');
+
+check(
+    'A video in a members-only series is absent from the catalogue',
+    $catalogueAgain['status'] === 200
+        && !str_contains($catalogueAgain['body'], 'Inside The TV Members Series'),
+    'A MEMBERS-ONLY SERIES PUT ITS EPISODE IN A PUBLIC FEED — the title is a leak too, and '
+        . 'a feed is fetched by a device with no session so there is nobody to check later'
+);
+
+/* And the same rule holds on the ordinary public listing, not only in the feed. */
+check(
+    'and from the public library as well',
+    !str_contains(get($baseUrl . '/')['body'], 'Inside The TV Members Series'),
+    'the feed is stricter than the page, which is two implementations of one rule'
+);
+
+/* A member still sees it, or the rule is a deletion rather than a gate. */
+check(
+    'while a member still sees it',
+    str_contains(getWithJar($baseUrl . '/search?q=Inside+The+TV+Members', $jar)['body'], 'Inside The TV Members Series'),
+    'the series is invisible to the people it is for'
+);
+
+/*
+ * And there is a way to find it.
+ *
+ * The address does the right thing for either device, and nothing else on the
+ * site mentioned it — which is this project's signature defect wearing its
+ * usual costume: a working route nobody is told about.
+ */
+check(
+    'The account page offers a way to sign a television in',
+    str_contains(getWithJar($baseUrl . '/account', $jar)['body'], 'href="/tv"'),
+    'A ROUTE NOBODY CAN FIND — the flow works and no person will ever reach it'
+);
+
+@unlink($tvJar);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

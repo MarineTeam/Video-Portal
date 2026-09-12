@@ -309,6 +309,72 @@ final class ContentTest extends DatabaseTestCase
         self::assertSame($ready->id, $result['items'][0]->id);
     }
 
+    /**
+     * THE RULE, and a leak that had been shipping since Phase 1.
+     *
+     * `series.member_only` has existed since the first migration and the series
+     * PAGE has always refused a stranger. Nothing ever hid its EPISODES: a
+     * series marked members-only listed every one of its videos to anybody, on
+     * the home page and in search, with title and artwork.
+     *
+     * Watching was never open — /watch needs an approved account either way —
+     * so what leaked was the title, which this project's own rule names as a
+     * leak in its own right.
+     *
+     * Written with THREE videos, because the two obvious fixtures both pass
+     * against the broken code: a members-only video in a members-only series is
+     * already excluded by its own flag, and a public video with no series has
+     * nothing to inherit. Only the middle case — a public video inside a
+     * members-only series — can tell the two implementations apart.
+     */
+    public function testAMembersOnlySeriesHidesItsEpisodesFromEverybodyElse(): void
+    {
+        $shut = $this->makeSeriesRow('Members Only Series', ['member_only' => 1]);
+        $open = $this->makeSeriesRow('Ordinary Series', ['member_only' => 0]);
+
+        $hidden = $this->makeVideo('Inside The Members Series', null, [
+            'status' => 'ready', 'is_published' => 1, 'member_only' => 0, 'series_id' => $shut,
+        ]);
+        $visible = $this->makeVideo('Inside The Ordinary Series', null, [
+            'status' => 'ready', 'is_published' => 1, 'member_only' => 0, 'series_id' => $open,
+        ]);
+        $loose = $this->makeVideo('No Series At All', null, [
+            'status' => 'ready', 'is_published' => 1, 'member_only' => 0,
+        ]);
+
+        $ids = array_map(
+            static fn (\Portal\Content\Video $v): int => $v->id,
+            $this->videos->query()['items']
+        );
+
+        self::assertNotContains(
+            $hidden->id,
+            $ids,
+            'A MEMBERS-ONLY SERIES LISTED ITS EPISODES TO A STRANGER — the title is a leak too'
+        );
+
+        // Both the other directions, or the rule above would pass against a
+        // listing that had stopped returning anything at all.
+        self::assertContains($visible->id, $ids, 'an ordinary series stopped listing its videos');
+        self::assertContains($loose->id, $ids, 'a video with no series was caught by the join');
+    }
+
+    /** And a member sees them, or the rule is a deletion rather than a gate. */
+    public function testAMemberStillSeesAMembersOnlySeries(): void
+    {
+        $shut = $this->makeSeriesRow('Members Only Series', ['member_only' => 1]);
+        $inside = $this->makeVideo('Inside The Members Series', null, [
+            'status' => 'ready', 'is_published' => 1, 'member_only' => 0, 'series_id' => $shut,
+        ]);
+
+        $ids = array_map(
+            static fn (\Portal\Content\Video $v): int => $v->id,
+            $this->videos->query(['includeMemberOnly' => true])['items']
+        );
+
+        self::assertContains($inside->id, $ids, 'the series is invisible to the people it is for');
+    }
+
     public function testAdminListingCanIncludeEverything(): void
     {
         $this->makeVideo('Published', null, ['status' => 'ready', 'is_published' => 1]);
@@ -727,6 +793,31 @@ final class ContentTest extends DatabaseTestCase
     // -------------------------------------------------------------- fixtures
 
     /** @param array<string, mixed> $overrides */
+    /**
+     * A series row, for the visibility rules that depend on one.
+     *
+     * The raw row rather than SeriesRepository::create(), because what is being
+     * tested is a WHERE clause reading a column — so the fixture should set the
+     * column and nothing else, and not depend on whatever the repository
+     * decides to default.
+     *
+     * @param array<string, mixed> $overrides
+     */
+    private function makeSeriesRow(string $title, array $overrides = []): int
+    {
+        $now = date('Y-m-d H:i:s');
+
+        return (int) $this->db()->insert('series', $overrides + [
+            'slug'         => 'series-' . bin2hex(random_bytes(4)),
+            'title'        => $title,
+            'is_published' => 1,
+            'member_only'  => 0,
+            'hidden'       => 0,
+            'created_at'   => $now,
+            'updated_at'   => $now,
+        ]);
+    }
+
     private function makeVideo(string $title, ?string $collectionId, array $overrides = []): Video
     {
         $now = date('Y-m-d H:i:s');

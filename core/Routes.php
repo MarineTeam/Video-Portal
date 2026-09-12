@@ -11,6 +11,7 @@ use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminBookController;
 use Portal\Controllers\AdminApiKeyController;
 use Portal\Controllers\LiveChatController;
+use Portal\Controllers\TvController;
 use Portal\Controllers\ApiController;
 use Portal\Controllers\AdminBroadcastController;
 use Portal\Controllers\AdminFormController;
@@ -89,6 +90,51 @@ final class Routes
         $router->post('/live/{slug}/chat/moderate', [LiveChatController::class, 'moderate']);
 
         $router->get('/live/{slug}', [LibraryController::class, 'live']);
+
+        /*
+         * Television.
+         *
+         * The two device endpoints take NO SESSION, by definition: a television
+         * asking to be paired has nothing yet, which is the whole point of the
+         * device grant. What protects them is a rate limit by address, a
+         * ten-minute lifetime, and a device code that is 32 random bytes.
+         *
+         * They are also the only POSTs in this file with no CSRF token, and
+         * that is correct rather than an omission: a token protects an action
+         * that borrows the victim's authority, and these borrow none — the
+         * caller has no session for anything to be done in the name of. The
+         * same reasoning the subscribe and unsubscribe endpoints carry.
+         */
+        $router->post('/tv/pair', [TvController::class, 'start']);
+        $router->post('/tv/pair/poll', [TvController::class, 'poll']);
+
+        /*
+         * The catalogue, public and read by devices with no session — which is
+         * exactly why the members-only filtering happens in the listing query
+         * rather than here. There is nobody to check later.
+         */
+        $router->get('/tv/catalogue.json', [TvController::class, 'catalogue']);
+
+        /*
+         * /tv IS PUBLIC, AND IT ANSWERS DIFFERENTLY TO EACH DEVICE.
+         *
+         * Signed out, it is the television: it shows a code and waits. Signed
+         * in, it is the phone: it asks for the code. One address, because
+         * somebody has to type it on a remote control once and will not type
+         * two — and because "open /tv on the television and /tv/approve on your
+         * phone" is an instruction nobody follows correctly the first time.
+         *
+         * Not a device sniff. The question is "does this browser have a session
+         * of its own", which is the thing that actually distinguishes them and
+         * is the thing that decides which page is useful.
+         */
+        $router->get('/tv', [TvController::class, 'entry']);
+
+        // Approving needs an account. The GET above does not, which is the
+        // whole point of it.
+        $router->post('/tv', [TvController::class, 'approve'], ['auth.authorized']);
+
+        $router->get('/tv/screen', [TvController::class, 'screen'], ['auth.authorized']);
 
         $router->get('/scripture', [LibraryController::class, 'scriptureIndex']);
         $router->get('/scripture/{book}/{chapter:\d+}', [LibraryController::class, 'scriptureBook']);
