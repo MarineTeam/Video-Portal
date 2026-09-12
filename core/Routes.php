@@ -9,6 +9,7 @@ use Portal\Controllers\AdminController;
 use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminBookController;
+use Portal\Controllers\ApiController;
 use Portal\Controllers\AdminBroadcastController;
 use Portal\Controllers\AdminFormController;
 use Portal\Controllers\AdminGroupController;
@@ -458,6 +459,35 @@ final class Routes
          *
          * The literal paths come first, or a token could never match.
          */
+        /*
+         * The read API. Key-authenticated inside the controller rather than by
+         * middleware, because the INDEX deliberately needs no key — somebody
+         * integrating has to see what exists before they have been given
+         * anything, or the first step is asking a person for a key to read the
+         * documentation.
+         *
+         * No auth middleware also means no session is started for a machine
+         * that will never hold a cookie.
+         */
+        $router->get('/api/v1', [ApiController::class, 'index']);
+        $router->get('/api/v1/categories', [ApiController::class, 'categories']);
+        $router->get('/api/v1/series', [ApiController::class, 'series']);
+        $router->get('/api/v1/videos', [ApiController::class, 'videos']);
+        $router->get('/api/v1/files', [ApiController::class, 'files']);
+        $router->get('/api/v1/events', [ApiController::class, 'events']);
+        /*
+         * A scope of its own, which events:read does not imply — the difference
+         * between the two is this list of names and phone numbers.
+         */
+        $router->get(
+            '/api/v1/events/{id:\d+}/registrations',
+            [ApiController::class, 'registrations']
+        );
+        $router->get('/api/v1/schedules', [ApiController::class, 'schedules']);
+        $router->get('/api/v1/schedule-dates', [ApiController::class, 'scheduleDates']);
+        $router->get('/api/v1/groups', [ApiController::class, 'groups']);
+        $router->get('/api/v1/analytics', [ApiController::class, 'analytics']);
+
         $router->get('/calendar/events.ics', [CalendarFeedController::class, 'whatsOn']);
         /*
          * `[0-9a-f]+` rather than `[0-9a-f]{64}`: the router's placeholder

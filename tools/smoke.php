@@ -13512,6 +13512,207 @@ check(
     'half the list would get the old words and half the new'
 );
 
+echo "\nThe read API\n";
+
+/*
+ * A key request, with the key in a header. Not through get(), which sends no
+ * headers — the API is the one surface where the credential IS a header.
+ */
+$apiGet = static function (string $path, string $key = '') use ($baseUrl): array {
+    $ch = curl_init($baseUrl . $path);
+    $headers = $key === '' ? [] : ['Authorization: Bearer ' . $key];
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER         => true,
+        CURLOPT_HTTPHEADER     => $headers,
+        CURLOPT_TIMEOUT        => SMOKE_TIMEOUT,
+    ]);
+
+    $raw = (string) curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    return ['status' => $status, 'body' => substr($raw, $headerSize)];
+};
+
+$apiIndex = $apiGet('/api/v1');
+$indexJson = json_decode($apiIndex['body'], true);
+
+check('The API index needs no key', $apiIndex['status'] === 200, "got {$apiIndex['status']}");
+
+check(
+    'and describes itself, including that scopes have no hierarchy',
+    is_array($indexJson)
+        && isset($indexJson['scopes'], $indexJson['endpoints'])
+        && str_contains((string) ($indexJson['scope_rule'] ?? ''), 'no hierarchy'),
+    'an integration author who assumes a hierarchy writes code that reads less than they think'
+);
+
+check(
+    'and names the eleven endpoints',
+    is_array($indexJson) && count($indexJson['endpoints'] ?? []) === 10,
+    'the index and the routes disagree about what exists'
+);
+
+check(
+    'and says plainly that a group address is not available at any level',
+    str_contains(strtolower($apiIndex['body']), 'no scope for it'),
+    'somebody would spend an afternoon looking for a permission that does not exist'
+);
+
+check(
+    'A request with no key is refused',
+    $apiGet('/api/v1/videos')['status'] === 401,
+    'the API answered without a key'
+);
+
+check(
+    'and a made-up key is refused',
+    $apiGet('/api/v1/videos', 'vpk_' . str_repeat('0', 64))['status'] === 401,
+    'a guessed key authenticated'
+);
+
+/* A key holding events:read and nothing else. */
+$apiKeys = new \Portal\Api\ApiKeys($db);
+$eventsOnly = $apiKeys->issue('Smoke: events only', [\Portal\Api\Scope::EVENTS], 'admin@smoke.test');
+
+$eventsAnswer = $apiGet('/api/v1/events', $eventsOnly['key']);
+
+/*
+ * An event and a sign-up, made here rather than relied on from an earlier
+ * section — so the two checks below cannot pass because this database happens
+ * to hold nothing. "No events to count" and "the key was refused" look the
+ * same in a payload otherwise.
+ */
+$apiEventId = (int) $db->insert('events', [
+    'slug'         => 'api-smoke-event',
+    'title'        => 'API smoke event',
+    'starts_at'    => date('Y-m-d H:i:s', time() + 86400 * 5),
+    'capacity'     => 10,
+    'is_published' => 1,
+    'created_at'   => date('Y-m-d H:i:s'),
+    'updated_at'   => date('Y-m-d H:i:s'),
+]);
+
+$db->insert('event_signups', [
+    'event_id'   => $apiEventId,
+    'name'       => 'Jane Cole',
+    'email'      => 'jane-api@smoke.test',
+    'phone'      => '07700 900123',
+    'state'      => 'going',
+    'created_at' => date('Y-m-d H:i:s'),
+    'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$eventsAnswer = $apiGet('/api/v1/events', $eventsOnly['key']);
+$eventsJson = json_decode($eventsAnswer['body'], true);
+
+/*
+ * The SHAPE, not a column name. `places_taken` only appears when there is a
+ * row, so asserting on it conflates "the key was refused" with "this database
+ * has no events" — which is what it did on the first run.
+ */
+check(
+    'A key can read what it holds',
+    $eventsAnswer['status'] === 200
+        && is_array($eventsJson)
+        && array_key_exists('events', $eventsJson)
+        && array_key_exists('next_cursor', $eventsJson),
+    "got {$eventsAnswer['status']} — expected a paged events payload"
+);
+
+check(
+    'and how full each event is',
+    is_array($eventsJson['events'] ?? null)
+        && $eventsJson['events'] !== []
+        && array_key_exists('places_taken', $eventsJson['events'][0]),
+    'there were no events to count, or the endpoint that promises counts carried none'
+);
+
+check(
+    'and the events endpoint carries no names',
+    !str_contains($eventsAnswer['body'], '@smoke.test'),
+    'AN EMAIL ADDRESS CAME BACK FROM THE ENDPOINT THAT PROMISES NO NAMES'
+);
+
+/*
+ * THE RULE, over HTTP. events:read and events:registrations share a prefix and
+ * nothing else — the difference between them is a list of phone numbers.
+ */
+$registrations = $apiGet('/api/v1/events/' . $apiEventId . '/registrations', $eventsOnly['key']);
+
+check(
+    'events:read does NOT imply events:registrations',
+    $registrations['status'] === 403,
+    "got {$registrations['status']} — THAT IS A LIST OF NAMES AND PHONE NUMBERS"
+);
+
+check(
+    'and the refusal says which scope was missing',
+    str_contains($registrations['body'], 'events:registrations'),
+    'an author debugging a bare 403 guesses, and the usual guess is to ask for every scope'
+);
+
+check(
+    'and a scope in another family is refused too',
+    $apiGet('/api/v1/groups', $eventsOnly['key'])['status'] === 403,
+    'a key read something outside its scopes'
+);
+
+/* A key that does hold it. */
+$withPeople = $apiKeys->issue(
+    'Smoke: registrations',
+    [\Portal\Api\Scope::REGISTRATIONS, \Portal\Api\Scope::GROUPS],
+    'admin@smoke.test'
+);
+
+$allowed = $apiGet('/api/v1/events/' . $apiEventId . '/registrations', $withPeople['key']);
+
+/*
+ * Asserts the personal data actually arrives, not merely a 200. An empty list
+ * would pass a status check and would not prove the scope grants anything —
+ * and this is the endpoint whose whole content is names and phone numbers.
+ */
+check(
+    'A key holding events:registrations may read them',
+    $allowed['status'] === 200
+        && str_contains($allowed['body'], 'jane-api@smoke.test')
+        && str_contains($allowed['body'], '07700 900123'),
+    "got {$allowed['status']} — the scope it was granted returned nothing"
+);
+
+check(
+    'and that key cannot read events it was not granted',
+    $apiGet('/api/v1/events', $withPeople['key'])['status'] === 403,
+    'events:registrations implied events:read — no hierarchy means neither direction'
+);
+
+/* A group's address has no scope at all. */
+$groupsAnswer = $apiGet('/api/v1/groups', $withPeople['key']);
+
+check(
+    'The groups endpoint never carries an address',
+    $groupsAnswer['status'] === 200 && !str_contains($groupsAnswer['body'], '"address"'),
+    'A SMALL GROUP\'S ADDRESS LEFT THROUGH THE API — there is no scope that should allow that'
+);
+
+/* Revoking stops a key and keeps its history. */
+$apiKeys->revoke($eventsOnly['id']);
+
+check(
+    'A revoked key stops working',
+    $apiGet('/api/v1/events', $eventsOnly['key'])['status'] === 401,
+    'A REVOKED KEY STILL READS'
+);
+
+check(
+    'and its row survives so the history does',
+    (int) $db->value('SELECT COUNT(*) FROM {api_keys} WHERE id = ?', [$eventsOnly['id']]) === 1,
+    'revoking destroyed the audit trail at the moment somebody needs it'
+);
+
 echo "\nCalendar feeds\n";
 
 $whatsOn = get($baseUrl . '/calendar/events.ics');
