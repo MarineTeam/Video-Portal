@@ -16161,6 +16161,13 @@ check(
 @unlink($queuePdf);
 @unlink($queueBad);
 
+// The attached copy is real bytes under storage/, which outlives the scratch
+// database — removed here or it lands in the working tree after every run.
+foreach ($db->all("SELECT id, path FROM {file_assets} WHERE original_name = ?", ["Week 3 handout.exe.pdf"]) as $queuedRow) {
+    @unlink(PORTAL_STORAGE . "/" . $queuedRow["path"]);
+    $db->execute("DELETE FROM {file_assets} WHERE id = ?", [(int) $queuedRow["id"]]);
+}
+
 $auditJson = getWithJar($baseUrl . '/admin/activity.json?action=asset.create', $jar);
 $auditRows = json_decode($auditJson['body'], true);
 check(
