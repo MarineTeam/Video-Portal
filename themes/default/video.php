@@ -360,6 +360,13 @@ $tags ??= [];
 $note ??= '';
 ?>
 
+<?php if (!empty($noteSheet)): ?>
+  <p class="note-sheet-link">
+    <a class="btn secondary" href="/sheets/<?= e(rawurlencode((string) ($video['slug'] ?? ''))) ?>">Note sheet</a>
+    <span class="muted small">The fill-in-the-blank outline for this talk. Fill it in as you listen, or print it.</span>
+  </p>
+<?php endif ?>
+
 <?php if (!empty($video['embedUrl'])): ?>
   <section class="notes" aria-labelledby="notes-heading">
     <h2 class="section-title" id="notes-heading">My notes</h2>

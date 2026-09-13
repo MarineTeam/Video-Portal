@@ -258,6 +258,7 @@ final class AdminController extends Controller
             'inheritedDownloadLabel' => $this->inheritedDownloadLabel($videos, $video),
             'groups'         => $this->permissionGroups(),
             'audiences'      => $videos->audienceGroups('video', $video->id),
+            'noteSheet'      => (new \Portal\Content\NoteSheetRepository($this->db()))->outline($video->id),
             /*
              * What the series says, so the screen can explain a restriction the
              * video does not carry itself. An administrator looking at a video
@@ -1000,6 +1001,19 @@ final class AdminController extends Controller
                         'intval',
                         (array) ($request->post['audiences'] ?? [])
                     ));
+                }
+
+                /*
+                 * The note sheet, OUTSIDE the whole-form guard: a textarea is
+                 * one of the fields a browser CAN tell apart — absent is not
+                 * sent at all, empty is sent as ''. So absent leaves the sheet
+                 * alone and empty removes it, whichever form posted.
+                 */
+                if (array_key_exists('note_sheet', $request->post)) {
+                    (new \Portal\Content\NoteSheetRepository($this->db()))->saveOutline(
+                        $id,
+                        (string) $request->post['note_sheet']
+                    );
                 }
 
                 Audit::log($this->db(), $this->user()?->email, 'video.update', 'video', (string) $id, $video->title);

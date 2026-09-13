@@ -464,12 +464,16 @@ $cleanup = static function () use ($admin, $database, &$serverProcess, &$serverL
     if (is_resource($serverProcess)) {
         $status = proc_get_status($serverProcess);
 
-        proc_terminate($serverProcess);
-
         // proc_terminate signals the shell, not necessarily the server it
         // spawned, and proc_close then blocks forever waiting for a child that
         // is still listening. Kill the process tree explicitly, and never call
         // proc_close — the OS reaps it once this script exits.
+        //
+        // The tree kill comes FIRST. On Windows the pid is cmd.exe's; when
+        // proc_terminate ran first it killed that shell, orphaning the server,
+        // and taskkill /T then found no tree to walk. Every completed run left
+        // a server on the port, so the next run refused to start — which a
+        // mutation harness then reported, correctly, as five unknowns.
         if (!empty($status['pid'])) {
             $pid = (int) $status['pid'];
             if (stripos(PHP_OS_FAMILY, 'Windows') !== false) {
@@ -478,6 +482,8 @@ $cleanup = static function () use ($admin, $database, &$serverProcess, &$serverL
                 @exec('kill -9 ' . $pid . ' 2>/dev/null', $ignored);
             }
         }
+
+        proc_terminate($serverProcess);
     }
     if (is_file(PORTAL_CONFIG_FILE)) {
         @unlink(PORTAL_CONFIG_FILE);
@@ -15820,6 +15826,230 @@ check(
     (int) $db->value('SELECT COUNT(*) FROM {users} WHERE email = ? AND role_id = ?', ['admin@smoke.test', $adminRole]) === 1,
     'on a host with no shell, nobody could let anybody in again'
 );
+
+echo "\nSermon note sheets\n";
+
+/*
+ * Two fresh videos rather than the shared one, whose flags earlier sections
+ * have changed: a public talk, and a members-only one whose outline must be a
+ * 404 to a stranger exactly as its title is.
+ */
+$sheetNow = date('Y-m-d H:i:s');
+$sheetFixture = static function (string $title, int $memberOnly) use ($db, $sheetNow): array {
+    $slug = 'sheet-' . bin2hex(random_bytes(4));
+    $id = (int) $db->insert('videos', [
+        'provider' => 'bunny', 'provider_id' => 'sheet-' . bin2hex(random_bytes(5)),
+        'slug' => $slug, 'title' => $title, 'status' => 'ready', 'is_published' => 1,
+        'member_only' => $memberOnly, 'hidden' => 0, 'created_at' => $sheetNow, 'updated_at' => $sheetNow,
+    ]);
+
+    return [$id, $slug];
+};
+[$sheetVideo, $sheetSlug] = $sheetFixture('A Talk With A Sheet', 0);
+[$sheetMemberVideo, $sheetMemberSlug] = $sheetFixture('A Members Talk With A Sheet', 1);
+
+$sheetEdit = getWithJar($baseUrl . '/admin/videos/' . $sheetVideo, $jar);
+check(
+    'The video edit screen offers a note sheet outline',
+    str_contains($sheetEdit['body'], 'name="note_sheet"'),
+    'a sheet nobody can write is the defect this project repeats'
+);
+
+$sheetSave = postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($sheetEdit['body']), 'id' => (string) $sheetVideo, 'action' => 'save',
+    'note_sheet' => "1. Love is ___.\n2. Grace is ______.",
+], $jar);
+check(
+    'Saving the edit form stores the outline',
+    $sheetSave['status'] === 302
+        && (string) $db->value('SELECT outline FROM {note_sheets} WHERE video_id = ?', [$sheetVideo])
+            === "1. Love is ___.\n2. Grace is ______.",
+    "got {$sheetSave['status']}"
+);
+
+$db->execute(
+    'INSERT INTO {note_sheets} (video_id, outline, version, fingerprint, updated_at) VALUES (?, ?, 1, ?, NOW())',
+    [$sheetMemberVideo, 'Members only ___.', sha1('Members only ___.')]
+);
+
+$sheetWatch = getWithJar($baseUrl . '/watch/' . $sheetSlug, $jar);
+check(
+    'The watch page links to its note sheet',
+    str_contains($sheetWatch['body'], 'href="/sheets/' . $sheetSlug . '"'),
+    "got {$sheetWatch['status']}"
+);
+$noSheetWatch = getWithJar($baseUrl . '/watch/' . $videoSlug, $jar);
+check(
+    'and a video without one does not',
+    $noSheetWatch['status'] === 200 && !str_contains($noSheetWatch['body'], 'href="/sheets/'),
+    "got {$noSheetWatch['status']}"
+);
+
+$sheetAnon = get($baseUrl . '/sheets/' . $sheetSlug);
+check(
+    'Signed out, the sheet can be read — the paper copy is handed to visitors',
+    $sheetAnon['status'] === 200 && substr_count($sheetAnon['body'], 'class="sheet-gap"') === 2,
+    "got {$sheetAnon['status']}"
+);
+check(
+    'and it says keeping answers needs an account, BEFORE anything is typed',
+    str_contains($sheetAnon['body'], 'nothing typed before then is saved'),
+    'somebody filling in a whole sheet and losing it is the failure this sentence prevents'
+);
+check(
+    'and it starts no session for an anonymous reader',
+    !isset($sheetAnon['headers']['set-cookie']),
+    'a token in the view data would set a cookie for every visitor'
+);
+
+$sheetAnonMember = get($baseUrl . '/sheets/' . $sheetMemberSlug);
+check(
+    'A members-only talk\'s sheet is a 404 to a stranger, like its title',
+    $sheetAnonMember['status'] === 404 && !str_contains($sheetAnonMember['body'], 'Members only'),
+    "got {$sheetAnonMember['status']}"
+);
+check(
+    'but an approved member can read it',
+    getWithJar($baseUrl . '/sheets/' . $sheetMemberSlug, $jar)['status'] === 200
+);
+check('A video with no sheet is a 404', get($baseUrl . '/sheets/' . $videoSlug)['status'] === 404);
+
+$sheetAnonPost = post($baseUrl . '/sheets/' . $sheetSlug, ['answers' => ['sneaky', 'x']]);
+check(
+    'Signed out, nothing can be saved',
+    $sheetAnonPost['status'] !== 200
+        && (int) $db->value('SELECT COUNT(*) FROM {note_sheet_answers} WHERE video_id = ?', [$sheetVideo]) === 0,
+    "got {$sheetAnonPost['status']}"
+);
+
+$sheetMember = (int) $db->insert('users', [
+    'email' => 'sheet-member@smoke.test', 'name' => 'Sheet Member', 'authorized' => 1,
+    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash('sheet-member-password-1234', PASSWORD_DEFAULT),
+    'created_at' => $sheetNow, 'updated_at' => $sheetNow,
+]);
+$sheetJar = sys_get_temp_dir() . '/portal-smoke-sheet-' . getmypid() . '.txt';
+@unlink($sheetJar);
+clearLoginThrottle($db);
+$sheetLogin = getWithJar($baseUrl . '/auth/login', $sheetJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token' => csrfFrom($sheetLogin['body']), 'email' => 'sheet-member@smoke.test',
+    'password' => 'sheet-member-password-1234',
+], $sheetJar);
+
+$sheetPage = getWithJar($baseUrl . '/sheets/' . $sheetSlug, $sheetJar);
+$sheetToken = csrfFrom($sheetPage['body']);
+check('Signed in, the sheet carries a save token', $sheetPage['status'] === 200 && $sheetToken !== '');
+
+$sheetJson = static fn (array $payload, array $headers) => withJar(
+    $baseUrl . '/sheets/' . $sheetSlug,
+    $sheetJar,
+    (string) json_encode($payload),
+    array_merge(['Content-Type: application/json'], $headers)
+);
+
+$sheetNoToken = $sheetJson(['answers' => ['forged', ''], 'version' => 1], []);
+check(
+    'An autosave without the token is refused and stores nothing',
+    $sheetNoToken['status'] === 419
+        && (int) $db->value('SELECT COUNT(*) FROM {note_sheet_answers} WHERE user_id = ?', [$sheetMember]) === 0,
+    "got {$sheetNoToken['status']}"
+);
+
+$sheetAuto = $sheetJson(
+    ['answers' => ['patient', 'enough', 'an extra answer for a gap that does not exist'], 'version' => 1],
+    ['X-CSRF-Token: ' . $sheetToken]
+);
+check(
+    'The autosave the script sends is stored, one answer per gap',
+    $sheetAuto['status'] === 200
+        && json_decode(
+            (string) $db->value('SELECT answers FROM {note_sheet_answers} WHERE user_id = ? AND video_id = ?', [$sheetMember, $sheetVideo]),
+            true
+        ) === ['patient', 'enough'],
+    "got {$sheetAuto['status']}: {$sheetAuto['body']}"
+);
+
+$sheetReload = getWithJar($baseUrl . '/sheets/' . $sheetSlug, $sheetJar);
+check(
+    'and the sheet shows it again on the next visit',
+    str_contains($sheetReload['body'], 'value="patient"') && str_contains($sheetReload['body'], 'value="enough"')
+);
+
+$sheetPlain = postWithJar($baseUrl . '/sheets/' . $sheetSlug, [
+    '_token' => $sheetToken, '_plain' => '1', 'version' => '1', 'answers' => ['kind', 'sufficient'],
+], $sheetJar);
+check(
+    'With the script blocked, the Save button works and comes back to the sheet',
+    $sheetPlain['status'] === 302 && str_contains($sheetPlain['headers']['location'] ?? '', '/sheets/' . $sheetSlug . '?saved=1'),
+    "got {$sheetPlain['status']} to " . ($sheetPlain['headers']['location'] ?? 'nowhere')
+);
+
+/* An editor rewraps the outline: the same sheet, so no notice. */
+$sheetEdit = getWithJar($baseUrl . '/admin/videos/' . $sheetVideo, $jar);
+postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($sheetEdit['body']), 'id' => (string) $sheetVideo, 'action' => 'save',
+    'note_sheet' => "1. Love is ___.\n\n2. Grace   is ______.\n",
+], $jar);
+check(
+    'Rewrapping the outline does not tell people their sheet changed',
+    !str_contains(getWithJar($baseUrl . '/sheets/' . $sheetSlug, $sheetJar)['body'], 'has changed since you filled it in'),
+    'a notice that fires on layout is one people learn to ignore'
+);
+
+/* Then rewords it: now it has. */
+$sheetEdit = getWithJar($baseUrl . '/admin/videos/' . $sheetVideo, $jar);
+postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($sheetEdit['body']), 'id' => (string) $sheetVideo, 'action' => 'save',
+    'note_sheet' => "1. Hope is ___.\n2. Love is ___.\n3. Grace is ___.",
+], $jar);
+$sheetChanged = getWithJar($baseUrl . '/sheets/' . $sheetSlug, $sheetJar);
+check(
+    'Rewording it does, and the answers are still shown where they were written',
+    str_contains($sheetChanged['body'], 'has changed since you filled it in')
+        && str_contains($sheetChanged['body'], 'value="kind"'),
+    'answers against gaps they were never written for, with nothing said'
+);
+
+/*
+ * An autosave from a page opened BEFORE that edit still carries version 1. Its
+ * answers were written against the old gaps, so they must be stored as such —
+ * stored under the current version, the notice that exists for exactly this
+ * would vanish. Staged by clearing the member's row first, so the only thing
+ * that can put the notice back is the version this save sent.
+ */
+$db->execute('DELETE FROM {note_sheet_answers} WHERE user_id = ?', [$sheetMember]);
+$sheetJson(['answers' => ['written', 'against', 'old gaps'], 'version' => 1], ['X-CSRF-Token: ' . $sheetToken]);
+check(
+    'A save from a page opened before the edit keeps the old version, so the notice stays',
+    str_contains(getWithJar($baseUrl . '/sheets/' . $sheetSlug, $sheetJar)['body'], 'has changed since you filled it in')
+);
+$sheetJson(['answers' => ['from', 'the', 'future'], 'version' => 99], ['X-CSRF-Token: ' . $sheetToken]);
+check(
+    'and a version from nowhere is read as the current one, not as a change',
+    (int) $db->value('SELECT sheet_version FROM {note_sheet_answers} WHERE user_id = ?', [$sheetMember])
+        === (int) $db->value('SELECT version FROM {note_sheets} WHERE video_id = ?', [$sheetVideo])
+);
+
+/* A save that never mentions the sheet leaves it alone. */
+$sheetEdit = getWithJar($baseUrl . '/admin/videos/' . $sheetVideo, $jar);
+postWithJar($baseUrl . '/admin/videos', [
+    '_token' => csrfFrom($sheetEdit['body']), 'id' => (string) $sheetVideo, 'action' => 'save',
+    'title' => 'A Talk With A Sheet',
+], $jar);
+check(
+    'A partial save that does not mention the outline does not remove it',
+    (string) $db->value('SELECT outline FROM {note_sheets} WHERE video_id = ?', [$sheetVideo]) === "1. Hope is ___.\n2. Love is ___.\n3. Grace is ___."
+);
+
+$sheetExport = json_decode(getWithJar($baseUrl . '/account/export.json', $sheetJar)['body'], true);
+check(
+    'The data export carries the answers',
+    is_array($sheetExport) && str_contains((string) json_encode($sheetExport['note_sheets'] ?? []), 'future'),
+    'answers kept on a sheet are this person\'s data'
+);
+
+@unlink($sheetJar);
 
 echo "\nRouting\n";
 
