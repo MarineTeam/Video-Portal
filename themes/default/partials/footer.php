@@ -15,6 +15,8 @@ $siteName ??= 'Video Portal';
 <footer class="site-footer">
   <div class="wrap">
     <?= e($siteName) ?>
+    <?php // Reachable signed out: the settings work without an account. ?>
+    · <a href="/settings">Settings on this device</a>
     <?php do_action('footer') ?>
   </div>
 </footer>

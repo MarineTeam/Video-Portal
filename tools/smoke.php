@@ -16051,6 +16051,60 @@ check(
 
 @unlink($sheetJar);
 
+echo "\nSettings on this device\n";
+
+$deviceAnon = get($baseUrl . '/settings');
+check(
+    'The device settings page opens signed out',
+    $deviceAnon['status'] === 200
+        && str_contains($deviceAnon['body'], 'id="device-autoplay"')
+        && str_contains($deviceAnon['body'], 'id="device-speed"'),
+    "got {$deviceAnon['status']}"
+);
+check(
+    'and starts no session — nothing on it is stored by the server',
+    !isset($deviceAnon['headers']['set-cookie'])
+);
+check(
+    'and says the settings live in this browser only',
+    str_contains($deviceAnon['body'], 'Saved in this browser only')
+);
+check(
+    'It is linked from every page footer, so a visitor with no account can find it',
+    str_contains(get($baseUrl . '/')['body'], 'href="/settings"')
+);
+check(
+    'and from the account area',
+    str_contains(getWithJar($baseUrl . '/account', $jar)['body'], 'href="/settings"')
+);
+
+$deviceScript = get($baseUrl . '/theme-asset/default/device-settings.js');
+check('Its script is served', $deviceScript['status'] === 200, "got {$deviceScript['status']}");
+
+/*
+ * The storage keys are the whole interface between three files that never
+ * call each other: the settings page writes them, the player and the playback
+ * plugin read them. A key renamed in one is a setting that saves, reads back
+ * correctly on its own page, and does nothing anywhere else — which no check
+ * of any single file can see.
+ */
+$playerScript = (string) @file_get_contents(PORTAL_ROOT . '/themes/default/assets/player.js');
+$playbackScript = (string) @file_get_contents(PORTAL_PLUGINS . '/playback/assets/playback.js');
+check(
+    'The settings page, the player and the playback plugin agree on the autoplay key',
+    str_contains($deviceScript['body'], "'portal.autoplay'") && str_contains($playbackScript, "'portal.autoplay'"),
+    'autoplay would save and change nothing'
+);
+check(
+    'and on the speed key',
+    str_contains($deviceScript['body'], "'portal.speed'") && str_contains($playerScript, "'portal.speed'"),
+    'the usual speed would save and change nothing'
+);
+check(
+    'and on what "off" is spelled',
+    str_contains($deviceScript['body'], "'off'") && str_contains($playbackScript, "=== 'off'")
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

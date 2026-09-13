@@ -25,6 +25,33 @@
     return;
   }
 
+  /* This device's settings, from /settings. Keys shared with that page and
+     with the playback plugin — tools/smoke.php checks all three agree. Wrapped,
+     because storage throws outright in some private windows. */
+  function devicePref(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  var defaultSpeed = parseFloat(devicePref('portal.speed') || '1');
+  if (!(defaultSpeed > 0)) {
+    defaultSpeed = 1;
+  }
+
+  /* The video player cannot be told a speed: bunny.net's embed takes no rate
+     parameter and player.js has no method for one. So say it rather than
+     pretending — a setting that silently did nothing would read as broken. */
+  if (frame && defaultSpeed !== 1 && frame.parentNode && frame.parentNode.parentNode) {
+    var reminder = document.createElement('p');
+    reminder.className = 'muted small speed-reminder';
+    reminder.textContent = 'Your usual speed on this device is ' + defaultSpeed
+      + '×. Choose it in the player’s own settings — this page cannot set it for you.';
+    frame.parentNode.parentNode.insertBefore(reminder, frame.parentNode.nextSibling);
+  }
+
   var videoId = parseInt(data.dataset.videoId || '0', 10);
   var resumeAt = parseInt(data.dataset.resumeAt || '0', 10);
 
@@ -258,6 +285,14 @@
   /* Revealed only now. With scripting off the audio still plays and only these
      two are missing, which is the right thing to lose — a speed menu that does
      nothing is worse than no speed menu. */
+  /* Listening CAN honour the default speed, unlike the video. defaultPlaybackRate
+     as well, so it survives the element loading its source. */
+  if (speed && defaultSpeed !== 1 && speed.querySelector('option[value="' + defaultSpeed + '"]')) {
+    speed.value = String(defaultSpeed);
+    audio.defaultPlaybackRate = defaultSpeed;
+    audio.playbackRate = defaultSpeed;
+  }
+
   if (controls) {
     controls.hidden = false;
   }

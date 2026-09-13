@@ -124,6 +124,16 @@
       return; /* Card only: the site has asked not to play things by itself. */
     }
 
+    /* Card only, too, when THIS device has autoplay switched off on /settings.
+       The site's countdown is the ceiling; a person can only lower it. Read
+       at the moment of ending, so a change in another tab is honoured. */
+    try {
+      if (window.localStorage.getItem('portal.autoplay') === 'off') {
+        return;
+      }
+    } catch (e) {
+      /* No storage: keep the site's behaviour. */
+    }
     var left = countdown;
 
     function tick() {
