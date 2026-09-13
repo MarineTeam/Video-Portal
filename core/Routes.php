@@ -280,6 +280,10 @@ final class Routes
          * it stays correct if either ever becomes a pattern.
          */
         $router->get('/account', [AccountController::class, 'index'], ['auth.user']);
+
+        // Per-device settings, stored in the browser. Open to everybody, signed
+        // in or not — see AccountController::device().
+        $router->get('/settings', [AccountController::class, 'device']);
         $router->get('/account/shared-links', [AccountController::class, 'sharedLinks'], ['auth.user']);
         $router->get('/account/downloads', [AccountController::class, 'downloads'], ['auth.user']);
 

@@ -65,6 +65,18 @@ final class AccountController extends Controller
     }
 
     /**
+     * Settings for this device.
+     *
+     * Rendered empty and filled in by the browser, because every value lives in
+     * localStorage. No sign-in and no session: most visitors have no account,
+     * and a phone and a television are wanted differently by the same person.
+     */
+    public function device(Request $request): Response
+    {
+        return $this->view(['device-settings'], ['title' => 'Settings on this device']);
+    }
+
+    /**
      * The links this person has handed out.
      *
      * Shown whether or not they still hold share_content: withdrawing the

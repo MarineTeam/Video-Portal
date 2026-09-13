@@ -114,6 +114,11 @@ echo $template->partial('header', get_defined_vars());
    * put the export somewhere nobody looks for it.
    */
   ?>
+  <a class="card account-tile" href="/settings">
+    <strong>This device</strong>
+    <span class="muted small">Autoplay and playback speed, for this browser</span>
+  </a>
+
   <a class="card account-tile" href="/account/history">
     <strong>Your data</strong>
     <span class="muted small">What you have watched, a copy of everything, or deleting your account</span>
