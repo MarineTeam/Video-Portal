@@ -2223,12 +2223,34 @@ final class AdminController extends Controller
         };
     }
 
+    /**
+     * Attach one file.
+     *
+     * The same handler serves the plain form and the queue that uploads
+     * several files: the queue sends them ONE PER REQUEST with `_async`, and
+     * gets JSON back instead of a redirect. One per request because the
+     * server's size limit is per request — a batch would make the limit worse,
+     * not better — and so a refused file reports against its own row while
+     * the rest carry on.
+     */
     private function attachFile(Request $request, int $videoId): Response
+    {
+        [$ok, $message] = $this->attachUpload($request, $videoId);
+
+        if ($request->input('_async') !== null) {
+            return $this->json(['ok' => $ok, 'message' => $message], $ok ? 200 : 422);
+        }
+
+        return $this->back($request, $message, $ok ? 'success' : 'error');
+    }
+
+    /** @return array{0: bool, 1: string} */
+    private function attachUpload(Request $request, int $videoId): array
     {
         $upload = $_FILES['attachment'] ?? null;
 
         if (!is_array($upload) || (int) ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            return $this->back($request, 'Choose a file to attach.', 'error');
+            return [false, 'Choose a file to attach.'];
         }
 
         $error = (int) $upload['error'];
@@ -2240,38 +2262,38 @@ final class AdminController extends Controller
              * than naming the constant, since the host's limit may be lower
              * than ours and there is nothing here that can change it.
              */
-            return $this->back($request, match ($error) {
+            return [false, match ($error) {
                 UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => sprintf(
                     'That file is larger than this server accepts. The limit here is %s, and your host may set a lower one.',
                     \Portal\Content\AssetPolicy::formatSize(\Portal\Content\AssetPolicy::MAX_BYTES)
                 ),
                 UPLOAD_ERR_PARTIAL => 'The upload was interrupted. Try again.',
                 default            => 'That file could not be uploaded.',
-            }, 'error');
+            }];
         }
 
         $temporary = (string) ($upload['tmp_name'] ?? '');
 
         if (!is_uploaded_file($temporary)) {
-            return $this->back($request, 'That file could not be uploaded.', 'error');
+            return [false, 'That file could not be uploaded.'];
         }
 
         $name = (string) ($upload['name'] ?? '');
 
+        // Allowed or not is asked of the REAL filename, before any title is
+        // applied — see AssetPolicy::labelled().
         if (!\Portal\Content\AssetPolicy::isAllowed($name)) {
-            return $this->back(
-                $request,
-                'That kind of file cannot be attached. Documents, images, and audio only.',
-                'error'
-            );
+            return [false, 'That kind of file cannot be attached. Documents, images, and audio only.'];
         }
+
+        $name = \Portal\Content\AssetPolicy::labelled($name, (string) ($request->input('label') ?? ''));
 
         try {
             $stored = $this->container
                 ->get(\Portal\Content\AssetRepository::class)
                 ->store($videoId, $temporary, $name, $this->user()?->email ?? '');
         } catch (HttpException $e) {
-            return $this->back($request, $e->getMessage(), 'error');
+            return [false, $e->getMessage()];
         }
 
         Audit::log(
@@ -2283,7 +2305,7 @@ final class AdminController extends Controller
             (string) $stored['original_name']
         );
 
-        return $this->back($request, 'Attached ' . $stored['original_name'] . '.');
+        return [true, 'Attached ' . $stored['original_name'] . '.'];
     }
 
     private function transcripts(): \Portal\Content\TranscriptRepository
@@ -3690,26 +3712,7 @@ final class AdminController extends Controller
     {
         $this->require(Capability::VIEW_AUDIT_LOG);
 
-        $result = Audit::page($this->db(), [
-            'actor'  => trim((string) ($request->query['actor'] ?? '')),
-            'action' => trim((string) ($request->query['action'] ?? '')),
-            'target' => trim((string) ($request->query['target'] ?? '')),
-            'from'   => $this->dateOnly((string) ($request->query['from'] ?? '')),
-            'to'     => $this->dateOnly((string) ($request->query['to'] ?? '')),
-        ], 1, 5000);
-
-        $rows = [];
-        foreach ($result['items'] as $row) {
-            $rows[] = [
-                (string) $row['created_at'],
-                (string) ($row['actor_email'] ?? ''),
-                (string) $row['action'],
-                (string) ($row['target_type'] ?? ''),
-                (string) ($row['target_id'] ?? ''),
-                (string) ($row['detail'] ?? ''),
-                (string) ($row['ip'] ?? ''),
-            ];
-        }
+        $rows = array_map('array_values', $this->auditExportRows($request));
 
         /*
          * Through Csv::document, which already knows the two things that make
@@ -3744,6 +3747,60 @@ final class AdminController extends Controller
                 'attachment; filename="' . \Portal\Support\Csv::filename('activity-log') . '"'
             )
             ->header('Cache-Control', 'private, no-store');
+    }
+
+    /**
+     * The same export as JSON, for a script rather than a spreadsheet.
+     *
+     * Same rows, same filters, same 5,000 cap and the same audit entry as the
+     * CSV — one query builds both, so the two downloads cannot disagree about
+     * what the log said. Through Response::json, so the secret guard sees it.
+     */
+    public function auditLogJson(Request $request): Response
+    {
+        $this->require(Capability::VIEW_AUDIT_LOG);
+
+        $rows = $this->auditExportRows($request);
+
+        Audit::log($this->db(), $this->user()?->email, 'audit.export', null, null, sprintf('%d row(s), JSON', count($rows)));
+
+        return Response::json($rows)
+            ->header(
+                'Content-Disposition',
+                'attachment; filename="' . substr(\Portal\Support\Csv::filename('activity-log'), 0, -4) . '.json"'
+            )
+            ->header('Cache-Control', 'private, no-store');
+    }
+
+    /**
+     * The filtered audit rows both exports send, in column order.
+     *
+     * @return list<array{when: string, who: string, action: string, target_type: string, target: string, detail: string, ip: string}>
+     */
+    private function auditExportRows(Request $request): array
+    {
+        $result = Audit::page($this->db(), [
+            'actor'  => trim((string) ($request->query['actor'] ?? '')),
+            'action' => trim((string) ($request->query['action'] ?? '')),
+            'target' => trim((string) ($request->query['target'] ?? '')),
+            'from'   => $this->dateOnly((string) ($request->query['from'] ?? '')),
+            'to'     => $this->dateOnly((string) ($request->query['to'] ?? '')),
+        ], 1, 5000);
+
+        $rows = [];
+        foreach ($result['items'] as $row) {
+            $rows[] = [
+                'when'        => (string) $row['created_at'],
+                'who'         => (string) ($row['actor_email'] ?? ''),
+                'action'      => (string) $row['action'],
+                'target_type' => (string) ($row['target_type'] ?? ''),
+                'target'      => (string) ($row['target_id'] ?? ''),
+                'detail'      => (string) ($row['detail'] ?? ''),
+                'ip'          => (string) ($row['ip'] ?? ''),
+            ];
+        }
+
+        return $rows;
     }
 
     /**

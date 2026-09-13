@@ -174,6 +174,39 @@ final class AssetPolicyTest extends TestCase
         self::assertLessThanOrEqual(AssetPolicy::MAX_NAME_LENGTH, mb_strlen($name));
     }
 
+    // ---------------------------------------------------------------- titles
+
+    /** The type comes from the real file; a title cannot change it. */
+    public function testATitleKeepsTheRealExtension(): void
+    {
+        self::assertSame('Week 3 handout.pdf', AssetPolicy::labelled('scan_0042.PDF', 'Week 3 handout'));
+        self::assertSame('Handout.exe.pdf', AssetPolicy::labelled('handout.pdf', 'Handout.exe'));
+        self::assertSame('application/pdf', AssetPolicy::contentType(AssetPolicy::labelled('handout.pdf', 'Handout.exe')));
+    }
+
+    public function testATitleEndingInTheExtensionIsNotGivenItTwice(): void
+    {
+        self::assertSame('Slides.pdf', AssetPolicy::labelled('x.pdf', 'Slides.PDF'));
+        self::assertSame('x.pdf', AssetPolicy::labelled('x.pdf', '.pdf'), 'nothing left is no title');
+    }
+
+    public function testNoTitleOrAnUnsafeOneFallsBackToTheFilename(): void
+    {
+        self::assertSame('notes.docx', AssetPolicy::labelled('notes.docx', '   '));
+        self::assertSame('notes.docx', AssetPolicy::labelled('notes.docx', '/..'));
+        self::assertSame('ab.docx', AssetPolicy::labelled('notes.docx', 'a/b'));
+    }
+
+    /** Cutting a long title to length can never cut off the extension. */
+    public function testALongTitleKeepsRoomForTheExtension(): void
+    {
+        $name = AssetPolicy::labelled('a.docx', str_repeat('é', 400));
+
+        self::assertSame(AssetPolicy::MAX_NAME_LENGTH, mb_strlen($name));
+        self::assertStringEndsWith('.docx', $name);
+        self::assertSame($name, AssetPolicy::displayName($name), 'display cleaning leaves it alone');
+    }
+
     // ----------------------------------------------------------------- sizes
 
     public function testSizesReadTheWayPeopleWriteThem(): void

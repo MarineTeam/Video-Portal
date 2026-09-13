@@ -16105,6 +16105,96 @@ check(
     str_contains($deviceScript['body'], "'off'") && str_contains($playbackScript, "=== 'off'")
 );
 
+echo "\nAttaching several files, audit JSON, export limit\n";
+
+/*
+ * The queue sends one file per request with _async and reads JSON back. Driven
+ * as that request, since the queue itself is browser code.
+ */
+$queueEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check(
+    'The attachment form loads the multi-file queue',
+    str_contains($queueEdit['body'], '/assets/attachments.js') && str_contains($queueEdit['body'], 'id="attach-queue"')
+);
+check(
+    'and keeps a plain single-file form for when the script does not run',
+    str_contains($queueEdit['body'], 'name="attachment" id="attach-input" required')
+);
+
+$queuePdf = sys_get_temp_dir() . '/scan_0042-' . getmypid() . '.pdf';
+file_put_contents($queuePdf, "%PDF-1.4\nqueue smoke\n");
+$queued = uploadWithJar(
+    $baseUrl . '/admin/videos',
+    ['_token' => csrfFrom($queueEdit['body']), 'id' => (string) $videoRow, 'action' => 'attach',
+     '_async' => '1', 'label' => 'Week 3 handout.exe'],
+    'attachment', $queuePdf, $jar, 'application/pdf'
+);
+$queuedBody = json_decode($queued['body'], true);
+check(
+    'A queued file is attached and answered in JSON, not a redirect',
+    $queued['status'] === 200 && ($queuedBody['ok'] ?? null) === true,
+    "got {$queued['status']}: " . substr($queued['body'], 0, 200)
+);
+check(
+    'under the title typed for it, with the type still taken from the real file',
+    (string) $db->value(
+        'SELECT content_type FROM {file_assets} WHERE video_id = ? AND original_name = ?',
+        [$videoRow, 'Week 3 handout.exe.pdf']
+    ) === 'application/pdf',
+    'a title is typed into a box; it must never decide what a file is'
+);
+
+$queueBad = sys_get_temp_dir() . '/refused-' . getmypid() . '.html';
+file_put_contents($queueBad, '<script>alert(1)</script>');
+$refused = uploadWithJar(
+    $baseUrl . '/admin/videos',
+    ['_token' => csrfFrom($queueEdit['body']), 'id' => (string) $videoRow, 'action' => 'attach',
+     '_async' => '1', 'label' => 'Totally a PDF.pdf'],
+    'attachment', $queueBad, $jar, 'text/html'
+);
+check(
+    'A refused file answers with its own reason, so its row can say why',
+    $refused['status'] === 422 && str_contains((string) (json_decode($refused['body'], true)['message'] ?? ''), 'cannot be attached')
+        && (int) $db->value('SELECT COUNT(*) FROM {file_assets} WHERE original_name LIKE ?', ['Totally a PDF%']) === 0,
+    "got {$refused['status']}"
+);
+@unlink($queuePdf);
+@unlink($queueBad);
+
+$auditJson = getWithJar($baseUrl . '/admin/activity.json?action=asset.create', $jar);
+$auditRows = json_decode($auditJson['body'], true);
+check(
+    'The activity log downloads as JSON, with the same filters as the CSV',
+    $auditJson['status'] === 200
+        && is_array($auditRows) && $auditRows !== []
+        && array_keys($auditRows[0]) === ['when', 'who', 'action', 'target_type', 'target', 'detail', 'ip']
+        && count(array_filter($auditRows, static fn ($r) => $r['action'] !== 'asset.create')) === 0,
+    "got {$auditJson['status']}"
+);
+check(
+    'and the download is itself recorded',
+    (int) $db->value('SELECT COUNT(*) FROM {audit_log} WHERE action = ? AND detail LIKE ?', ['audit.export', '%JSON']) >= 1
+);
+check(
+    'The activity screen offers it',
+    str_contains(getWithJar($baseUrl . '/admin/activity', $jar)['body'], '/admin/activity.json')
+);
+
+/*
+ * Two data exports a minute. Five in a row: a fixed window can split them at a
+ * boundary, but five inside one minute cannot fit two windows without three
+ * landing in one — so a 429 must appear however the clock falls.
+ */
+$exportStatuses = [];
+for ($i = 0; $i < 5; $i++) {
+    $exportStatuses[] = getWithJar($baseUrl . '/account/export.json', $jar)['status'];
+}
+check(
+    'Asking for your data export again and again is slowed down',
+    in_array(429, $exportStatuses, true) && in_array(200, $exportStatuses, true),
+    'got ' . implode(', ', $exportStatuses)
+);
+
 echo "\nRouting\n";
 
 $notFound = get($baseUrl . '/no-such-page');

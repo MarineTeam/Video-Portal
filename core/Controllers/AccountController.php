@@ -159,6 +159,19 @@ final class AccountController extends Controller
             return $this->redirect('/auth/login');
         }
 
+        /*
+         * Two a minute, per account. It walks every table that holds anything
+         * about a person, which makes it the most expensive request a signed-in
+         * member can make — and on shared hosting one member refreshing it in a
+         * loop is everybody else's slow page. Keyed on the account rather than
+         * the address, so two people behind one church Wi-Fi do not share it.
+         */
+        if (!(new RateLimit($this->db()))->allow('account-export:' . $user->id, 2, 60)) {
+            throw HttpException::tooManyRequests(
+                'You have downloaded your data twice in the last minute. Wait a minute and try again.'
+            );
+        }
+
         $payload = (new \Portal\Account\PersonalData($this->db()))->export($user);
 
         \Portal\Support\Audit::log(
