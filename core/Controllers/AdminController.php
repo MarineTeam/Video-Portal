@@ -232,8 +232,24 @@ final class AdminController extends Controller
         /** @var CategoryRepository $categories */
         $categories = $this->container->get(CategoryRepository::class);
 
+        /*
+         * The podcast state, asked of the FEED'S own rule: the public filter set
+         * plus the opt-in, through query(). Not re-derived from the video's
+         * flags, which would be a second opinion about visibility that can
+         * disagree with the feed it is describing.
+         */
+        $inPublicFeed = $videos->query(['ids' => [$video->id], 'inPodcast' => true], 1, 1)['items'] !== [];
+        $podcastState = \Portal\Content\PodcastEpisode::state($video, $inPublicFeed);
+
         return $this->admin('video-edit', [
             'video'          => $video,
+            'podcastState'   => $podcastState,
+            'podcastReason'  => $podcastState === \Portal\Content\PodcastEpisode::PENDING
+                ? \Portal\Content\PodcastEpisode::heldBackBecause(
+                    $video,
+                    $video->seriesId !== null ? $this->seriesRepo()->find($video->seriesId) : null
+                )
+                : '',
             'categories'     => $categories->all(true),
             'assigned'       => $videos->categoryIds($video->id),
             'series'         => $this->seriesRepo()->all(true),
@@ -914,6 +930,10 @@ final class AdminController extends Controller
                     'hidden'         => $whole ? $request->input('hidden') !== null : $video->hidden,
                     'premiere'       => $whole ? $request->input('premiere') !== null : $video->premiere,
                     'featured'       => $whole ? $request->input('featured') !== null : $video->featured,
+                    // Absent from a partial POST means leave it alone, like every
+                    // other checkbox here — a bulk or scripted save must never
+                    // take an episode out of a podcast it never mentioned.
+                    'in_podcast'     => $whole ? $request->input('in_podcast') !== null : $video->inPodcast,
                     'pinned'         => $whole ? $request->input('pinned') !== null : $video->pinned,
                 ]);
 

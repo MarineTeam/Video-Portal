@@ -5251,6 +5251,43 @@ check(
     'directories reject a feed without it'
 );
 
+/*
+ * PUBLISHING TO THE PODCAST IS OPT-IN. The same public video the RSS feed has
+ * just listed is NOT a podcast episode until somebody ticks it — asserted
+ * before ticking, so the enclosure checks below are about a choice rather than
+ * a default.
+ */
+$podcastBefore = get($baseUrl . '/podcast');
+check(
+    'A public video is not a podcast episode until somebody chooses it',
+    $podcastBefore['status'] === 200
+        && @simplexml_load_string($podcastBefore['body']) !== false
+        && !str_contains($podcastBefore['body'], '/media/' . $videoSlug . '.mp4'),
+    "got {$podcastBefore['status']} — A PUBLIC VIDEO WENT INTO THE PODCAST WITHOUT ANYBODY TICKING IT"
+);
+
+/* Ticked the way an editor ticks it: the whole edit form, saved. */
+$podcastEdit = getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar);
+check('The edit screen offers the podcast choice', str_contains($podcastEdit['body'], 'name="in_podcast"'));
+
+postWithJar($baseUrl . '/admin/videos', [
+    '_token'         => csrfFrom($podcastEdit['body']),
+    'id'             => (string) $videoRow,
+    'action'         => 'save',
+    'title'          => 'A Test Video',
+    'categories'     => [(string) $categoryRow],
+    'thumbnail_mode' => 'default',
+    'watermark_mode' => 'default',
+    'in_podcast'     => '1',
+    '_whole_form'    => '1',
+], $jar);
+
+check(
+    'and once ticked, the screen says it is in the feed',
+    str_contains(getWithJar($baseUrl . '/admin/videos/' . $videoRow, $jar)['body'], 'In the podcast feed now'),
+    'the tick did not save, or nothing tells the editor what it did'
+);
+
 $podcast = get($baseUrl . '/podcast');
 check('The podcast feed renders', $podcast['status'] === 200, "got {$podcast['status']}");
 check('The podcast feed is well-formed XML', @simplexml_load_string($podcast['body']) !== false);
@@ -14754,12 +14791,16 @@ $epVideo = static function (string $title, array $extra) use ($db, $epSeries, $e
         'provider' => 'bunny', 'provider_id' => 'ep-' . bin2hex(random_bytes(5)),
         'slug' => 'ep-' . bin2hex(random_bytes(4)), 'title' => $title,
         'status' => 'ready', 'is_published' => 1, 'member_only' => 0, 'hidden' => 0,
+        // TICKED for the podcast, all three: the podcast feed carries only
+        // chosen episodes, so the members-only and scheduled ones are
+        // "chosen, and still refused" — which is the case that matters.
+        'in_podcast' => 1,
         'series_id' => $epSeries, 'created_at' => $epNow, 'updated_at' => $epNow,
     ]);
 };
 
 $epVideo('Ordinary Public Episode', ['series_position' => 1]);
-$epVideo('Members Only Episode Title', ['series_position' => 2, 'member_only' => 1]);
+$epMembersOnly = $epVideo('Members Only Episode Title', ['series_position' => 2, 'member_only' => 1]);
 $epVideo('Next Week Episode Title', [
     'series_position' => 3,
     'published_at' => date('Y-m-d H:i:s', time() + 7 * 86400),
@@ -14790,6 +14831,33 @@ foreach ([
         'AN UNRELEASED EPISODE LISTED EARLY'
     );
 }
+
+/*
+ * TICKED BUT HELD BACK, and the intent surviving it.
+ *
+ * The members-only episode is ticked for the podcast and refused by the feed
+ * above. The edit screen has to say why — a ticked box with no episode reads as
+ * the feature being broken — and when the video becomes public it has to come
+ * back into the podcast WITHOUT anybody re-ticking it.
+ */
+check(
+    'A ticked episode that is not public says why it is not in the podcast',
+    str_contains(
+        getWithJar($baseUrl . '/admin/videos/' . $epMembersOnly, $jar)['body'],
+        'Ticked, but not in the feed while it is members-only'
+    ),
+    'the editor sees a ticked box and no episode, and nothing explains it'
+);
+
+$db->execute('UPDATE {videos} SET member_only = 0 WHERE id = ?', [$epMembersOnly]);
+
+check(
+    'and when it becomes public it returns to the podcast by itself',
+    str_contains(get($baseUrl . '/podcast/series/public-episodes')['body'], 'Members Only Episode Title'),
+    'THE EDITOR\'S CHOICE WAS LOST when the video stopped being public'
+);
+
+$db->execute('UPDATE {videos} SET member_only = 1 WHERE id = ?', [$epMembersOnly]);
 
 /*
  * A PUBLIC PLAYLIST, whose own query filtered members-only and future dates on

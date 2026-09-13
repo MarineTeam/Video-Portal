@@ -306,6 +306,16 @@ final class VideoRepository
             $conditions[] = 'v.featured = 1';
         }
 
+        /*
+         * Only what an editor chose to publish as a podcast episode. A term ON
+         * TOP of every visibility rule rather than instead of any — so a ticked
+         * video that is members-only is still refused, which is how a ticked
+         * episode leaves the feed on its own when it stops being public.
+         */
+        if (!empty($filters['inPodcast'])) {
+            $conditions[] = 'v.in_podcast = 1';
+        }
+
         if (!empty($filters['speakerId'])) {
             $conditions[] = 'v.speaker_id = ?';
             $params[] = (int) $filters['speakerId'];
@@ -1057,7 +1067,7 @@ final class VideoRepository
             }
         }
 
-        foreach (['is_published', 'member_only', 'hidden', 'featured', 'pinned', 'premiere'] as $key) {
+        foreach (['is_published', 'member_only', 'hidden', 'featured', 'pinned', 'premiere', 'in_podcast'] as $key) {
             if (array_key_exists($key, $attributes)) {
                 $fields[$key] = (int) (bool) $attributes[$key];
             }

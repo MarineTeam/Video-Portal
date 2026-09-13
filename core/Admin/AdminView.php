@@ -991,6 +991,19 @@ final class AdminView
         $hidden = $video->hidden ? ' checked' : '';
         $premiere = $video->premiere ? ' checked' : '';
         $featured = $video->featured ? ' checked' : '';
+        $inPodcast = $video->inPodcast ? ' checked' : '';
+
+        /*
+         * Said out loud when the box is ticked and the episode is not in the
+         * feed. A ticked box with no episode and no explanation reads as the
+         * feature being broken, and the reason names the setting to change.
+         */
+        $podcastNote = match ((string) ($data['podcastState'] ?? '')) {
+            \Portal\Content\PodcastEpisode::IN => '<p class="pill ok">In the podcast feed now.</p>',
+            \Portal\Content\PodcastEpisode::PENDING => '<p class="pill warn">Ticked, but not in the feed while '
+                . e((string) ($data['podcastReason'] ?? '')) . '. It returns by itself when that changes.</p>',
+            default => '',
+        };
         $pinned = $video->pinned ? ' checked' : '';
 
         /*
@@ -1212,6 +1225,17 @@ final class AdminView
                 <p class="muted small">Sorts above everything else while browsing. Search deliberately
                    ignores it: somebody who typed an exact title is not asking what you would rather
                    they watched.</p>
+
+                <label class="checkbox">
+                  <input type="checkbox" name="in_podcast" value="1"{$inPodcast}>
+                  Publish in the podcast
+                </label>
+                {$podcastNote}
+                <p class="muted small"><strong>This is the one thing here that cannot be taken back.</strong>
+                   Untick it later and the episode leaves the feed, but every podcast app that already
+                   downloaded it keeps it. Everything else on this screen takes effect on the next
+                   visit; this does not, which is why nothing goes into the podcast until it is
+                   ticked.</p>
               </fieldset>
 
               <fieldset>
@@ -5049,6 +5073,14 @@ REG;
                content appears in them. Episodes link back here rather than straight to the video file,
                so the download is signed fresh each time and unpublishing something actually withdraws
                it.</p>
+
+            <p class="muted small"><strong>Only videos ticked "Publish in the podcast" are episodes.</strong>
+               Publishing to a podcast is the one thing on this site that cannot be taken back — an app
+               that downloaded an episode keeps it — so nothing goes out until somebody chooses it, on
+               the video's own edit screen. On a site that had a podcast before this was added, that
+               means the podcast feeds are <strong>empty until you tick the episodes you want</strong>;
+               nothing was ticked for you. The RSS feeds, which carry links rather than files, are
+               unchanged.</p>
 
             <label>Author shown in podcast apps
               <input type="text" name="podcast_author" value="{$this->attr($settings['podcast_author'] ?? '')}">

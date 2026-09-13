@@ -65,6 +65,13 @@ final class Video
         public readonly int $seriesPosition = 0,
         public readonly int $position = 0,
         public readonly bool $featured = false,
+
+        /**
+         * Whether an editor has chosen to publish this in the podcast feed.
+         * The INTENT — see Portal\Content\PodcastEpisode for why that is not
+         * the same as being in the feed right now.
+         */
+        public readonly bool $inPodcast = false,
         public readonly bool $pinned = false,
         public readonly bool $isPublished = true,
         public readonly bool $memberOnly = false,
@@ -130,6 +137,7 @@ final class Video
             seriesPosition:       (int) ($row['series_position'] ?? 0),
             position:             (int) ($row['position'] ?? 0),
             featured:             (bool) ($row['featured'] ?? false),
+            inPodcast:            (bool) ($row['in_podcast'] ?? false),
             pinned:               (bool) ($row['pinned'] ?? false),
             isPublished:          (bool) ($row['is_published'] ?? true),
             memberOnly:           (bool) ($row['member_only'] ?? false),
