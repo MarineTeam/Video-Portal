@@ -16105,6 +16105,49 @@ check(
     str_contains($deviceScript['body'], "'off'") && str_contains($playbackScript, "=== 'off'")
 );
 
+/*
+ * Appearance. The palette switch has to happen in <head>, before the body
+ * paints, or somebody who chose light sees a frame of the dark site on every
+ * page — so the check is on the page the SERVER sends, not on the settings
+ * script.
+ */
+$themeHome = get($baseUrl . '/');
+check(
+    'Every page carries the pre-paint appearance script in its head',
+    preg_match('#<head>.*portal\.theme.*</head>#s', $themeHome['body']) === 1
+        && str_contains($themeHome['body'], "root.setAttribute('data-theme', mode)"),
+    'set any later and a light choice flashes dark on every page'
+);
+check(
+    'and with no choice made it keeps the site\'s own design rather than following the device',
+    str_contains($themeHome['body'], ": (choice === 'system' && query && query.matches ? 'light' : 'dark')"),
+    'defaulting to the device would turn the site white on deploy for half its visitors'
+);
+check(
+    'The settings page offers the choice, and its script writes the same key the head reads',
+    str_contains($deviceAnon['body'], 'id="device-theme"')
+        && str_contains($deviceScript['body'], "'portal.theme'")
+        && str_contains($deviceScript['body'], 'window.portalTheme.set'),
+    'a choice that saves under a different key changes nothing'
+);
+
+$themeCss = get($baseUrl . '/theme-asset/default/theme.css')['body'];
+check(
+    'The light palette outranks the customizer\'s inline colours',
+    str_contains($themeCss, ':root[data-theme="light"] {'),
+    'the customizer writes :root on every page; a light palette at equal specificity would lose to it'
+);
+check(
+    'and darkens the accent only where it is text',
+    str_contains($themeCss, 'color: var(--link, var(--accent))'),
+    'the default sky blue on white fails contrast as link text'
+);
+check(
+    'A note sheet\'s blanks sit inside the sentence, not on lines of their own',
+    str_contains($themeCss, '.sheet-outline input.sheet-gap {'),
+    'a bare .sheet-gap loses to the site-wide input[type="text"] width:100% — found in a browser'
+);
+
 echo "\nAttaching several files, audit JSON, export limit\n";
 
 /*
