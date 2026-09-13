@@ -732,6 +732,13 @@ abstract class Controller
                     ['label' => 'Playlists',  'path' => '/admin/playlists',     'key' => 'playlists',     'cap' => Capability::MANAGE_SERIES,     'screens' => ['playlists', 'playlist-edit'], 'siteWide' => true],
                     ['label' => 'Speakers',   'path' => '/admin/speakers',      'key' => 'speakers',      'cap' => Capability::MANAGE_SPEAKERS,   'screens' => ['speakers'], 'siteWide' => true],
                     /*
+                     * NOT siteWide: manage_files is scopable and the screen asks
+                     * canAnywhere, so a category-scoped file editor gets the link
+                     * and the screen — and each delete is checked against the
+                     * file's own video.
+                     */
+                    ['label' => 'Files',      'path' => '/admin/files',         'key' => 'files',         'cap' => Capability::MANAGE_FILES,      'screens' => ['files']],
+                    /*
                      * Site-wide: renaming a tag rewrites every video carrying
                      * it, so it is not an act that can be scoped to a category
                      * the way editing one video is.

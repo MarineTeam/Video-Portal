@@ -72,7 +72,7 @@ final class FeedController extends Controller
     /** @param array<string, string> $params */
     private function feed(Request $request, array $params, bool $podcast): Response
     {
-        [$scopeTitle, $scopeDescription, $videos] = $this->scope($params);
+        [$scopeTitle, $scopeDescription, $videos] = $this->scope($params, $podcast);
 
         $siteName = (string) $this->config()->setting('site_name', 'Video Portal');
         $title = $scopeTitle === '' ? $siteName : $siteName . ' — ' . $scopeTitle;
@@ -122,13 +122,23 @@ final class FeedController extends Controller
      * @param  array<string, string> $params
      * @return array{0: string, 1: string, 2: list<Video>}
      */
-    private function scope(array $params): array
+    private function scope(array $params, bool $podcast = false): array
     {
         $type = (string) ($params['type'] ?? '');
         $slug = (string) ($params['slug'] ?? '');
 
         // The public filter set, written once. Nothing here reads the guard.
         $filters = [];
+
+        /*
+         * The podcast carries only what an editor chose to publish as an episode.
+         * Added to the one filter set every branch below uses — category, series,
+         * playlist and the whole library — so no podcast scope can forget it.
+         * The RSS feed carries links rather than files, and is unchanged.
+         */
+        if ($podcast) {
+            $filters['inPodcast'] = true;
+        }
 
         switch ($type) {
             case 'category':
@@ -153,7 +163,14 @@ final class FeedController extends Controller
                 return [
                     $series->title,
                     (string) ($series->description ?? ''),
-                    $this->videos()->forSeries($series->id),
+                    /*
+                     * seriesEpisodes() with the PUBLIC filter set, not forSeries(),
+                     * which listed members-only and unreleased episodes to every
+                     * podcast client — title, description and an enclosure. No
+                     * premieres either: an episode announced in a feed before it
+                     * can be downloaded is one every client reports as broken.
+                     */
+                    $this->videos()->seriesEpisodes($series->id, $filters),
                 ];
 
             case 'playlist':
@@ -167,7 +184,8 @@ final class FeedController extends Controller
                 return [
                     $playlist->title,
                     (string) ($playlist->description ?? ''),
-                    $playlists->videos($playlist->id),
+                    // The public filter set, like the series feed above.
+                    $this->videos()->visibleInOrder($playlists->videoIds($playlist->id), $filters),
                 ];
 
             default:

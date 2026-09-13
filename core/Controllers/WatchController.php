@@ -167,6 +167,31 @@ final class WatchController extends Controller
                      * forward.
                      */
                     'locked'      => $locked,
+
+                    /*
+                     * The address to share, from BASE_URL and never from the
+                     * Host header — the host-header-poisoning fix this product
+                     * inherited, applied to the one link a visitor copies and
+                     * sends to other people.
+                     */
+                    'shareUrl'    => $this->config()->url('/watch/' . $video->slug),
+
+                    /*
+                     * Whether a stranger can follow the link. Share-to-X and
+                     * Facebook are offered only when they can: for a
+                     * members-only video every person who clicks is sent to a
+                     * page that 404s for them, which is a dead end posted in
+                     * public. Copying the link is always offered, because
+                     * another member can use it.
+                     */
+                    'publicLink'  => ($video->isVisible() || $premiering)
+                        && !$video->memberOnly
+                        && !($this->seriesOf($video)?->memberOnly ?? false)
+                        // Restricted to named groups: a stranger belongs to
+                        // none, so asking with no groups is asking "can a
+                        // stranger follow this link" — the same rule the page
+                        // itself applies, rather than a second copy of it.
+                        && $videos->audienceAllows($video, []),
                 ],
                 // Which of this viewer's lists the video is already on, so the
                 // buttons can say "Saved" rather than offering to save
@@ -457,48 +482,21 @@ final class WatchController extends Controller
             /** @var VideoRepository $videos */
             $videos = $this->container->get(VideoRepository::class);
 
-            $signals = $videos->relatednessSignals($video);
-            if ($signals === []) {
-                return [];
-            }
-
-            $ranked = \Portal\Content\Relatedness::rank($signals);
-            if ($ranked === []) {
-                return [];
-            }
-
-            $user = $this->user();
-            $canWatch = $user !== null && ($user->isAdmin() || $user->authorized);
-
-            $result = $videos->query([
-                'ids'               => $ranked,
-                'includeMemberOnly' => $canWatch,
+            /*
+             * Through Recommendations, which the homepage's "Because you watched"
+             * row uses too — one ranking, so the two cannot drift into
+             * recommending things the other would never list.
+             */
+            $ordered = (new \Portal\Content\Recommendations($this->db(), $videos))->related($video, [
+                'includeMemberOnly' => $this->canWatch(),
                 // A premiere is listed everywhere else on the site, and the
                 // card says so. Hiding it here would make the section disagree
                 // with the series page it sits next to.
                 'includePremieres'  => true,
-            ], 1, \Portal\Content\Relatedness::LIMIT);
+            ]);
 
-            if ($result['items'] === []) {
+            if ($ordered === []) {
                 return [];
-            }
-
-            /*
-             * query() returns its own curated order — pinned first, then the
-             * arrangement an editor chose. That is right for a listing and
-             * wrong here, where the ranking IS the answer. Restored to the
-             * ranked order, with anything the query dropped simply absent.
-             */
-            $byId = [];
-            foreach ($result['items'] as $item) {
-                $byId[$item->id] = $item;
-            }
-
-            $ordered = [];
-            foreach ($ranked as $id) {
-                if (isset($byId[$id])) {
-                    $ordered[] = $byId[$id];
-                }
             }
 
             $presenter = new \Portal\Content\VideoPresenter(
@@ -508,7 +506,7 @@ final class WatchController extends Controller
 
             return $presenter->cards(
                 $ordered,
-                $canWatch,
+                $this->canWatch(),
                 $this->config()->settingBool('members_thumbnail_default', false)
             );
         } catch (Throwable $e) {
@@ -527,7 +525,13 @@ final class WatchController extends Controller
      */
     private function startPosition(Request $request, ?int $duration): int
     {
-        $requested = (int) ($request->query('t') ?? 0);
+        /*
+         * Through Timestamp, so `?t=1:30` works as well as `?t=90` — the "Share
+         * at" field sends what was typed, and this is the only place it is
+         * parsed. A value that is not a moment starts at the beginning rather
+         * than at a guess.
+         */
+        $requested = \Portal\Support\Timestamp::parse($request->query('t')) ?? 0;
 
         if ($requested <= 0) {
             return 0;
@@ -621,7 +625,13 @@ final class WatchController extends Controller
              * hidden from them is skipped rather than becoming a wall they can
              * never get past.
              */
-            $episodes = $this->container->get(VideoRepository::class)->forSeries($series->id);
+            $episodes = $this->container->get(VideoRepository::class)->seriesEpisodes($series->id, [
+                'includeMemberOnly' => $this->canWatch(),
+                'audienceGroupIds'  => $this->viewerGroupIds(),
+                // A premiere is an episode the course is waiting on, so it still
+                // holds the next one back — as it did before this was filtered.
+                'includePremieres'  => true,
+            ]);
             $order = array_map(static fn ($v): int => $v->id, $episodes);
 
             $completed = $this->completedIn($user->id, $order);

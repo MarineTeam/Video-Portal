@@ -1192,3 +1192,19 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 }
 
 .locale-go:hover { color: inherit; }
+
+/* ---------------------------------------------------------- passing it on */
+.share-link { margin: 2rem 0; max-width: 44rem; }
+.share-address input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; }
+.share-at { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .5rem; margin: .75rem 0 .25rem; }
+.share-at label { margin: 0; }
+.share-at input { width: 7rem; }
+/* The browser marks a field that fails the shared pattern; said with a border
+ * as well as colour, and only once somebody has typed. */
+.share-at input:user-invalid { border-color: #fbbf24; outline: 2px solid #fbbf24; }
+.share-elsewhere { display: flex; gap: 1rem; margin-top: .75rem; }
+.chapter-copy {
+  font: inherit; font-size: .75rem; margin-left: .5rem; padding: 0 .4rem;
+  color: var(--text-muted); background: transparent;
+  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
+}

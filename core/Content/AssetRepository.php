@@ -42,6 +42,111 @@ final class AssetRepository
     }
 
     /**
+     * Every stored file, newest first, with what uses it — for the file manager.
+     *
+     * Until this existed the only way to find a file was to open the video it
+     * was attached to, which is no way at all to answer "what is filling the
+     * disk" or "where did that PDF go".
+     *
+     * CURSOR-PAGED on the id, not OFFSET: this is the screen somebody deletes
+     * from, and an OFFSET page after a deletion skips the row that moved up into
+     * the gap — exactly the file the person was about to look at next.
+     *
+     * The search matches the name the file was uploaded with and the title of
+     * what it belongs to, with LIKE wildcards ESCAPED. Binding stops injection
+     * but not `%` and `_`, which this codebase has already been bitten by once:
+     * a search for "notes_v2" must not match "notesXv2".
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function library(string $search = '', string $kind = '', int $beforeId = 0, int $limit = 50): array
+    {
+        $where = ['1 = 1'];
+        $params = [];
+
+        $search = trim($search);
+
+        if ($search !== '') {
+            $like = '%' . $this->db->escapeLike($search) . '%';
+            $where[] = '(a.original_name LIKE ? OR v.title LIKE ? OR b.title LIKE ?)';
+            array_push($params, $like, $like, $like);
+        }
+
+        $condition = FileKind::condition($kind);
+
+        if ($condition !== null) {
+            $where[] = $condition[0];
+            $params = array_merge($params, $condition[1]);
+        }
+
+        if ($beforeId > 0) {
+            $where[] = 'a.id < ?';
+            $params[] = $beforeId;
+        }
+
+        return $this->db->all(
+            'SELECT a.id, a.original_name, a.content_type, a.size_bytes, a.uploaded_by, a.created_at,
+                    a.video_id, v.title AS video_title, v.slug AS video_slug,
+                    b.id AS book_id, b.title AS book_title
+               FROM {file_assets} a
+               LEFT JOIN {videos} v ON v.id = a.video_id
+               LEFT JOIN {books} b ON b.asset_id = a.id
+              WHERE ' . implode(' AND ', $where) . '
+              ORDER BY a.id DESC
+              LIMIT ' . max(1, min(200, $limit)),
+            $params
+        );
+    }
+
+    /**
+     * How many files, and how much space, in total.
+     *
+     * @return array{count: int, bytes: int}
+     */
+    public function totals(): array
+    {
+        $row = $this->db->first('SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes FROM {file_assets}');
+
+        return ['count' => (int) ($row['n'] ?? 0), 'bytes' => (int) ($row['bytes'] ?? 0)];
+    }
+
+    /**
+     * Delete a file from the file manager — unless a book is made of it.
+     *
+     * THE RULE. A book points at its file with ON DELETE SET NULL, so deleting
+     * the file from a generic list does not fail: it succeeds, and leaves a
+     * hymnal with no pages, every bookmark and highlight in it pointing at
+     * nothing, and the reader showing an empty frame. So the file manager
+     * refuses, and names the book — replacing or removing a book's file is done
+     * on the book's own screen, where that consequence is in front of the person
+     * doing it.
+     *
+     * Checked in the same request as the delete rather than trusted from the
+     * page, which may be minutes old.
+     *
+     * @return string|null null when deleted; otherwise why not, naming the book
+     */
+    public function deleteUnlessInUse(int $id): ?string
+    {
+        $book = $this->db->first('SELECT id, title FROM {books} WHERE asset_id = ?', [$id]);
+
+        if ($book !== null) {
+            return sprintf(
+                'is the file of the book "%s" — replace or remove it on that book\'s page',
+                (string) $book['title']
+            );
+        }
+
+        if ($this->find($id) === null) {
+            return 'no longer exists';
+        }
+
+        $this->delete($id);
+
+        return null;
+    }
+
+    /**
      * The absolute path of a stored file.
      *
      * Re-checked against the storage root rather than trusted. The value comes

@@ -20,6 +20,12 @@ final class HomeRow
     public const PLAYLIST = 'playlist';
     public const CONTINUE = 'continue';
 
+    /**
+     * "Because you watched X" — personal, like continue-watching, and empty for
+     * a stranger. See Portal\Content\Recommendations.
+     */
+    public const BECAUSE  = 'because';
+
     public function __construct(
         public readonly int $id,
         public readonly string $title,
@@ -55,6 +61,7 @@ final class HomeRow
             self::SERIES   => 'A series',
             self::PLAYLIST => 'A playlist',
             self::CONTINUE => 'Continue watching',
+            self::BECAUSE  => 'Because you watched…',
         ];
     }
 
@@ -81,11 +88,12 @@ final class HomeRow
     /**
      * Is this row the same for everybody?
      *
-     * Continue-watching is not, which is the one thing about it that matters
-     * to anything caching a page.
+     * Continue-watching and because-you-watched are not, which is the one
+     * thing about them that matters to anything caching a page — a cached copy
+     * of either shows one person's history to the next visitor.
      */
     public function isPersonal(): bool
     {
-        return $this->sourceType === self::CONTINUE;
+        return in_array($this->sourceType, [self::CONTINUE, self::BECAUSE], true);
     }
 }

@@ -479,6 +479,18 @@ $note ??= '';
             <span class="chapter-time"><?= e(\Portal\Support\Str::duration((int) $chapter['start'])) ?></span>
             <span><?= e($chapter['title']) ?></span>
           </a>
+          <?php
+          /*
+           * A copy-link for this chapter, carrying the full address rather than
+           * the relative ?t= the link above uses — a relative link pasted into a
+           * message is not a link to anything.
+           */
+          ?>
+          <?php if (!empty($video['shareUrl'])): ?>
+            <button type="button" class="chapter-copy" hidden
+                    data-copy="<?= e((string) $video['shareUrl'] . '?t=' . (int) $chapter['start']) ?>"
+                    aria-label="Copy a link to <?= e($chapter['title']) ?>">Copy link</button>
+          <?php endif ?>
         </li>
       <?php endforeach ?>
     </ol>
@@ -612,6 +624,65 @@ $downloadSlug ??= '';
   });
   </script>
 <?php endif; ?>
+<?php if (!empty($video['shareUrl'])): ?>
+  <?php
+  /*
+   * Passing the link on. Separate from the "Share this" panel below, which makes
+   * a private link for one named person; this is the ordinary address, for
+   * anyone who can already open it.
+   *
+   * NO SOCIAL WIDGETS. X and Facebook are plain links to their share pages, not
+   * their scripts: a share button that loads a third party's JavaScript reports
+   * every visitor to that third party whether or not they press it, and on a
+   * church's sermon archive that is a list of who watched what.
+   *
+   * And they are offered only when a stranger can follow the link — see
+   * publicLink in WatchController. Posting a members-only video to a public feed
+   * sends everyone who clicks to a page that 404s for them.
+   *
+   * Works with the script blocked: the address is in a readonly box somebody
+   * can select, and the "Share at" form is a GET that reloads this page at that
+   * moment, from which the address bar can be copied.
+   */
+  $shareUrl = (string) $video['shareUrl'];
+  ?>
+  <section class="share-link" aria-labelledby="share-link-heading">
+    <h2 class="section-title" id="share-link-heading">Pass it on</h2>
+
+    <label class="share-address">Link
+      <input type="text" readonly value="<?= e($shareUrl) ?>" data-share-address
+             onclick="this.select()">
+    </label>
+
+    <form method="get" action="<?= e($shareUrl) ?>" class="share-at" data-share-at>
+      <label>Share at
+        <input type="text" name="t" inputmode="numeric" placeholder="1:30"
+               pattern="<?= e(\Portal\Support\Timestamp::PATTERN) ?>" maxlength="8" autocomplete="off"
+               data-share-at-time>
+      </label>
+      <button class="btn secondary">Go to that moment</button>
+      <button type="button" class="btn secondary" hidden data-share-at-here>From where I am</button>
+      <button type="button" class="btn secondary" hidden data-share-at-copy>Copy link</button>
+    </form>
+    <p class="muted small" data-share-status aria-live="polite">
+      Minutes and seconds, like 12:30, or seconds on their own.
+    </p>
+
+    <?php if (!empty($video['publicLink'])): ?>
+      <p class="share-elsewhere">
+        <a href="https://twitter.com/intent/tweet?url=<?= e(rawurlencode($shareUrl)) ?>&amp;text=<?= e(rawurlencode((string) $video['title'])) ?>"
+           target="_blank" rel="noopener noreferrer">Share on X</a>
+        <a href="https://www.facebook.com/sharer/sharer.php?u=<?= e(rawurlencode($shareUrl)) ?>"
+           target="_blank" rel="noopener noreferrer">Share on Facebook</a>
+      </p>
+    <?php endif ?>
+  </section>
+
+  <script src="<?= e(isset($themeAsset)
+      ? $themeAsset('share-link.js')
+      : ($assetsUrl ?? '/theme-asset/default') . '/share-link.js') ?>" defer></script>
+<?php endif ?>
+
 <?php if ($sharePanel !== null): ?>
   <section class="card" id="share" style="margin:2rem 0;padding:1rem 1.25rem">
     <h2 class="section-title">Share this</h2>
