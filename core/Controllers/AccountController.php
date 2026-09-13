@@ -179,6 +179,58 @@ final class AccountController extends Controller
     }
 
     /**
+     * Delete your own account.
+     *
+     * The rules — what goes, what stays detached, who is refused — live in
+     * AccountDeletion, so this handler only asks and renders. The page lists
+     * what will stay BEFORE the button, because learning afterwards that a
+     * sign-up outlived the account is the surprise this screen exists to
+     * prevent.
+     *
+     * No rate limit and no password prompt: the person is already signed in,
+     * and typing their own address is the deliberate step. A password would
+     * also be a question somebody signing in through Auth0 cannot answer.
+     *
+     * Afterwards, through /auth/logout rather than straight home, so an
+     * identity provider's own session ends too. Otherwise "Sign in" would
+     * silently re-authenticate and create a brand-new account, which reads as
+     * the deletion not having happened.
+     */
+    public function delete(Request $request): Response
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return $this->redirect('/auth/login');
+        }
+
+        $deletion = new \Portal\Account\AccountDeletion($this->db());
+        $problem = null;
+
+        if ($request->method === 'POST') {
+            $this->verifyCsrf($request);
+
+            $problem = $deletion->refusal($user, (string) ($request->input('confirm_email') ?? ''));
+
+            if ($problem === null) {
+                $deletion->delete($user);
+
+                /** @var Session $session */
+                $session = $this->container->get(Session::class);
+                $session->logout();
+
+                return $this->redirect('/auth/logout')->private();
+            }
+        }
+
+        return $this->view(['account-delete'], [
+            'title'   => 'Delete your account',
+            'stays'   => $deletion->whatStays($user),
+            'problem' => $problem,
+            'token'   => $this->csrfToken(),
+        ]);
+    }
+
+    /**
      * What is saved on this device.
      *
      * The one screen in this application the server cannot fill in. Everything

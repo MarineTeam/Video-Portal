@@ -201,6 +201,9 @@ final class WatchController extends Controller
                 'scripture'  => $this->scriptureLinks($video->id),
                 'tags'       => $this->tagLinks($video->id),
                 'note'       => $this->note($video->id),
+                // Whether the fill-in-the-blank sheet exists, so the page links
+                // to it. The sheet page decides who may read it on its own.
+                'noteSheet'  => (new \Portal\Content\NoteSheetRepository($this->db()))->find($video->id) !== null,
                 'transcript' => $this->transcriptCues($video->id),
                 'savedLists' => $this->savedLists($video->id),
                 'saveAction' => '/saved',

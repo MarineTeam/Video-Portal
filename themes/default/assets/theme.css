@@ -274,6 +274,11 @@ main { padding: 2.5rem 0 4rem; }
   main { padding: 0; }
   .wrap { max-width: none; padding: 0; }
 
+  /* The note sheet IS a form, and the rule above hides forms. Its blanks
+     print as lines to write on, filled ones with what was written. */
+  form.note-sheet { display: block !important; }
+  .sheet-gap { border: 0 !important; border-bottom: 1px solid #000 !important; background: none !important; color: #000 !important; }
+
   .page-title { font-size: 18pt; margin: 0 0 0.2cm; }
   .page-subtitle { font-size: 11pt; margin: 0 0 0.6cm; }
   .section-title { font-size: 12pt; margin: 0.6cm 0 0.2cm; }
@@ -789,6 +794,11 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   border-color: var(--border);
   color: var(--text);
 }
+/* The button that cannot be taken back. Same red as .notice.error. */
+.btn.danger {
+  background: #ef4444;
+  color: #fff;
+}
 
 /* ------------------------------------------------------------------ player */
 
@@ -1208,3 +1218,22 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   color: var(--text-muted); background: transparent;
   border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
 }
+
+/* ------------------------------------------------------------ note sheets */
+
+/* Line height generous enough that a blank sits in the sentence rather than
+   pushing the lines apart — this reads as a paragraph with gaps, not a form. */
+.sheet-outline { line-height: 2.2; font-size: 1.0625rem; max-width: 46rem; }
+.sheet-gap {
+  font: inherit;
+  width: 10em;
+  max-width: 100%;
+  padding: 0 .25rem;
+  border: 0;
+  border-bottom: 2px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+.sheet-gap:focus { outline: 2px solid var(--accent); outline-offset: 2px; border-bottom-color: var(--accent); }
+.sheet-actions { margin-top: 1.25rem; display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }

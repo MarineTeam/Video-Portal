@@ -891,6 +891,8 @@ final class AdminView
         /** @var Video $video */
         $video = $data['video'];
         $token = e((string) $data['token']);
+        $noteSheet = e((string) ($data['noteSheet'] ?? ''));
+        $noteSheetMax = \Portal\Content\NoteSheet::MAX_OUTLINE;
 
         /** @var list<Category> $categories */
         $categories = (array) ($data['categories'] ?? []);
@@ -1236,6 +1238,19 @@ final class AdminView
                    downloaded it keeps it. Everything else on this screen takes effect on the next
                    visit; this does not, which is why nothing goes into the podcast until it is
                    ticked.</p>
+              </fieldset>
+
+              <fieldset>
+                <legend>Note sheet</legend>
+
+                <label>Outline
+                  <textarea name="note_sheet" rows="8" maxlength="{$noteSheetMax}">{$noteSheet}</textarea>
+                </label>
+                <p class="muted small">The fill-in-the-blank sheet people follow along with. Type the outline
+                   as plain text and mark each blank with three or more underscores: <code>God's love is ___.</code>
+                   Anybody who can see this video can read and print it; members keep their answers.
+                   Changing the wording after people have filled it in tells them their sheet has
+                   changed — rewrapping lines does not. Leave it empty for no sheet.</p>
               </fieldset>
 
               <fieldset>

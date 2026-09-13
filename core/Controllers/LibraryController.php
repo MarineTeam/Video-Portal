@@ -1105,61 +1105,6 @@ final class LibraryController extends Controller
         return $this->container->get(VideoRepository::class);
     }
 
-    /**
-     * Visibility, decided in one place.
-     *
-     * An unapproved or anonymous visitor sees only public content. Someone who
-     * can manage videos sees drafts too, so they can check work before
-     * publishing without a separate preview mechanism.
-     *
-     * @param array<string, mixed> $filters
-     * @return array<string, mixed>
-     */
-    private function visibilityFilters(array $filters): array
-    {
-        $user = $this->user();
-
-        /*
-         * Premieres appear in listings before their date, which is the whole
-         * point of marking one. Ordinary scheduled videos still do not — being
-         * invisible until publication is what scheduling means, and a premiere
-         * is the deliberate exception an editor asked for.
-         *
-         * Not applied to feeds, which build their own filters: an episode
-         * announced in a podcast feed before it can be downloaded is an
-         * episode every client reports as broken.
-         */
-        $filters['includePremieres'] = true;
-
-        if ($user !== null && ($user->isAdmin() || $user->authorized)) {
-            $filters['includeMemberOnly'] = true;
-        }
-
-        if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
-            $filters['includeUnpublished'] = true;
-            $filters['includeHidden'] = true;
-
-            /*
-             * And past group restrictions, for the same reason they see
-             * unpublished and hidden content: somebody who cannot see what they
-             * are editing cannot edit it. The bypass is theirs alone — it is
-             * not implied by being signed in, or approved, or an ordinary
-             * member of any group.
-             */
-            $filters['bypassAudiences'] = true;
-        }
-
-        /*
-         * Which groups this person is in, resolved once per request and handed
-         * to the query rather than asked per row. Anonymous visitors get an
-         * empty list, which satisfies no restriction — correctly, since a
-         * restriction names people and nobody is not one of them.
-         */
-        $filters['audienceGroupIds'] = $this->viewerGroupIds();
-
-        return $filters;
-    }
-
     private function canSee(bool $published, bool $memberOnly, bool $hidden): bool
     {
         if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {

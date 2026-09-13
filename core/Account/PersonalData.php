@@ -147,6 +147,13 @@ final class PersonalData
                   WHERE n.user_id = ?',
                 [$user->id]
             ),
+            'note_sheets'    => $this->rows(
+                'SELECT a.video_id, a.answers, a.sheet_version, a.updated_at, v.title
+                   FROM {note_sheet_answers} a
+                   LEFT JOIN {videos} v ON v.id = a.video_id
+                  WHERE a.user_id = ?',
+                [$user->id]
+            ),
             'subscriptions'  => $this->rows(
                 'SELECT scope_type, scope_id, created_at FROM {subscriptions} WHERE email = ?',
                 [$user->email]

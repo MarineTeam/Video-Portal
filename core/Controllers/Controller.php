@@ -542,6 +542,65 @@ abstract class Controller
      * drift out of sync with the session it protects and needs no cleanup.
      */
     /**
+     * Visibility, decided in one place.
+     *
+     * On the base controller because more than the library resolves a video
+     * for a viewer — the note sheet page does too — and a second copy of this
+     * is how one of them eventually shows somebody a members-only title.
+     *
+     * An unapproved or anonymous visitor sees only public content. Someone who
+     * can manage videos sees drafts too, so they can check work before
+     * publishing without a separate preview mechanism.
+     *
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    protected function visibilityFilters(array $filters): array
+    {
+        $user = $this->user();
+
+        /*
+         * Premieres appear in listings before their date, which is the whole
+         * point of marking one. Ordinary scheduled videos still do not — being
+         * invisible until publication is what scheduling means, and a premiere
+         * is the deliberate exception an editor asked for.
+         *
+         * Not applied to feeds, which build their own filters: an episode
+         * announced in a podcast feed before it can be downloaded is an
+         * episode every client reports as broken.
+         */
+        $filters['includePremieres'] = true;
+
+        if ($user !== null && ($user->isAdmin() || $user->authorized)) {
+            $filters['includeMemberOnly'] = true;
+        }
+
+        if ($this->guard()->can(Capability::MANAGE_VIDEOS)) {
+            $filters['includeUnpublished'] = true;
+            $filters['includeHidden'] = true;
+
+            /*
+             * And past group restrictions, for the same reason they see
+             * unpublished and hidden content: somebody who cannot see what they
+             * are editing cannot edit it. The bypass is theirs alone — it is
+             * not implied by being signed in, or approved, or an ordinary
+             * member of any group.
+             */
+            $filters['bypassAudiences'] = true;
+        }
+
+        /*
+         * Which groups this person is in, resolved once per request and handed
+         * to the query rather than asked per row. Anonymous visitors get an
+         * empty list, which satisfies no restriction — correctly, since a
+         * restriction names people and nobody is not one of them.
+         */
+        $filters['audienceGroupIds'] = $this->viewerGroupIds();
+
+        return $filters;
+    }
+
+    /**
      * The permission groups the signed-in person belongs to.
      *
      * On the base controller because two different things need it — the listing

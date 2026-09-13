@@ -35,6 +35,7 @@ use Portal\Controllers\DownloadController;
 use Portal\Controllers\EventController;
 use Portal\Controllers\FeedController;
 use Portal\Controllers\LibraryController;
+use Portal\Controllers\NoteSheetController;
 use Portal\Controllers\MemberShareController;
 use Portal\Controllers\PwaController;
 use Portal\Controllers\RegistrationCheckController;
@@ -293,6 +294,14 @@ final class Routes
         $router->get('/account/export.json', [AccountController::class, 'export'], ['auth.user']);
 
         /*
+         * Deleting the account, next to the export on purpose: the two halves of
+         * one decision. One handler for both methods, so a refused POST
+         * re-renders the form with the reason. No id in the URL, as above — the
+         * only account it can delete is the one signed in.
+         */
+        $router->any(['GET', 'POST'], '/account/delete', [AccountController::class, 'delete'], ['auth.user']);
+
+        /*
          * Member sharing.
          *
          * `auth.user` here and the capability checked inside the handler
@@ -372,6 +381,16 @@ final class Routes
         // requireAuthorized, not requireUser: signing in proves identity,
         // watching requires an administrator's approval.
         $router->get('/watch/{slug}', [WatchController::class, 'show'], ['auth.authorized']);
+
+        /*
+         * Sermon note sheets. Reading is open to anybody who could see the video
+         * listed — the paper copy is handed to visitors — and decided inside the
+         * handler by the listing query, not by a guard here. Keeping answers
+         * needs an account: auth.user, since a sheet for a public video is
+         * something somebody waiting for approval can fill in too.
+         */
+        $router->get('/sheets/{slug}', [NoteSheetController::class, 'show']);
+        $router->post('/sheets/{slug}', [NoteSheetController::class, 'save'], ['auth.user']);
 
         /*
          * Taking a copy away. Behind the same guard as watching, and then

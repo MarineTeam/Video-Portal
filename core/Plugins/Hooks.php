@@ -81,6 +81,26 @@ final class Hooks
 
     public function doAction(string $hook, mixed ...$args): void
     {
+        $this->dispatch($hook, false, $args);
+    }
+
+    /**
+     * Fire $hook, and let a listener's exception through whatever the mode.
+     *
+     * For the rare hook fired inside a transaction whose whole point is that a
+     * listener failing stops it. doAction() swallows errors so one bad plugin
+     * cannot take a page down — which, for account deletion, would mean the
+     * account goes while the plugin's rows still carry the address. Stopping
+     * the deletion is the recoverable outcome; that is not.
+     */
+    public function doActionOrFail(string $hook, mixed ...$args): void
+    {
+        $this->dispatch($hook, true, $args);
+    }
+
+    /** @param list<mixed> $args */
+    private function dispatch(string $hook, bool $strict, array $args): void
+    {
         $this->fired[$hook] = ($this->fired[$hook] ?? 0) + 1;
 
         if (!isset($this->actions[$hook]) || isset($this->running[$hook])) {
@@ -95,6 +115,10 @@ final class Hooks
                     $callback(...$args);
                 } catch (Throwable $e) {
                     $this->handle($hook, $e);
+
+                    if ($strict) {
+                        throw $e;
+                    }
                 }
             }
         } finally {
