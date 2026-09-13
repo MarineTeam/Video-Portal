@@ -14766,6 +14766,122 @@ check(
     'a 401 tells a crawler that a real token exists at this shape of URL'
 );
 
+echo "\nFiles\n";
+
+/*
+ * Three stored files, written to real disk: an attachment on a video, a book's
+ * own file, and one that belongs to nothing. Each is a real file under storage/,
+ * so "deleted" can be checked on the disk and not only in the table.
+ */
+$fmNow = date('Y-m-d H:i:s');
+@mkdir(PORTAL_STORAGE . '/assets', 0775, true);
+
+$fmFile = static function (string $name, ?int $videoId) use ($db, $fmNow): int {
+    $relative = 'assets/smoke-fm-' . bin2hex(random_bytes(6)) . '.pdf';
+    file_put_contents(PORTAL_STORAGE . '/' . $relative, '%PDF-1.4 smoke');
+
+    return (int) $db->insert('file_assets', [
+        'video_id' => $videoId, 'path' => $relative, 'original_name' => $name,
+        'content_type' => 'application/pdf', 'size_bytes' => 14,
+        'uploaded_by' => 'admin@smoke.test', 'created_at' => $fmNow,
+    ]);
+};
+
+$fmAttachment = $fmFile('Smoke Handout Attachment.pdf', $videoRow);
+$fmBookFile = $fmFile('Smoke Hymnal File.pdf', null);
+$fmLoose = $fmFile('Smoke Loose File.pdf', null);
+
+$db->insert('books', [
+    'slug' => 'smoke-fm-hymnal', 'title' => 'Smoke File Manager Hymnal', 'asset_id' => $fmBookFile,
+    'created_at' => $fmNow, 'updated_at' => $fmNow,
+]);
+
+$filesPage = getWithJar($baseUrl . '/admin/files', $jar);
+
+check(
+    'Every stored file can be found in one place',
+    $filesPage['status'] === 200
+        && str_contains($filesPage['body'], 'Smoke Handout Attachment.pdf')
+        && str_contains($filesPage['body'], 'Smoke Hymnal File.pdf'),
+    "got {$filesPage['status']}"
+);
+
+check(
+    'and says what each belongs to',
+    str_contains($filesPage['body'], 'Smoke File Manager Hymnal')
+        && str_contains($filesPage['body'], 'name="files[]" value="' . $fmAttachment . '"'),
+    'a file list that does not say what a file is for cannot be cleared out safely'
+);
+
+check(
+    'and a book\'s file cannot even be ticked',
+    !str_contains($filesPage['body'], 'name="files[]" value="' . $fmBookFile . '"'),
+    'the box is courtesy — the next checks are the rule'
+);
+
+check(
+    'Searching narrows it, by file name or by what it is attached to',
+    str_contains(getWithJar($baseUrl . '/admin/files?q=Handout', $jar)['body'], 'Smoke Handout Attachment.pdf')
+        && !str_contains(getWithJar($baseUrl . '/admin/files?q=Handout', $jar)['body'], 'Smoke Loose File.pdf'),
+    'the search box does nothing'
+);
+
+/*
+ * THE RULE, over HTTP, with the courtesy of the disabled box bypassed: the
+ * book's file id is POSTED directly, alongside two that may go. The book's file
+ * must survive — row and bytes — and the message must name the book, while the
+ * other two are really deleted.
+ */
+$fmBookPath = PORTAL_STORAGE . '/' . (string) $db->value('SELECT path FROM {file_assets} WHERE id = ?', [$fmBookFile]);
+$fmAttachPath = PORTAL_STORAGE . '/' . (string) $db->value('SELECT path FROM {file_assets} WHERE id = ?', [$fmAttachment]);
+
+$fmDelete = postWithJar($baseUrl . '/admin/files', [
+    '_token' => csrfFrom($filesPage['body']),
+    'files'  => [(string) $fmAttachment, (string) $fmBookFile, (string) $fmLoose],
+], $jar, ['Referer: ' . $baseUrl . '/admin/files']);
+
+$fmAfter = getWithJar($baseUrl . '/admin/files', $jar)['body'];
+
+check(
+    'A book\'s file is not deleted, even when asked for directly',
+    (int) $db->value('SELECT COUNT(*) FROM {file_assets} WHERE id = ?', [$fmBookFile]) === 1
+        && is_file($fmBookPath)
+        && (int) $db->value('SELECT asset_id FROM {books} WHERE slug = ?', ['smoke-fm-hymnal']) === $fmBookFile,
+    "got {$fmDelete['status']} — A HYMNAL LOST ITS FILE, and now has no pages"
+);
+
+check(
+    'and the refusal names the book',
+    str_contains($fmAfter, 'Smoke File Manager Hymnal'),
+    'somebody is told "not deleted" and not why'
+);
+
+check(
+    'while the files that could go are gone, from the table and the disk',
+    (int) $db->value('SELECT COUNT(*) FROM {file_assets} WHERE id IN (?, ?)', [$fmAttachment, $fmLoose]) === 0
+        && !is_file($fmAttachPath),
+    'the delete did nothing, or left the bytes filling the disk'
+);
+
+/* And the screen is behind manage_files, which a video editor does not hold. */
+$fmEditorJar = sys_get_temp_dir() . '/portal-smoke-fm-editor-' . getmypid() . '.txt';
+@unlink($fmEditorJar);
+clearLoginThrottle($db);
+postWithJar($baseUrl . '/auth/login', [
+    'email'    => 'nav-editor@smoke.test',
+    'password' => 'nav-editor-password-1234',
+    '_token'   => csrfFrom(getWithJar($baseUrl . '/auth/login', $fmEditorJar)['body']),
+], $fmEditorJar);
+
+check(
+    'Somebody without manage_files is refused the screen',
+    getWithJar($baseUrl . '/admin/videos', $fmEditorJar)['status'] === 200
+        && getWithJar($baseUrl . '/admin/files', $fmEditorJar)['status'] === 403,
+    'the editor was not signed in, or the file manager is open to anyone in the admin area'
+);
+
+@unlink($fmEditorJar);
+
 echo "\nEpisodes of a public series\n";
 
 /*

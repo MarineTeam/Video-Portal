@@ -10,6 +10,7 @@ use Portal\Controllers\AdminEventController;
 use Portal\Controllers\AdminRotaController;
 use Portal\Controllers\AdminBookController;
 use Portal\Controllers\AdminApiKeyController;
+use Portal\Controllers\AdminFileController;
 use Portal\Controllers\LiveChatController;
 use Portal\Controllers\LocaleController;
 use Portal\Controllers\TvController;
@@ -663,6 +664,13 @@ final class Routes
 
         $router->get('/admin/prayer', [AdminPrayerController::class, 'index'], ['admin.area']);
         $router->post('/admin/prayer', [AdminPrayerController::class, 'update'], ['admin.area']);
+
+        /*
+         * Every stored file in one place. The screen lets a scoped editor in and
+         * checks each delete against that file's own video — see the controller.
+         */
+        $router->get('/admin/files', [AdminFileController::class, 'index'], ['admin.area']);
+        $router->post('/admin/files', [AdminFileController::class, 'update'], ['admin.area']);
 
         $router->get('/admin/books', [AdminBookController::class, 'index'], ['admin.area']);
         $router->post('/admin/books', [AdminBookController::class, 'update'], ['admin.area']);
