@@ -1399,6 +1399,7 @@ final class AdminView
 
         $limit = \Portal\Content\AssetPolicy::formatSize(\Portal\Content\AssetPolicy::MAX_BYTES);
         $kinds = implode(', ', array_keys(\Portal\Content\AssetPolicy::types()));
+        $queueScript = e(asset_url('/assets/attachments.js'));
 
         return <<<HTML
         <h2>Attachments</h2>
@@ -1407,15 +1408,20 @@ final class AdminView
           <tbody>{$rows}</tbody>
         </table>
 
-        <form method="post" action="/admin/videos" enctype="multipart/form-data">
+        <form method="post" action="/admin/videos" enctype="multipart/form-data" id="attach-form">
           <input type="hidden" name="_token" value="{$token}">
           <input type="hidden" name="id" value="{$videoId}">
 
           <fieldset>
-            <legend>Attach a file</legend>
-            <p class="muted small">Notes, slides, a handout. Up to {$limit}.</p>
+            <legend>Attach files</legend>
+            <p class="muted small">Notes, slides, a handout. Up to {$limit} each.</p>
 
-            <label>File <input type="file" name="attachment" required></label>
+            <label>File <input type="file" name="attachment" id="attach-input" required></label>
+            <label id="attach-label-row">Title <input type="text" name="label" maxlength="180" placeholder="Optional — the file name is used otherwise"></label>
+
+            <!-- The queue: filled by attachments.js, one row per picked file. -->
+            <table id="attach-queue" hidden><tbody></tbody></table>
+            <p id="attach-summary" class="small" role="status" aria-live="polite"></p>
 
             <p class="muted small">Allowed: {$kinds}. Anything a browser could execute is refused,
                including HTML and SVG — an SVG is an image everywhere else and a script container
@@ -1423,9 +1429,10 @@ final class AdminView
             <p class="muted small">Attachments follow the video: one on a members-only video is only
                downloadable by somebody who could watch it, and unpublishing takes it away too.</p>
 
-            <button class="btn" name="action" value="attach">Attach</button>
+            <button class="btn" name="action" value="attach" id="attach-submit">Attach</button>
           </fieldset>
         </form>
+        <script src="{$queueScript}" defer></script>
         HTML;
     }
 
@@ -4028,6 +4035,7 @@ final class AdminView
             : '';
 
         $exportUrl = '/admin/activity.csv' . ($carry !== '' ? '?' . $carry : '');
+        $jsonUrl = '/admin/activity.json' . ($carry !== '' ? '?' . $carry : '');
 
         return <<<HTML
         <h1>Activity log</h1>
@@ -4047,7 +4055,7 @@ final class AdminView
         </form>
 
         <p class="muted small">
-          {$log['total']} entr(ies) match. <a href="{$exportUrl}">Download as CSV</a> — capped at 5,000
+          {$log['total']} entr(ies) match. <a href="{$exportUrl}">Download as CSV</a> or <a href="{$jsonUrl}">JSON</a> — capped at 5,000
           rows, because building more than that in memory on this kind of hosting is how a page
           becomes an error.
         </p>

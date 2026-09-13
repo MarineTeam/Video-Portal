@@ -763,6 +763,7 @@ final class Routes
          */
         $router->get('/admin/activity', [AdminController::class, 'auditLog'], ['admin.area']);
         $router->get('/admin/activity.csv', [AdminController::class, 'auditLogCsv'], ['admin.area']);
+        $router->get('/admin/activity.json', [AdminController::class, 'auditLogJson'], ['admin.area']);
         $router->get('/admin/homepage', [AdminController::class, 'homeRows'], ['admin.area']);
         $router->post('/admin/homepage', [AdminController::class, 'saveHomeRow'], ['admin.area']);
         $router->get('/admin/announcements', [AdminController::class, 'announcementsScreen'], ['admin.area']);

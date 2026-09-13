@@ -114,6 +114,42 @@ final class AssetPolicy
      * one, and directory separators because a name shown as "uploads/x" is
      * misleading even when it is stored elsewhere.
      */
+    /**
+     * The name to record for an upload somebody gave a title to.
+     *
+     * The EXTENSION always comes from the real file, never from the title:
+     * it decides the content type and whether the file is allowed at all, and
+     * a title is typed into a box. "Handout.exe" typed over a PDF is recorded
+     * as "Handout.exe.pdf" and served as a PDF. A title already ending in the
+     * real extension is not given it twice. Room for the extension is kept
+     * when the title is cut to length, so the cut can never remove it.
+     *
+     * An empty title means the filename, unchanged.
+     */
+    public static function labelled(string $filename, string $label): string
+    {
+        $extension = self::extension($filename);
+        $label = trim((string) preg_replace('/[\x00-\x1F\x7F"\\\\\/:*?<>|]/u', '', $label));
+
+        if ($extension === null) {
+            return $filename;
+        }
+
+        // Before the dots are trimmed: a title of ".pdf" trimmed first reads
+        // as "pdf" and would be recorded as "pdf.pdf".
+        if (str_ends_with(strtolower($label), '.' . $extension)) {
+            $label = substr($label, 0, -strlen($extension) - 1);
+        }
+
+        $label = trim($label, " .");
+
+        if ($label === '') {
+            return $filename;
+        }
+
+        return mb_substr($label, 0, self::MAX_NAME_LENGTH - strlen($extension) - 1) . '.' . $extension;
+    }
+
     public static function displayName(string $filename): string
     {
         $name = basename(str_replace('\\', '/', trim($filename)));
