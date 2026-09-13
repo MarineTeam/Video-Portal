@@ -789,6 +789,11 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   border-color: var(--border);
   color: var(--text);
 }
+/* The button that cannot be taken back. Same red as .notice.error. */
+.btn.danger {
+  background: #ef4444;
+  color: #fff;
+}
 
 /* ------------------------------------------------------------------ player */
 

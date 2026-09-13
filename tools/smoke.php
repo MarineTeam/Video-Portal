@@ -14882,6 +14882,13 @@ check(
 
 @unlink($fmEditorJar);
 
+// The book's file was rightly refused, so it is still on disk — and storage/
+// outlives the scratch database, so it would otherwise pile up in the working
+// tree one file per run.
+foreach (glob(PORTAL_STORAGE . '/assets/smoke-fm-*.pdf') ?: [] as $fmLeft) {
+    @unlink($fmLeft);
+}
+
 echo "\nEpisodes of a public series\n";
 
 /*
@@ -15654,6 +15661,165 @@ check(
 
 @unlink($langJar);
 @unlink($headerJar);
+
+echo "\nDeleting your own account\n";
+
+/*
+ * Driven as the person, over HTTP, because every rule here is somewhere a
+ * handler could skip it: the typed address, the CSRF token, the last
+ * administrator, and signing the browser out afterwards.
+ */
+$signedOutDelete = get($baseUrl . '/account/delete');
+check(
+    'Signed out, the delete page sends you to sign in',
+    $signedOutDelete['status'] === 302,
+    "got {$signedOutDelete['status']}"
+);
+
+$dataPage = getWithJar($baseUrl . '/account/history', $jar);
+check(
+    'The data page links to deleting the account',
+    str_contains($dataPage['body'], 'href="/account/delete"'),
+    'a page reachable only by typing its URL is the defect this project repeats'
+);
+
+$leaverEmail = 'leaver@smoke.test';
+$leaverId = (int) $db->insert('users', [
+    'email' => $leaverEmail, 'name' => 'Leaving Soon', 'authorized' => 1,
+    'role_id' => (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']),
+    'password_hash' => password_hash('leaver-password-1234', PASSWORD_DEFAULT),
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+// Subscribed by address, which no foreign key reaches.
+$db->insert('subscriptions', [
+    'token' => bin2hex(random_bytes(8)), 'email' => $leaverEmail,
+    'scope_type' => 'site', 'created_at' => date('Y-m-d H:i:s'),
+]);
+$db->insert('comments', [
+    'video_id' => $videoRow, 'user_id' => $leaverId, 'author_name' => 'Leaving Soon',
+    'author_email' => $leaverEmail, 'body' => 'Goodbye from the leaver', 'status' => 'approved',
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+$db->insert('prayer_requests', [
+    'user_id' => $leaverId, 'body' => 'A request the leaver made',
+    'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+]);
+
+$leaverJar = sys_get_temp_dir() . '/portal-smoke-leaver-' . getmypid() . '.txt';
+@unlink($leaverJar);
+clearLoginThrottle($db);
+$leaverLogin = getWithJar($baseUrl . '/auth/login', $leaverJar);
+postWithJar($baseUrl . '/auth/login', [
+    '_token' => csrfFrom($leaverLogin['body']), 'email' => $leaverEmail, 'password' => 'leaver-password-1234',
+], $leaverJar);
+
+$deletePage = getWithJar($baseUrl . '/account/delete', $leaverJar);
+check('The delete page renders for its owner', $deletePage['status'] === 200, "got {$deletePage['status']}");
+check(
+    'and says what will stay BEFORE anything is deleted',
+    str_contains($deletePage['body'], 'Prayer requests'),
+    'learning afterwards that something outlived the account is what the list prevents'
+);
+
+$wrongAddress = postWithJar($baseUrl . '/account/delete', [
+    '_token' => csrfFrom($deletePage['body']), 'confirm_email' => 'someone-else@smoke.test',
+], $leaverJar);
+check(
+    'Typing somebody else\'s address is refused, and says why',
+    $wrongAddress['status'] === 200 && str_contains($wrongAddress['body'], 'Type your own email address'),
+    "got {$wrongAddress['status']}"
+);
+check(
+    'and the account is still there',
+    (int) $db->value('SELECT COUNT(*) FROM {users} WHERE id = ?', [$leaverId]) === 1,
+    'a refusal that deleted anyway was cosmetic'
+);
+
+$noToken = postWithJar($baseUrl . '/account/delete', ['confirm_email' => $leaverEmail], $leaverJar);
+check(
+    'Without a CSRF token nothing is deleted',
+    $noToken['status'] === 419 && (int) $db->value('SELECT COUNT(*) FROM {users} WHERE id = ?', [$leaverId]) === 1,
+    "got {$noToken['status']}"
+);
+
+$deletePage = getWithJar($baseUrl . '/account/delete', $leaverJar);
+$deleted = postWithJar($baseUrl . '/account/delete', [
+    '_token' => csrfFrom($deletePage['body']), 'confirm_email' => '  LEAVER@smoke.test ',
+], $leaverJar);
+check(
+    'Typing your own address deletes the account and signs out through /auth/logout',
+    $deleted['status'] === 302 && str_contains($deleted['headers']['location'] ?? '', '/auth/logout'),
+    "got {$deleted['status']} to " . ($deleted['headers']['location'] ?? 'nowhere')
+);
+check(
+    'The account is gone',
+    (int) $db->value('SELECT COUNT(*) FROM {users} WHERE id = ?', [$leaverId]) === 0
+);
+check(
+    'and a subscription made by address does not keep mailing them',
+    (int) $db->value('SELECT COUNT(*) FROM {subscriptions} WHERE email = ?', [$leaverEmail]) === 0
+);
+check(
+    'and the comments plugin cleared its own table',
+    (int) $db->value('SELECT COUNT(*) FROM {comments} WHERE author_email = ?', [$leaverEmail]) === 0,
+    'the account_deleting hook is a promise until a plugin answers it'
+);
+check(
+    'and a kept prayer request is detached rather than deleted',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {prayer_requests} WHERE body = ? AND user_id IS NULL',
+        ['A request the leaver made']
+    ) === 1
+);
+check(
+    'and the audit log names the address',
+    (int) $db->value(
+        'SELECT COUNT(*) FROM {audit_log} WHERE action = ? AND actor_email = ?',
+        ['account.delete', $leaverEmail]
+    ) === 1
+);
+$afterDelete = getWithJar($baseUrl . '/account', $leaverJar);
+check(
+    'The browser that deleted it is no longer signed in',
+    $afterDelete['status'] === 302,
+    "got {$afterDelete['status']}"
+);
+@unlink($leaverJar);
+
+/*
+ * The last administrator. Other administrators made by earlier sections are
+ * demoted for the length of this check and put back, so the refusal is the
+ * only thing that can stop it.
+ */
+$adminRole = (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['admin']);
+$viewerRole = (int) $db->value('SELECT id FROM {roles} WHERE slug = ?', ['viewer']);
+$otherAdmins = $db->column(
+    'SELECT id FROM {users} WHERE role_id = ? AND email <> ?',
+    [$adminRole, 'admin@smoke.test']
+);
+foreach ($otherAdmins as $otherAdmin) {
+    $db->execute('UPDATE {users} SET role_id = ? WHERE id = ?', [$viewerRole, (int) $otherAdmin]);
+}
+
+$adminDelete = getWithJar($baseUrl . '/account/delete', $jar);
+$lastAdmin = postWithJar($baseUrl . '/account/delete', [
+    '_token' => csrfFrom($adminDelete['body']), 'confirm_email' => 'admin@smoke.test',
+], $jar);
+
+foreach ($otherAdmins as $otherAdmin) {
+    $db->execute('UPDATE {users} SET role_id = ? WHERE id = ?', [$adminRole, (int) $otherAdmin]);
+}
+
+check(
+    'The last administrator is refused',
+    $lastAdmin['status'] === 200 && str_contains($lastAdmin['body'], 'only administrator'),
+    "got {$lastAdmin['status']}"
+);
+check(
+    'and is still an administrator with an account',
+    (int) $db->value('SELECT COUNT(*) FROM {users} WHERE email = ? AND role_id = ?', ['admin@smoke.test', $adminRole]) === 1,
+    'on a host with no shell, nobody could let anybody in again'
+);
 
 echo "\nRouting\n";
 

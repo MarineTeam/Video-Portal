@@ -116,7 +116,7 @@ echo $template->partial('header', get_defined_vars());
   ?>
   <a class="card account-tile" href="/account/history">
     <strong>Your data</strong>
-    <span class="muted small">What you have watched, and a copy of everything</span>
+    <span class="muted small">What you have watched, a copy of everything, or deleting your account</span>
   </a>
 
   <?php

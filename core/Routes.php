@@ -293,6 +293,14 @@ final class Routes
         $router->get('/account/export.json', [AccountController::class, 'export'], ['auth.user']);
 
         /*
+         * Deleting the account, next to the export on purpose: the two halves of
+         * one decision. One handler for both methods, so a refused POST
+         * re-renders the form with the reason. No id in the URL, as above — the
+         * only account it can delete is the one signed in.
+         */
+        $router->any(['GET', 'POST'], '/account/delete', [AccountController::class, 'delete'], ['auth.user']);
+
+        /*
          * Member sharing.
          *
          * `auth.user` here and the capability checked inside the handler

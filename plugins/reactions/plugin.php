@@ -166,3 +166,16 @@ $plugin->addRoute(
     },
     ['auth.authorized']
 );
+
+/**
+ * This person's reactions, when they delete their account.
+ *
+ * Core cannot reach this table: it belongs to this plugin and is gone after an
+ * uninstall, so core asks and whoever is installed answers. Unlike an export,
+ * a failure here is NOT swallowed: the hook runs inside the
+ * deletion's transaction, and throwing is what stops an account being deleted
+ * with its reactions still carrying the address.
+ */
+$plugin->addAction('account_deleting', static function ($user) use ($repository): void {
+    $repository()->forgetReactor((string) $user->email);
+});

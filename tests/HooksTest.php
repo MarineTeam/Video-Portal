@@ -57,6 +57,29 @@ final class HooksTest extends TestCase
         self::assertSame(['early', 'default-first', 'default-second', 'late'], $order);
     }
 
+    /**
+     * The strict dispatch lets a listener's failure through even with
+     * throwOnError off — the production setting — and still runs the
+     * listeners registered before it. The ordinary one keeps swallowing.
+     */
+    public function testDoActionOrFailRethrowsWhereDoActionSwallows(): void
+    {
+        $ran = [];
+        $this->hooks->throwOnError(false);
+        $this->hooks->addAction('leaving', function () use (&$ran): void {
+            $ran[] = 'first';
+        }, 1);
+        $this->hooks->addAction('leaving', static function (): void {
+            throw new RuntimeException('could not clear');
+        }, 5);
+
+        $this->hooks->doAction('leaving');
+        self::assertSame(['first'], $ran);
+
+        $this->expectExceptionMessage('could not clear');
+        $this->hooks->doActionOrFail('leaving');
+    }
+
     public function testDoActionOnAnUnregisteredHookIsHarmless(): void
     {
         $this->hooks->doAction('nobody_listens', 1, 2, 3);

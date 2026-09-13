@@ -28,6 +28,21 @@ echo $template->partial('header', get_defined_vars());
   </div>
 <?php endif ?>
 
+<?php
+/*
+ * Above the history rather than inside it: somebody who has watched nothing
+ * still has an account and data worth taking away, and until this moved the
+ * export was only offered to people with a watch history.
+ */
+?>
+<p>
+  <a class="btn secondary" href="/account/export.json">Download all my data</a>
+  <span class="muted small">Everything this site holds about you, as a JSON file.</span>
+</p>
+<p class="muted small">
+  Leaving? Download it first, then <a href="/account/delete">delete your account</a>.
+</p>
+
 <p class="muted small">
   This is also what decides where a video picks up when you come back to it, so forgetting something
   here means it starts from the beginning next time — and drops out of <strong>Continue
@@ -40,10 +55,6 @@ echo $template->partial('header', get_defined_vars());
   </div>
 
 <?php else: ?>
-  <p>
-    <a class="btn secondary" href="/account/export.json">Download all my data</a>
-    <span class="muted small">Everything this site holds about you, as a JSON file.</span>
-  </p>
 
   <table>
     <thead><tr><th>Video</th><th>How far</th><th>Last watched</th><th></th></tr></thead>

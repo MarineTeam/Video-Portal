@@ -396,6 +396,64 @@ final class CommentRepository
     }
 
     /**
+     * Everything this person wrote or reported, for an account being deleted.
+     *
+     * Deleted, not detached: the name and address are captured on the row, so
+     * SET NULL on user_id alone would leave both behind on a public page.
+     *
+     * Except a comment somebody ELSE replied to. Deleting that would take their
+     * replies with it by cascade — one person leaving erasing other people's
+     * words — so it becomes the tombstone moderation already uses, with the
+     * name, address, body and IP emptied. The thread keeps its shape and
+     * nothing of this person remains in it.
+     *
+     * Their own replies go first, so a comment whose only replies were their
+     * own is deleted rather than kept as an empty tombstone over nothing.
+     *
+     * Reports they filed go too, and the counts they contributed to are
+     * recounted from the rows rather than decremented, as report() does.
+     */
+    public function forgetAuthor(string $email): void
+    {
+        $email = Str::normalizeEmail($email);
+
+        $this->db->execute(
+            'DELETE FROM {comments} WHERE author_email = ? AND parent_id IS NOT NULL',
+            [$email]
+        );
+
+        // DISTINCT keeps the derived table materialised; merged into the
+        // UPDATE, MySQL refuses to read the table it is writing (error 1093).
+        $this->db->execute(
+            'UPDATE {comments} c
+               JOIN (SELECT DISTINCT parent_id FROM {comments} WHERE parent_id IS NOT NULL) r
+                 ON r.parent_id = c.id
+                SET c.status = ?, c.body = \'\', c.author_name = \'\', c.author_email = \'\',
+                    c.user_id = NULL, c.ip = \'\', c.updated_at = NOW()
+              WHERE c.author_email = ?',
+            [CommentPolicy::STATUS_REMOVED, $email]
+        );
+
+        $this->db->execute('DELETE FROM {comments} WHERE author_email = ?', [$email]);
+
+        $reported = $this->db->column(
+            'SELECT comment_id FROM {comment_reports} WHERE reporter_email = ?',
+            [$email]
+        );
+
+        $this->db->execute('DELETE FROM {comment_reports} WHERE reporter_email = ?', [$email]);
+
+        foreach ($reported as $commentId) {
+            $this->db->execute(
+                'UPDATE {comments}
+                    SET report_count = (SELECT COUNT(*) FROM {comment_reports} WHERE comment_id = ?)
+                  WHERE id = ?',
+                [(int) $commentId, (int) $commentId]
+            );
+        }
+    }
+
+    /**
      * Record a report.
      *
      * The unique index does the deduplicating rather than a read-then-write,

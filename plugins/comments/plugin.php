@@ -516,3 +516,15 @@ $plugin->addFilter('account_export', static function (array $data, $user) use ($
 
     return $data;
 });
+
+/**
+ * This person's comments, when they delete their account.
+ *
+ * Core cannot reach this table, for the reason given at account_export. Unlike
+ * the export, a failure here is NOT swallowed: the hook runs inside the
+ * deletion's transaction, and throwing is what stops an account being deleted
+ * with its comments still carrying the address.
+ */
+$plugin->addAction('account_deleting', static function ($user) use ($repository): void {
+    $repository()->forgetAuthor((string) $user->email);
+});

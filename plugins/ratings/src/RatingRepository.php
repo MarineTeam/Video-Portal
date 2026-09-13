@@ -200,6 +200,26 @@ final class RatingRepository
     }
 
     /**
+     * Every rating this person gave, for an account being deleted.
+     *
+     * Deleted rather than detached: the row carries the rater's address. Each
+     * affected video is recounted, because a cached average still including a
+     * vote whose row is gone is the drift recount() exists to prevent.
+     */
+    public function forgetRater(string $email): void
+    {
+        $email = Str::normalizeEmail($email);
+
+        $videoIds = $this->db->column('SELECT video_id FROM {ratings} WHERE rater_email = ?', [$email]);
+
+        $this->db->execute('DELETE FROM {ratings} WHERE rater_email = ?', [$email]);
+
+        foreach ($videoIds as $videoId) {
+            $this->recount((int) $videoId);
+        }
+    }
+
+    /**
      * Rebuild one video's cached total from its rows.
      *
      * Public because it is also the repair: if the cache is ever doubted, this

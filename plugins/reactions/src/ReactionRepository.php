@@ -20,6 +20,20 @@ final class ReactionRepository
     }
 
     /**
+     * Every reaction this person left, for an account being deleted.
+     *
+     * Deleted rather than detached: the row carries their address. Counts are
+     * computed from the rows on every read, so there is nothing to recount.
+     */
+    public function forgetReactor(string $email): void
+    {
+        $this->db->execute(
+            'DELETE FROM {reactions} WHERE reactor_email = ?',
+            [strtolower(trim($email))]
+        );
+    }
+
+    /**
      * How many of each kind this video has.
      *
      * @return array<string, int> every kind in vocabulary order, zeroes included
