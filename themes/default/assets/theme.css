@@ -22,6 +22,39 @@
   --shadow: 0 10px 30px -12px rgb(0 0 0 / 0.5);
 }
 
+/*
+ * The light palette, chosen per device on /settings.
+ *
+ * `:root[data-theme="light"]` rather than a class on body, for two reasons.
+ * The attribute is set in <head> before body exists, which is what prevents a
+ * flash. And its specificity (0,2,0) beats the customizer's inline `:root`
+ * (0,1,0), which is written on every page — so the light palette wins over a
+ * site's custom DARK colours without the customizer needing to know it exists.
+ *
+ * The customizer's ACCENT is kept: it is the site's identity, and it is used
+ * as a fill with dark ink on it, which reads on white too. Only where the
+ * accent is TEXT is it darkened, because the default sky blue on white fails
+ * contrast.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg:          #f8fafc;
+  --surface:     #ffffff;
+  --text:        #0f172a;
+  --text-muted:  #475569;
+  --link:        color-mix(in srgb, var(--accent) 58%, #000);
+  --line:        #e2e8f0;
+
+  --border:      color-mix(in srgb, #0f172a 14%, transparent);
+  --surface-glass: color-mix(in srgb, #ffffff 78%, transparent);
+  --shadow: 0 10px 30px -14px rgb(15 23 42 / 0.2);
+}
+
+/* Status colours written for a dark ground, at the contrast a light one needs. */
+:root[data-theme="light"] .chat-notice.warn { color: #b45309; }
+:root[data-theme="light"] .chat-notice.ok { color: #15803d; }
+
 *, *::before, *::after { box-sizing: border-box; }
 
 html { -webkit-text-size-adjust: 100%; }
@@ -41,7 +74,9 @@ body {
 
 img { max-width: 100%; display: block; }
 
-a { color: var(--accent); text-decoration: none; }
+/* --link rather than --accent directly, so the light palette can darken link
+   TEXT without touching the accent as a FILL (buttons, progress bars). */
+a { color: var(--link, var(--accent)); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* ------------------------------------------------------------------ layout */
@@ -861,7 +896,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   padding: .875rem .25rem;
   color: var(--text);
 }
-.title-list a:hover { text-decoration: none; color: var(--accent); }
+.title-list a:hover { text-decoration: none; color: var(--link, var(--accent)); }
 .title-list .dur { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 /* ------------------------------------------------------------- reduced motion */
@@ -1224,7 +1259,13 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 /* Line height generous enough that a blank sits in the sentence rather than
    pushing the lines apart — this reads as a paragraph with gaps, not a form. */
 .sheet-outline { line-height: 2.2; font-size: 1.0625rem; max-width: 46rem; }
-.sheet-gap {
+/* input.sheet-gap under .sheet-outline, not .sheet-gap alone: the site-wide
+   input[type="text"] rule is (0,1,1) and outranked a bare class, giving every
+   blank width:100% — so each one wrapped onto a line of its own and the sheet
+   read as a form rather than a sentence with gaps. Seen only in a browser. */
+.sheet-outline input.sheet-gap {
+  display: inline-block;
+  vertical-align: baseline;
   font: inherit;
   width: 10em;
   max-width: 100%;
@@ -1235,5 +1276,5 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
   background: transparent;
   color: var(--text);
 }
-.sheet-gap:focus { outline: 2px solid var(--accent); outline-offset: 2px; border-bottom-color: var(--accent); }
+.sheet-outline input.sheet-gap:focus { outline: 2px solid var(--accent); outline-offset: 2px; border-bottom-color: var(--accent); }
 .sheet-actions { margin-top: 1.25rem; display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }

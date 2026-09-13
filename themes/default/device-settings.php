@@ -10,6 +10,7 @@
  * The storage keys are a contract with player.js and the playback plugin:
  *   portal.autoplay  'on' | 'off'   (absent means on)
  *   portal.speed     '0.75' … '2'   (absent means 1)
+ *   portal.theme     'system' | 'light' | 'dark'   (absent means the site's own, dark)
  * tools/smoke.php checks the three files agree on them.
  *
  * @var \Portal\Themes\TemplateLoader $template
@@ -30,6 +31,18 @@ echo $template->partial('header', get_defined_vars());
 </noscript>
 
 <form class="stacked-form" id="device-settings" hidden onsubmit="return false">
+  <label>
+    Appearance
+    <select name="theme" id="device-theme">
+      <option value="">This site's own colours</option>
+      <option value="system">Match this device</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </label>
+  <p class="muted small">"Match this device" follows your phone or computer's light or dark
+     mode, and changes with it.</p>
+
   <label class="checkbox">
     <input type="checkbox" name="autoplay" id="device-autoplay">
     Play the next video automatically

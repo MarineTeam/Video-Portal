@@ -28,6 +28,60 @@ add_action('head', static function () use ($theme): void {
     if ($css !== '') {
         echo "<style id=\"portal-theme-vars\">\n{$css}\n</style>\n";
     }
+
+    /*
+     * Light, dark, or following the device — chosen on /settings and kept in
+     * this browser. Inline and in <head> for the same reason as the variables
+     * above: set any later and the page paints in the wrong palette for a
+     * frame, which on a white-on-dark site is a flash of black at somebody who
+     * asked for light.
+     *
+     * No choice means DARK, the site's own design, not "follow the device".
+     * Defaulting to the device would turn the site white on deploy for every
+     * visitor whose phone is in light mode, which is a site owner's decision
+     * this setting has no business making for them.
+     *
+     * A theme without a light palette ignores the attribute, so a child theme
+     * or a third-party one is unaffected. Storage that throws (some private
+     * windows) leaves the default.
+     */
+    echo <<<'HTML'
+    <script>
+    (function () {
+      var root = document.documentElement;
+      var query = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+      var choice = null;
+      try { choice = window.localStorage.getItem('portal.theme'); } catch (e) {}
+      function apply() {
+        var mode = choice === 'light' || choice === 'dark' ? choice
+          : (choice === 'system' && query && query.matches ? 'light' : 'dark');
+        root.setAttribute('data-theme', mode);
+
+        /* The browser and task-switcher chrome, which is otherwise a dark bar
+           above a white page. The site's own colour is kept to restore. */
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) {
+          if (!meta.getAttribute('data-site-color')) { meta.setAttribute('data-site-color', meta.content); }
+          meta.content = mode === 'light' ? '#f8fafc' : meta.getAttribute('data-site-color');
+        }
+      }
+      apply();
+      /* Again once the meta tag, which comes later in <head>, exists. */
+      document.addEventListener('DOMContentLoaded', apply);
+      if (query && query.addEventListener) {
+        query.addEventListener('change', function () { if (choice === 'system') { apply(); } });
+      }
+      /* Another tab changed it. */
+      window.addEventListener('storage', function (event) {
+        if (event.key === 'portal.theme') { choice = event.newValue; apply(); }
+      });
+      /* This tab changed it: /settings calls this, since `storage` does not
+         fire in the tab that made the change. */
+      window.portalTheme = { set: function (value) { choice = value; apply(); } };
+    })();
+    </script>
+
+    HTML;
 }, 1);
 
 /*
